@@ -25,7 +25,14 @@ func Run(cfg wisp.Config) error {
 	return cfg.Open(*fm.chosen, func(msg string) { fmt.Printf("--- %s\n", msg) })
 }
 
+// Two messages, not one: local candidates paint immediately, remote ones fold in when the
+// network answers. Waiting for both before showing anything made opening the picker feel slow
+// for the sake of the least important rows.
 type candidatesMsg struct {
+	items []wisp.Item
+}
+
+type remoteMsg struct {
 	items []wisp.Item
 	err   error
 }
@@ -47,6 +54,10 @@ const (
 type model struct {
 	cfg wisp.Config
 
+	// local and remote are kept apart so a remote refresh never drops locally-known items,
+	// and so the two can arrive independently. all is the merged view the list renders.
+	local    []wisp.Item
+	remote   []wisp.Item
 	all      []wisp.Item
 	filtered []wisp.Item
 	cursor   int
@@ -71,18 +82,26 @@ func newModel(cfg wisp.Config) model {
 }
 
 func (m model) Init() tea.Cmd {
-	return loadCandidates(m.cfg, false)
+	return tea.Batch(loadLocal(m.cfg), loadRemote(m.cfg, false))
 }
 
-// loadCandidates runs the three sources off the UI goroutine. The GitLab source can block on
-// the network, and blocking the update loop would freeze typing.
-func loadCandidates(cfg wisp.Config, refresh bool) tea.Cmd {
+// loadLocal is the fast path: filesystem and tmux only, no network.
+func loadLocal(cfg wisp.Config) tea.Cmd {
+	return func() tea.Msg {
+		items, _ := cfg.LocalCandidates()
+		return candidatesMsg{items: items}
+	}
+}
+
+// loadRemote runs off the UI goroutine, since it can block on the network for most of a second
+// on a cold cache and blocking the update loop would freeze typing.
+func loadRemote(cfg wisp.Config, refresh bool) tea.Cmd {
 	return func() tea.Msg {
 		if refresh {
 			_ = cfg.RefreshCache()
 		}
-		items, err := cfg.Candidates()
-		return candidatesMsg{items: items, err: err}
+		items, err := cfg.GitLabItems()
+		return remoteMsg{items: items, err: err}
 	}
 }
 
@@ -101,9 +120,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case candidatesMsg:
 		m.loading = false
-		m.all = msg.items
+		m.local = msg.items
+		m.all = wisp.MergeAll(m.local, m.remote)
 		m.applyFilter()
-		m.status = ""
+		return m, m.previewCmd()
+
+	case remoteMsg:
+		m.remote = msg.items
+		m.all = wisp.MergeAll(m.local, m.remote)
+		m.applyFilter()
 		if msg.err != nil {
 			// Remote failures are shown, not swallowed: an empty "+" section otherwise looks
 			// like having no assigned items rather than a broken query.
@@ -161,15 +186,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				_ = wisp.KillSession(it.Name)
-				m.loading = true
 				m.status = "killed " + it.Name
-				return m, loadCandidates(m.cfg, false)
+				// Local only: a kill changes tmux state, not GitLab, and re-querying the
+				// network here would stall the list for no new information.
+				return m, loadLocal(m.cfg)
 			}
 
 		case "ctrl+r":
-			m.loading = true
-			m.status = "refreshing"
-			return m, loadCandidates(m.cfg, true)
+			m.status = "refreshing gitlab"
+			return m, tea.Batch(loadLocal(m.cfg), loadRemote(m.cfg, true))
 
 		case "backspace":
 			if m.query != "" {

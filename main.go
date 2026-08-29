@@ -9,7 +9,7 @@ import (
 	"github.com/fisherrjd/wisp/internal/wisp"
 )
 
-const version = "0.6.0"
+const version = "0.7.0"
 
 const usage = `wisp - one work item, one tmux session
 

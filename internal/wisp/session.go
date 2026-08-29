@@ -134,10 +134,8 @@ func (c Config) Open(item Item, log func(string)) error {
 		// Window 0 is the agent, at the workspace root. One cwd sees the vault, docs, every
 		// repo and every worktree, which is the whole point of the container model.
 		program := c.Program
-		if ctx != "" {
-			rel, _ := filepath.Rel(c.Workspace, ctx)
-			program = fmt.Sprintf("%s %q", c.Program,
-				fmt.Sprintf("Working on item %s. Read %s first for the repos and notes in scope.", item.Name, rel))
+		if prompt := c.startupPrompt(item, ctx); prompt != "" {
+			program = c.Program + " " + shellQuote(prompt)
 		}
 		if err := exec.Command("tmux", "new-session", "-d", "-s", session,
 			"-n", "agent", "-c", c.Workspace, program).Run(); err != nil {
@@ -161,6 +159,39 @@ func (c Config) Open(item Item, log func(string)) error {
 	}
 
 	return Attach(session)
+}
+
+// maxInlineContext bounds what gets pasted into the startup prompt. Real context files are a
+// few hundred bytes; anything past this is unusual enough to be worth a read instead.
+const maxInlineContext = 8 << 10
+
+// startupPrompt is the agent's opening message.
+//
+// The context is inlined rather than pointed at. Telling the agent to read the file costs a
+// full tool-call round trip before it can start, several seconds of latency to fetch a file
+// that is typically under 300 bytes. The path is still named at the end, since the file is
+// regenerated when provisioning finishes and is worth re-reading then.
+func (c Config) startupPrompt(item Item, ctxPath string) string {
+	if ctxPath == "" {
+		return ""
+	}
+	rel, _ := filepath.Rel(c.Workspace, ctxPath)
+	body, err := os.ReadFile(ctxPath)
+	if err != nil || len(body) > maxInlineContext {
+		return fmt.Sprintf("Working on item %s. Read %s first for the repos and notes in scope.", item.Name, rel)
+	}
+	return fmt.Sprintf(`Working on item %s. Your context follows; you do not need to read it from disk.
+
+%s
+(That is %s, regenerated whenever wisp opens this item. Re-read it if a worktree was still provisioning.)`,
+		item.Name, strings.TrimSpace(string(body)), rel)
+}
+
+// shellQuote wraps a string for /bin/sh. Single quotes rather than Go's %q, because the prompt
+// is multi-line: inside double quotes the shell would pass a literal backslash-n through to the
+// agent instead of a newline.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // addWorktreeWindows creates one window per existing worktree, skipping any that already have
