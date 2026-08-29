@@ -9,12 +9,13 @@ import (
 	"github.com/fisherrjd/wisp/internal/wisp"
 )
 
-const version = "0.2.2"
+const version = "0.3.0"
 
 const usage = `wisp - one work item, one tmux session
 
 usage:
   wisp                    pick an item and open it
+  wisp home               switch to the picker session, creating it if needed
   wisp open <item>        open an item directly
   wisp ls                 list live sessions
   wisp kill <item>        kill an item's session
@@ -66,6 +67,9 @@ func run(args []string) error {
 	switch cmd {
 	case "", "pick":
 		return ui.Run(cfg)
+
+	case "home":
+		return cfg.Home()
 
 	case "open", "o":
 		if len(args) < 2 {

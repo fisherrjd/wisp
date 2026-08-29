@@ -67,6 +67,28 @@ func KillSession(item string) error {
 	return exec.Command("tmux", "kill-session", "-t", "="+SessionFor(item)).Run()
 }
 
+// CurrentSession is the session wisp itself is running inside, or "" when it is not in tmux.
+func CurrentSession() string {
+	if !InsideTmux() {
+		return ""
+	}
+	out, err := tmux("display-message", "-p", "#{session_name}")
+	if err != nil {
+		return ""
+	}
+	return out
+}
+
+// IsCurrentSession reports whether killing this item would kill the session wisp is drawn on.
+//
+// This is the difference between "kill that session" and "the picker vanished": tmux tears down
+// the client along with its session, so killing your own session from a popup looks exactly
+// like wisp crashing.
+func IsCurrentSession(item string) bool {
+	cur := CurrentSession()
+	return cur != "" && cur == SessionFor(item)
+}
+
 // CapturePane returns a session's visible pane content, used for both the preview and the
 // needs-input check.
 func CapturePane(session string, ansi bool) string {

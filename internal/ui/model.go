@@ -126,6 +126,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "ctrl+x":
 			if it := m.current(); it != nil {
+				// Refuse to kill the session wisp is drawn on. tmux tears the client down with
+				// the session, so from a popup this looks like wisp crashing rather than like
+				// the kill succeeding. Running `wisp home` keeps the picker in its own session,
+				// where this cannot come up.
+				if wisp.IsCurrentSession(it.Name) {
+					m.status = "that is the session you are in; switch away first, or use wisp home"
+					return m, nil
+				}
 				_ = wisp.KillSession(it.Name)
 				m.loading = true
 				m.status = "killed " + it.Name
