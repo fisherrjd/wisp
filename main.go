@@ -9,13 +9,14 @@ import (
 	"github.com/fisherrjd/wisp/internal/wisp"
 )
 
-const version = "0.7.0"
+const version = "0.8.0"
 
 const usage = `wisp - one work item, one tmux session
 
 usage:
   wisp                    go to the picker session, creating it if needed
   wisp pick               run the picker once, here, without a session
+  wisp next / wisp prev   cycle to the next or previous item session
   wisp open <item>        open an item directly
   wisp ls                 list live sessions
   wisp kill <item>        kill an item's session
@@ -73,6 +74,12 @@ func run(args []string) error {
 
 	case "pick":
 		return ui.Run(cfg)
+
+	case "next":
+		return wisp.Cycle(1)
+
+	case "prev":
+		return wisp.Cycle(-1)
 
 	case "open", "o":
 		if len(args) < 2 {

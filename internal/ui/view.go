@@ -17,7 +17,7 @@ const listFraction = 0.40
 // same list.
 var (
 	footerStates = []wisp.State{wisp.StateLive, wisp.StateNeedsInput, wisp.StateFolder, wisp.StateRemote}
-	footerKeys   = []string{"enter open", "ctrl-n new", "ctrl-x kill", "ctrl-r refresh", "esc back"}
+	footerKeys   = []string{"enter open", "ctrl-n new", "ctrl-x kill", "ctrl-r refresh", "esc quit"}
 	// The create line has its own keys, since most of the list bindings do not apply while a
 	// name is being typed.
 	newKeys = []string{"enter create", "esc cancel"}

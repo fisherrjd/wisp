@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 )
 
 // HomeSession is the picker's own tmux session: the place you come back to.
@@ -44,6 +45,44 @@ func hasRawSession(name string) bool {
 	return exec.Command("tmux", "has-session", "-t", "="+name).Run() == nil
 }
 
+// Cycle moves to the next (+1) or previous (-1) item session, wrapping at both ends.
+//
+// tmux has switch-client -n and -p, but those walk every session on the server. This walks only
+// wisp's, in a stable sorted order, so flipping between work is unaffected by whatever else
+// happens to be running. Home is not in the rotation: it is a destination, not a stop.
+func Cycle(delta int) error {
+	if !InsideTmux() {
+		return fmt.Errorf("not inside tmux")
+	}
+	live := LiveSessions()
+	if len(live) == 0 {
+		return nil
+	}
+	sort.Strings(live)
+
+	// From home, or from anywhere that is not an item session, enter the ring at the end that
+	// matches the direction travelled rather than jumping to an arbitrary member.
+	idx := -1
+	current := CurrentSession()
+	for i, s := range live {
+		if s == current {
+			idx = i
+			break
+		}
+	}
+	var target string
+	switch {
+	case idx < 0 && delta > 0:
+		target = live[0]
+	case idx < 0:
+		target = live[len(live)-1]
+	default:
+		// Positive modulo: Go's % keeps the sign of the dividend, so -1 % n is -1, not n-1.
+		target = live[((idx+delta)%len(live)+len(live))%len(live)]
+	}
+	return exec.Command("tmux", "switch-client", "-t", "="+target).Run()
+}
+
 // LeaveHome is what quitting the picker does when the picker is home.
 //
 // Home runs the picker in a loop, so plain exit is invisible: the loop redraws it and esc looks
@@ -54,9 +93,11 @@ func LeaveHome() error {
 	if !InsideTmux() || CurrentSession() != HomeSession {
 		return nil // a one-shot `wisp pick` just exits, which is already correct
 	}
-	if err := exec.Command("tmux", "switch-client", "-l").Run(); err == nil {
-		return nil
-	}
-	// No previous session to go back to: home was the whole visit.
+	// Detach, rather than switching to some other session. esc means quit: leave tmux and get
+	// the terminal back.
+	//
+	// Nothing is lost by doing so. The tmux server keeps running, so every item session stays
+	// exactly where it was, agents included, and the home session stays up too. The next
+	// `wisp` re-attaches to a picker that is already warm.
 	return exec.Command("tmux", "detach-client").Run()
 }
