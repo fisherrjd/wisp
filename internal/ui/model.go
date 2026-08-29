@@ -20,7 +20,7 @@ func Run(cfg wisp.Config) error {
 	}
 	fm := final.(model)
 	if fm.chosen == nil {
-		return nil
+		return wisp.LeaveHome()
 	}
 	return cfg.Open(*fm.chosen, func(msg string) { fmt.Printf("--- %s\n", msg) })
 }
@@ -35,6 +35,15 @@ type previewMsg struct {
 	body string
 }
 
+// mode is which line the typed characters go to. The picker has exactly two states, and
+// keeping them explicit avoids the usual pile of booleans.
+type mode int
+
+const (
+	modeFilter mode = iota // typing narrows the list
+	modeNew                // typing names a new item, or pastes a GitLab URL
+)
+
 type model struct {
 	cfg wisp.Config
 
@@ -42,6 +51,9 @@ type model struct {
 	filtered []wisp.Item
 	cursor   int
 	offset   int
+
+	mode  mode
+	input string // the new-item line, kept separate so cancelling restores the filter intact
 
 	query   string
 	preview string
@@ -106,9 +118,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		// The new-item line owns every key while it is open, so a URL containing characters
+		// that are bindings elsewhere still types through cleanly.
+		if m.mode == modeNew {
+			return m.updateNew(msg)
+		}
 		switch msg.String() {
 		case "ctrl+c", "esc":
 			return m, tea.Quit
+
+		case "ctrl+n":
+			m.mode = modeNew
+			m.input = ""
+			m.status = ""
+			return m, nil
 
 		case "enter":
 			if it := m.current(); it != nil {
@@ -116,11 +139,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			}
 
-		case "up", "ctrl+p":
+		// ctrl+j / ctrl+k rather than the emacs ctrl+p / ctrl+n, because ctrl+n is wanted for
+		// creating an item and splitting the pair across two idioms reads worse than moving
+		// both.
+		case "up", "ctrl+k":
 			m.move(-1)
 			return m, m.previewCmd()
 
-		case "down", "ctrl+n":
+		case "down", "ctrl+j":
 			m.move(1)
 			return m, m.previewCmd()
 
@@ -174,6 +200,49 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+// updateNew handles the create line. Enter builds the item and opens it, which is the same
+// path a normal selection takes, so a new item lands in a session exactly like an existing one.
+func (m model) updateNew(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "ctrl+c":
+		m.mode = modeFilter
+		m.input = ""
+		m.status = ""
+		return m, nil
+
+	case "enter":
+		it, err := m.cfg.NewItem(m.input)
+		if err != nil {
+			// Stay on the line with the text intact: these errors are things the user can
+			// correct in place, like a URL for an item that is not assigned to them.
+			m.status = err.Error()
+			return m, nil
+		}
+		m.chosen = &it
+		return m, tea.Quit
+
+	case "backspace":
+		if m.input != "" {
+			r := []rune(m.input)
+			m.input = string(r[:len(r)-1])
+		}
+		return m, nil
+
+	case "ctrl+u":
+		m.input = ""
+		return m, nil
+
+	default:
+		switch msg.Type {
+		case tea.KeyRunes:
+			m.input += string(msg.Runes)
+		case tea.KeySpace:
+			m.input += " "
+		}
+		return m, nil
+	}
 }
 
 func (m *model) move(delta int) {

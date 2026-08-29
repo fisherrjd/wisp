@@ -43,3 +43,20 @@ func (c Config) Home() error {
 func hasRawSession(name string) bool {
 	return exec.Command("tmux", "has-session", "-t", "="+name).Run() == nil
 }
+
+// LeaveHome is what quitting the picker does when the picker is home.
+//
+// Home runs the picker in a loop, so plain exit is invisible: the loop redraws it and esc looks
+// broken. Leaving means moving the client somewhere else, back to the session you came from, or
+// off tmux entirely when there is nowhere to go back to. The loop still restarts the picker
+// behind you, so the next visit gets a freshly loaded list.
+func LeaveHome() error {
+	if !InsideTmux() || CurrentSession() != HomeSession {
+		return nil // a one-shot `wisp pick` just exits, which is already correct
+	}
+	if err := exec.Command("tmux", "switch-client", "-l").Run(); err == nil {
+		return nil
+	}
+	// No previous session to go back to: home was the whole visit.
+	return exec.Command("tmux", "detach-client").Run()
+}

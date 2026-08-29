@@ -17,20 +17,30 @@ const listFraction = 0.40
 // same list.
 var (
 	footerStates = []wisp.State{wisp.StateLive, wisp.StateNeedsInput, wisp.StateFolder, wisp.StateRemote}
-	footerKeys   = []string{"enter open", "ctrl-x kill", "ctrl-r refresh", "esc quit"}
+	footerKeys   = []string{"enter open", "ctrl-n new", "ctrl-x kill", "ctrl-r refresh", "esc back"}
+	// The create line has its own keys, since most of the list bindings do not apply while a
+	// name is being typed.
+	newKeys = []string{"enter create", "esc cancel"}
 )
 
 // legendWidth is the legend and key hints laid side by side, used to decide whether the footer
 // needs to stack them onto two lines.
+func (m model) activeKeys() []string {
+	if m.mode == modeNew {
+		return newKeys
+	}
+	return footerKeys
+}
+
 func (m model) footerStacks() bool {
-	// 4 glyph+label pairs joined by 3 spaces, plus the 4 key hints. Measured rather than
-	// guessed so a label change cannot silently break the height calculation.
+	// Measured from the same slices the renderer uses, rather than guessed, so adding a key
+	// cannot silently break the height calculation and overflow the terminal.
 	legend := 0
 	for _, s := range footerStates {
 		legend += 2 + len(s.Label()) + 3
 	}
 	keys := 0
-	for _, k := range footerKeys {
+	for _, k := range m.activeKeys() {
 		keys += len(k) + 3
 	}
 	return m.width-legend-keys < 2
@@ -88,6 +98,18 @@ func (m model) View() string {
 }
 
 func (m model) renderPrompt() string {
+	if m.mode == modeNew {
+		// A distinct label, because this line creates rather than filters and the two look
+		// identical otherwise.
+		left := newLabel.Render(" new ") + " " + m.input + promptStyle.Render("▏")
+		right := countStyle.Render("name, or paste a gitlab link")
+		gap := m.width - lipgloss.Width(left) - lipgloss.Width(right)
+		if gap < 1 {
+			gap = 1
+		}
+		return left + strings.Repeat(" ", gap) + right
+	}
+
 	count := fmt.Sprintf("%d/%d", len(m.filtered), len(m.all))
 	if m.loading {
 		count = "…"
@@ -174,7 +196,7 @@ func (m model) renderFooter() string {
 	}
 
 	left := strings.Join(legend, "   ")
-	right := keyStyle.Render(strings.Join(footerKeys, "   "))
+	right := keyStyle.Render(strings.Join(m.activeKeys(), "   "))
 
 	// Stacking when it does not fit, rather than truncating, is the whole reason for leaving
 	// fzf, whose header could only ever truncate.

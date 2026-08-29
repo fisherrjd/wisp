@@ -47,6 +47,10 @@ var (
 	promptStyle = lipgloss.NewStyle().Foreground(colAcc)
 	countStyle  = lipgloss.NewStyle().Foreground(colFaint)
 
+	// Reverse video rather than another hue: the create line is a mode, and it should be
+	// unmistakable without spending a second accent colour on it.
+	newLabel = lipgloss.NewStyle().Foreground(colAcc).Reverse(true).Bold(true)
+
 	rowStyle    = lipgloss.NewStyle().Foreground(colSoft)
 	rowSelected = lipgloss.NewStyle().Foreground(colInk).Bold(true)
 	repoStyle   = lipgloss.NewStyle().Foreground(colFaint)
