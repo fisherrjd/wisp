@@ -282,12 +282,17 @@ preview() {
   fi
 }
 
-# The header is two lines, not one. fzf renders it inside the list column, which is 40% of the
-# terminal, so the single 88-char version truncated to "ctrl-r ··" at every normal width and hid
-# the refresh binding entirely. Longest line below is 41 chars.
+# Legend and keys both live in the footer, on two lines. They render inside the list column, which
+# is 40% of the terminal: the original single 88-char --header truncated to "ctrl-r ··" at every
+# normal width and hid the refresh binding entirely. Two lines of 41 and 39 chars both fit, and the
+# bottom is where they belong, out of the way of the list you are actually scanning.
+#
+# --footer needs fzf 0.58 or newer; nixpkgs pins 0.74 here. A build against an older fzf fails
+# loudly on the unknown flag rather than silently dropping the legend, which is what we want if
+# this ever ships outside nix.
 pick() {
   sel=$(candidates | fzf --ansi --height 80% --reverse \
-    --header '● live  ? needs input  ○ folder  + gitlab
+    --footer '● live  ? needs input  ○ folder  + gitlab
 enter open  ctrl-x kill  ctrl-r refresh' \
     --preview "'$SELF' preview {2}" --preview-window 'right:60%:wrap' \
     --bind "ctrl-x:execute-silent('$SELF' kill {2})+reload('$SELF' candidates)" \
