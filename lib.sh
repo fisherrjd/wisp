@@ -256,7 +256,9 @@ preview() {
       [ -n "$repo" ] || continue
       wt=$(worktree_for "$repo" "$it")
       if [ -d "$wt" ]; then mark="worktree ready"; else mark="needs provisioning"; fi
-      printf '  %-30s %-42s %s\n' "$repo" "$branch" "$mark"
+      # 2+28+1+26+1+18 = 76 columns. The preview pane is 60% of the terminal, so this is the
+      # widest the row can be and still fit an 80-column window without wrapping mid-word.
+      printf '  %-28s %-26s %s\n' "$repo" "$branch" "$mark"
     done
     printf '\n'
   fi
@@ -280,9 +282,13 @@ preview() {
   fi
 }
 
+# The header is two lines, not one. fzf renders it inside the list column, which is 40% of the
+# terminal, so the single 88-char version truncated to "ctrl-r ··" at every normal width and hid
+# the refresh binding entirely. Longest line below is 41 chars.
 pick() {
   sel=$(candidates | fzf --ansi --height 80% --reverse \
-    --header '● live  ? needs input  ○ folder  + gitlab   |   enter open  ctrl-x kill  ctrl-r refresh' \
+    --header '● live  ? needs input  ○ folder  + gitlab
+enter open  ctrl-x kill  ctrl-r refresh' \
     --preview "'$SELF' preview {2}" --preview-window 'right:60%:wrap' \
     --bind "ctrl-x:execute-silent('$SELF' kill {2})+reload('$SELF' candidates)" \
     --bind "ctrl-r:execute-silent(rm -f '$CACHE')+reload('$SELF' candidates)") || exit 0
