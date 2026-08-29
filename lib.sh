@@ -282,18 +282,21 @@ preview() {
   fi
 }
 
-# Legend and keys both live in the footer, on two lines. They render inside the list column, which
-# is 40% of the terminal: the original single 88-char --header truncated to "ctrl-r ··" at every
-# normal width and hid the refresh binding entirely. Two lines of 41 and 39 chars both fit, and the
-# bottom is where they belong, out of the way of the list you are actually scanning.
+# The legend rides on the finder's bottom border, which is the only thing in fzf's layout that
+# spans the full width. Both --header and --footer are laid out inside the list section, which is
+# 40% of the terminal here, and that is what truncated the original 88-char header to "ctrl-r ··"
+# and hid the refresh binding. On the border it gets the whole width, and the list and the preview
+# then end on the same row instead of the preview running past the legend.
 #
-# --footer needs fzf 0.58 or newer; nixpkgs pins 0.74 here. A build against an older fzf fails
-# loudly on the unknown flag rather than silently dropping the legend, which is what we want if
-# this ever ships outside nix.
+# --border-label-pos accepts ":bottom"; needs fzf 0.44 or newer. nixpkgs pins 0.74 here.
+#
+# FZF_DEFAULT_OPTS is cleared on purpose. wisp needs a fixed layout, and it is not cosmetic: a
+# user's --multi (a very common default, and set in this workspace) lets the picker return several
+# lines, which the awk below silently mashes into one nonexistent item name.
 pick() {
-  sel=$(candidates | fzf --ansi --height 80% --reverse \
-    --footer '● live  ? needs input  ○ folder  + gitlab
-enter open  ctrl-x kill  ctrl-r refresh' \
+  legend='● live  ? needs input  ○ folder  + gitlab   |   enter open  ctrl-x kill  ctrl-r refresh'
+  sel=$(candidates | FZF_DEFAULT_OPTS='' fzf --ansi --height 80% --reverse --no-multi \
+    --border=bottom --border-label="$legend" --border-label-pos='2:bottom' \
     --preview "'$SELF' preview {2}" --preview-window 'right:60%:wrap' \
     --bind "ctrl-x:execute-silent('$SELF' kill {2})+reload('$SELF' candidates)" \
     --bind "ctrl-r:execute-silent(rm -f '$CACHE')+reload('$SELF' candidates)") || exit 0
