@@ -9,7 +9,7 @@ import (
 	"github.com/fisherrjd/wisp/internal/wisp"
 )
 
-const version = "0.5.0"
+const version = "0.6.0"
 
 const usage = `wisp - one work item, one tmux session
 
@@ -81,6 +81,19 @@ func run(args []string) error {
 		return cfg.Open(wisp.Item{Name: args[1]}, func(msg string) {
 			fmt.Fprintf(os.Stderr, "--- %s\n", msg)
 		})
+
+	case "provision":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: wisp provision <item>")
+		}
+		err := cfg.ProvisionItem(wisp.Item{Name: args[1]}, func(msg string) { fmt.Printf("--- %s\n", msg) })
+		if err != nil {
+			// Stay on screen. This runs in its own tmux window, which closes the moment the
+			// command returns, and a failure that vanishes is one nobody can read.
+			fmt.Fprintf(os.Stderr, "\nwisp: %v\n\npress enter to close\n", err)
+			_, _ = fmt.Scanln()
+		}
+		return nil
 
 	case "kill":
 		if len(args) < 2 {

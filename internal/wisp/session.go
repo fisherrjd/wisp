@@ -43,9 +43,15 @@ func (c Config) WriteContext(item Item, entries []Entry) (string, error) {
 			fmt.Fprintf(&b, " from `%s`", e.Base)
 		}
 		b.WriteString("\n")
-		if wt := c.WorktreeFor(e.Repo, item); isDir(wt) {
-			rel, _ := filepath.Rel(c.Workspace, wt)
+		// The worktree is listed whether or not it exists yet. Provisioning runs in the
+		// background so the session opens immediately, and the agent needs to know where the
+		// checkout is going to be, not just where it already is.
+		wt := c.WorktreeFor(e.Repo, item)
+		rel, _ := filepath.Rel(c.Workspace, wt)
+		if isDir(wt) {
 			fmt.Fprintf(&b, "- worktree `%s`\n", rel)
+		} else {
+			fmt.Fprintf(&b, "- worktree `%s` (still provisioning, wait for it before building)\n", rel)
 		}
 		if hub := filepath.Join(c.VaultDir(), e.Repo, e.Repo+".md"); exists(hub) {
 			fmt.Fprintf(&b, "- hub note `%s/%s/%s.md`\n", c.Vault, e.Repo, e.Repo)
@@ -105,16 +111,19 @@ func (c Config) EnsureWorktrees(item Item, entries []Entry, log func(string)) er
 	return nil
 }
 
-// Open reprovisions, writes context, builds the session if it is missing, then attaches.
+// Open builds the session if it is missing, then attaches.
+//
+// Provisioning does NOT block this. It shells out to provision-worktree.sh, which pre-warms the
+// nix environment via direnv, and a cold eval there takes long enough that waiting for it
+// before showing the session felt like the tool had hung. The agent window needs none of it:
+// it runs at the workspace root and reads the context file. So the session opens straight away
+// and any missing worktrees are built in a side window that adds its own windows when done.
 func (c Config) Open(item Item, log func(string)) error {
 	session := SessionFor(item.Name)
 
 	if !HasSession(item.Name) {
 		entries, err := c.Manifest(item)
 		if err != nil {
-			return err
-		}
-		if err := c.EnsureWorktrees(item, entries, log); err != nil {
 			return err
 		}
 		ctx, err := c.WriteContext(item, entries)
@@ -137,23 +146,70 @@ func (c Config) Open(item Item, log func(string)) error {
 		_ = exec.Command("tmux", "set-option", "-t", session, "history-limit", "10000").Run()
 		_ = exec.Command("tmux", "set-option", "-t", session, ItemOption, item.Name).Run()
 
-		// One shell window per repo worktree, for builds and dev servers. Not agents.
-		for _, e := range entries {
-			wt := c.WorktreeFor(e.Repo, item)
-			if !isDir(wt) {
-				continue
+		// One shell window per worktree that already exists, for builds and dev servers.
+		if c.addWorktreeWindows(session, item, entries) < len(entries) {
+			// Something still needs provisioning. Do it in its own window so the work is
+			// visible and interruptible rather than hidden behind a frozen picker. The window
+			// closes itself when the command finishes.
+			if self, err := os.Executable(); err == nil {
+				_ = exec.Command("tmux", "new-window", "-t", session, "-n", "provision",
+					"-c", c.Workspace, fmt.Sprintf("%q provision %q", self, item.Name)).Run()
 			}
-			name := e.Repo
-			if len(name) > 12 {
-				name = name[:12]
-			}
-			_ = exec.Command("tmux", "new-window", "-t", session, "-n", name, "-c", wt).Run()
 		}
 		// By name, not index: base-index may be 1, so session:0 is not reliably the first window.
 		_ = exec.Command("tmux", "select-window", "-t", session+":agent").Run()
 	}
 
 	return Attach(session)
+}
+
+// addWorktreeWindows creates one window per existing worktree, skipping any that already have
+// one, and returns how many worktrees are present. Safe to call twice: Provision calls it again
+// once the checkouts exist.
+func (c Config) addWorktreeWindows(session string, item Item, entries []Entry) int {
+	existing := map[string]bool{}
+	if out, err := tmux("list-windows", "-t", session, "-F", "#{window_name}"); err == nil {
+		for _, w := range strings.Split(out, "\n") {
+			existing[w] = true
+		}
+	}
+	present := 0
+	for _, e := range entries {
+		wt := c.WorktreeFor(e.Repo, item)
+		if !isDir(wt) {
+			continue
+		}
+		present++
+		name := e.Repo
+		if len(name) > 12 {
+			name = name[:12]
+		}
+		if existing[name] {
+			continue
+		}
+		_ = exec.Command("tmux", "new-window", "-t", session, "-d", "-n", name, "-c", wt).Run()
+	}
+	return present
+}
+
+// ProvisionItem is the background half of Open: build the missing worktrees, then add their windows
+// and refresh the context file so it no longer says "still provisioning". Run in its own tmux
+// window by Open; also useful by hand after deleting a worktree.
+func (c Config) ProvisionItem(item Item, log func(string)) error {
+	entries, err := c.Manifest(item)
+	if err != nil {
+		return err
+	}
+	if err := c.EnsureWorktrees(item, entries, log); err != nil {
+		return err
+	}
+	session := SessionFor(item.Name)
+	if hasRawSession(session) {
+		c.addWorktreeWindows(session, item, entries)
+	}
+	// Rewritten now that the checkouts exist, so an agent re-reading it sees real paths.
+	_, err = c.WriteContext(item, entries)
+	return err
 }
 
 // Attach hands the terminal over to the session, replacing this process.
