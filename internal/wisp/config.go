@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -31,6 +32,10 @@ type GitLab struct {
 type Config struct {
 	Workspace string `yaml:"-"`
 
+	// DefaultWorkspace is only meaningful in the user config: it is where wisp goes when it is
+	// run from somewhere that is not inside a workspace at all.
+	DefaultWorkspace string `yaml:"workspace"`
+
 	Program   string `yaml:"program"`
 	Install   bool   `yaml:"install"`
 	Vault     string `yaml:"vault"`
@@ -49,32 +54,43 @@ func defaults() Config {
 	}
 }
 
-// Load resolves configuration for the workspace named by WISP_WORKSPACE, or the current
-// directory if that is unset.
+// MarkerFile identifies a workspace root during the upward search.
+const MarkerFile = ".wisp.yaml"
+
+// UserConfigPath is the per-user config file.
+//
+// Deliberately XDG rather than os.UserConfigDir: on macOS that returns
+// ~/Library/Application Support, but command line tools there conventionally use ~/.config,
+// and that is where anyone will look for this file.
+func UserConfigPath() string {
+	if dir := os.Getenv("XDG_CONFIG_HOME"); dir != "" {
+		return filepath.Join(dir, "wisp", "config.yaml")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".config", "wisp", "config.yaml")
+}
+
+// Load resolves configuration and locates the workspace. See FindWorkspace for the search.
 func Load() (Config, error) {
 	c := defaults()
 
-	ws := os.Getenv("WISP_WORKSPACE")
-	if ws == "" {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return c, err
-		}
-		ws = cwd
-	}
-	abs, err := filepath.Abs(ws)
+	// The user config is read first because it can name the fallback workspace, which the
+	// search below needs.
+	_ = c.mergeFile(UserConfigPath())
+
+	ws, err := FindWorkspace(c.DefaultWorkspace, c.Vault)
 	if err != nil {
 		return c, err
 	}
-	c.Workspace = abs
+	c.Workspace = ws
 
-	if home, err := os.UserConfigDir(); err == nil {
-		_ = c.mergeFile(filepath.Join(home, "wisp", "config.yaml"))
-	}
 	// A parse error in the workspace file is worth reporting: it is the file the user just
 	// edited, and silently falling back to defaults would look like wisp ignoring them.
-	if err := c.mergeFile(filepath.Join(c.Workspace, ".wisp.yaml")); err != nil && !os.IsNotExist(err) {
-		return c, fmt.Errorf(".wisp.yaml: %w", err)
+	if err := c.mergeFile(filepath.Join(c.Workspace, MarkerFile)); err != nil && !os.IsNotExist(err) {
+		return c, fmt.Errorf("%s: %w", MarkerFile, err)
 	}
 
 	if v := os.Getenv("WISP_PROGRAM"); v != "" {
@@ -84,6 +100,58 @@ func Load() (Config, error) {
 		c.Install = true
 	}
 	return c, nil
+}
+
+// FindWorkspace locates the workspace root, in precedence order:
+//
+//  1. WISP_WORKSPACE, when set. An explicit answer always wins.
+//  2. The nearest ancestor of the current directory holding a .wisp.yaml or a vault directory.
+//     This is the git approach, and it is what lets `wisp` work from inside a repo or a
+//     worktree rather than only from the workspace root. It matters in practice: the tmux
+//     popup inherits the current pane's directory, and a wisp session's own worktree windows
+//     are several levels below the root.
+//  3. A `workspace:` key in ~/.config/wisp/config.yaml, for running wisp from anywhere at all.
+//  4. The current directory, so the error message names somewhere the user recognises.
+func FindWorkspace(fallback, vault string) (string, error) {
+	if ws := os.Getenv("WISP_WORKSPACE"); ws != "" {
+		return filepath.Abs(ws)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	if found := searchUp(cwd, vault); found != "" {
+		return found, nil
+	}
+	if fallback != "" {
+		return filepath.Abs(expandHome(fallback))
+	}
+	return cwd, nil
+}
+
+func searchUp(start, vault string) string {
+	dir := start
+	for {
+		if exists(filepath.Join(dir, MarkerFile)) || isDir(filepath.Join(dir, vault)) {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir { // reached the filesystem root
+			return ""
+		}
+		dir = parent
+	}
+}
+
+// expandHome handles a leading ~ in a configured path, which a hand-edited YAML file will
+// almost always contain and which the shell does not get a chance to expand.
+func expandHome(path string) string {
+	if path == "~" || strings.HasPrefix(path, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, strings.TrimPrefix(path, "~"))
+		}
+	}
+	return path
 }
 
 func (c *Config) mergeFile(path string) error {
@@ -114,6 +182,14 @@ func (c Config) RequireWorkspace() error {
 	if fi, err := os.Stat(c.VaultDir()); err == nil && fi.IsDir() {
 		return nil
 	}
-	return fmt.Errorf("workspace vault not found: %s\n    set WISP_WORKSPACE, or add %s to it",
-		c.VaultDir(), c.Vault)
+	return fmt.Errorf(`no workspace found
+
+wisp searched upward from the current directory for a %s or a %s/ directory
+and reached the filesystem root. Resolved to: %s
+
+Fix by any one of:
+  - run wisp from inside a workspace (any depth)
+  - add `+"`workspace: /path/to/workspace`"+` to %s
+  - set WISP_WORKSPACE=/path/to/workspace`,
+		MarkerFile, c.Vault, c.Workspace, UserConfigPath())
 }

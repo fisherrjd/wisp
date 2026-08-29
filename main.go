@@ -9,7 +9,7 @@ import (
 	"github.com/fisherrjd/wisp/internal/wisp"
 )
 
-const version = "0.2.1"
+const version = "0.2.2"
 
 const usage = `wisp - one work item, one tmux session
 
@@ -21,9 +21,13 @@ usage:
   wisp repos              list workspace repos
   wisp version            print the version
 
+workspace resolution, in order:
+  WISP_WORKSPACE, if set
+  the nearest ancestor holding a .wisp.yaml or working_items/
+  a "workspace:" key in ~/.config/wisp/config.yaml
+
 config:
   <workspace>/.wisp.yaml, then ~/.config/wisp/config.yaml
-  WISP_WORKSPACE  workspace root (default: cwd)
   WISP_PROGRAM    agent command for window 0 (default: claude)
   WISP_INSTALL    set to install dependencies when provisioning
 `
