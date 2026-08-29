@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -39,8 +40,13 @@ const query = `
 // with no group configured, no glab on PATH, or no network, it returns nothing and the picker
 // simply shows local items only.
 func (c Config) GitLabItems() ([]Item, error) {
-	if c.GitLab.Group == "" || c.GitLab.Username == "" || c.GitLab.RepoPattern == "" {
-		return nil, nil
+	// Say so rather than returning an empty list. An unconfigured remote source and a source
+	// with no assigned items look identical in the picker, and the silent version of this cost
+	// a real debugging session: after the group and username stopped being hardcoded, a
+	// workspace with no .wisp.yaml simply showed fewer rows and gave no reason.
+	if missing := c.gitlabMissing(); len(missing) > 0 {
+		return nil, fmt.Errorf("gitlab source off: set %s in %s",
+			strings.Join(missing, ", "), filepath.Join(c.Workspace, ".wisp.yaml"))
 	}
 	repoRe, err := regexp.Compile(c.GitLab.RepoPattern)
 	if err != nil {
@@ -77,6 +83,22 @@ func (c Config) GitLabItems() ([]Item, error) {
 		})
 	}
 	return out, nil
+}
+
+// gitlabMissing names the config keys the remote source still needs, so the message can point
+// at what to fix rather than just reporting that something is wrong.
+func (c Config) gitlabMissing() []string {
+	var missing []string
+	if c.GitLab.Group == "" {
+		missing = append(missing, "gitlab.group")
+	}
+	if c.GitLab.Username == "" {
+		missing = append(missing, "gitlab.username")
+	}
+	if c.GitLab.RepoPattern == "" {
+		missing = append(missing, "gitlab.repo_pattern")
+	}
+	return missing
 }
 
 // cachedResponse returns the cached GraphQL response, refreshing it if it is missing or older

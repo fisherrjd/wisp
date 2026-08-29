@@ -228,5 +228,5 @@ func (m *model) previewCmd() tea.Cmd {
 		return nil
 	}
 	m.previewFor = it.Name
-	return loadPreview(m.cfg, *it, m.previewWidth())
+	return loadPreview(m.cfg, *it, m.previewInner())
 }
