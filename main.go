@@ -9,13 +9,13 @@ import (
 	"github.com/fisherrjd/wisp/internal/wisp"
 )
 
-const version = "0.3.0"
+const version = "0.4.0"
 
 const usage = `wisp - one work item, one tmux session
 
 usage:
-  wisp                    pick an item and open it
-  wisp home               switch to the picker session, creating it if needed
+  wisp                    go to the picker session, creating it if needed
+  wisp pick               run the picker once, here, without a session
   wisp open <item>        open an item directly
   wisp ls                 list live sessions
   wisp kill <item>        kill an item's session
@@ -65,11 +65,14 @@ func run(args []string) error {
 	}
 
 	switch cmd {
-	case "", "pick":
-		return ui.Run(cfg)
-
-	case "home":
+	// Bare `wisp` is home: the picker in its own session, which is the thing you come back to.
+	// `wisp pick` is the one-shot picker in the current terminal, for scripts and for the
+	// loop inside the home session itself.
+	case "", "home":
 		return cfg.Home()
+
+	case "pick":
+		return ui.Run(cfg)
 
 	case "open", "o":
 		if len(args) < 2 {

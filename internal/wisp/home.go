@@ -27,7 +27,10 @@ func (c Config) Home() error {
 		// Looping is what makes it a home rather than a one-shot. Picking an item replaces this
 		// process with `tmux switch-client`, and quitting exits it; either way the loop draws
 		// the picker again, so returning here always lands on the list.
-		loop := fmt.Sprintf("while true; do %q; done", self)
+		//
+		// Explicitly `pick`, never bare `wisp`: bare wisp means home, so a bare invocation here
+		// would have the home session spawning home sessions forever.
+		loop := fmt.Sprintf("while true; do %q pick; done", self)
 		if err := exec.Command("tmux", "new-session", "-d",
 			"-s", HomeSession, "-n", "wisp", "-c", c.Workspace, loop).Run(); err != nil {
 			return fmt.Errorf("could not create the wisp home session: %w", err)
