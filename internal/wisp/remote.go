@@ -126,6 +126,12 @@ func (l Location) run(args ...string) ([]byte, error) {
 // diagnose turns an ssh exit status into something naming what to fix. The raw version is
 // "exit status 255", which is true and useless.
 func (l Location) diagnose(err error, stderr string) error {
+	// The likeliest failure of all, and the most confusing without this: the far side is a wisp
+	// from before remote workspaces existed, so it rejects the command and prints its own usage,
+	// whose last line says nothing about why.
+	if strings.Contains(stderr, `unknown command "board"`) {
+		return fmt.Errorf("wisp on %s is too old for this: it has no board command (this one is %s)", l.Host, Version)
+	}
 	msg := lastLine(stderr)
 	var exit *exec.ExitError
 	if errors.As(err, &exit) {
