@@ -10,7 +10,7 @@ import (
 	"github.com/fisherrjd/wisp/internal/wisp"
 )
 
-const version = "0.9.0"
+const version = "0.10.0"
 
 const usage = `wisp - one work item, one tmux session
 
@@ -25,6 +25,7 @@ usage:
   wisp ws new [-p] <name> [path]
                           make a directory a workspace and register it;
                           -p creates the directory too
+  wisp ws rm <name>       forget a workspace; nothing on disk is touched
   wisp kill <item>        kill an item's session
   wisp repos              list workspace repos
   wisp version            print the version
@@ -164,6 +165,16 @@ func run(args []string) error {
 	case "ws":
 		if len(args) > 1 && args[1] == "new" {
 			return newWorkspace(cfg, args[2:])
+		}
+		if len(args) > 1 && (args[1] == "rm" || args[1] == "forget") {
+			if len(args) < 3 {
+				return fmt.Errorf("usage: wisp ws rm <name>")
+			}
+			if err := cfg.Unregister(args[2]); err != nil {
+				return err
+			}
+			fmt.Printf("forgot %s; nothing on disk was touched\n", args[2])
+			return nil
 		}
 		for _, p := range cfg.Peers() {
 			mark := " "

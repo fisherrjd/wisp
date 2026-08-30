@@ -15,29 +15,67 @@ const listFraction = 0.40
 
 // The footer's contents, declared once so the height calculation and the renderer read the
 // same list.
+// legendEntry is one glyph and what it means. The workspace list reuses the item list's glyphs
+// for the same feelings one layer up, so the legend has to change with the mode: a "●" that
+// means a running session and a "●" that means a workspace holding one are not the same claim.
+type legendEntry struct {
+	glyph  string
+	label  string
+	colour lipgloss.AdaptiveColor
+}
+
+var wsLegend = []legendEntry{
+	{"●", "running", colLive},
+	{"?", "waiting", colAttn},
+	{"○", "idle", colFolder},
+	{"✗", "missing", colFaint},
+}
+
 var (
 	footerStates = []wisp.State{wisp.StateLive, wisp.StateNeedsInput, wisp.StateFolder, wisp.StateRemote}
-	footerKeys   = []string{"enter open", "ctrl-n new", "ctrl-w workspace", "ctrl-x kill", "ctrl-r refresh", "esc quit"}
+	footerKeys   = []string{"enter open", "ctrl-n new", "ctrl-w workspaces", "ctrl-x kill", "ctrl-r refresh", "esc quit"}
 	// The create line has its own keys, since most of the list bindings do not apply while a
 	// name is being typed.
 	newKeys = []string{"enter create", "esc cancel"}
+	// Workspace mode. ctrl-x is "forget" rather than "kill": it edits the config and leaves
+	// every file and every session alone, and calling both of them kill would be a lie about
+	// one of them.
+	wsKeys   = []string{"enter go", "ctrl-n new", "ctrl-x forget", "esc back"}
+	newWSKey = []string{"enter create", "esc cancel", "-p to create the directory"}
 )
 
 // legendWidth is the legend and key hints laid side by side, used to decide whether the footer
 // needs to stack them onto two lines.
 func (m model) activeKeys() []string {
-	if m.mode == modeNew {
+	switch m.mode {
+	case modeNew:
 		return newKeys
+	case modeWorkspace:
+		return wsKeys
+	case modeNewWS:
+		return newWSKey
 	}
 	return footerKeys
+}
+
+// activeLegend is the glyph key for the list currently on screen.
+func (m model) activeLegend() []legendEntry {
+	if m.mode == modeWorkspace || m.mode == modeNewWS {
+		return wsLegend
+	}
+	out := make([]legendEntry, 0, len(footerStates))
+	for _, s := range footerStates {
+		out = append(out, legendEntry{s.Glyph(), s.Label(), glyphColor(s)})
+	}
+	return out
 }
 
 func (m model) footerStacks() bool {
 	// Measured from the same slices the renderer uses, rather than guessed, so adding a key
 	// cannot silently break the height calculation and overflow the terminal.
 	legend := 0
-	for _, s := range footerStates {
-		legend += 2 + len(s.Label()) + 3
+	for _, e := range m.activeLegend() {
+		legend += 2 + len(e.label) + 3
 	}
 	keys := 0
 	for _, k := range m.activeKeys() {
@@ -88,16 +126,35 @@ func (m model) View() string {
 	}
 
 	rows := m.listRows()
+	left, right := m.renderList(rows), m.renderPreview(rows)
+	if m.mode == modeWorkspace || m.mode == modeNewWS {
+		left, right = m.renderWorkspaces(), m.renderWorkspaceDetail(rows)
+	}
 	body := lipgloss.JoinHorizontal(
 		lipgloss.Top,
-		listStyle.Width(m.listWidth()).Height(rows).Render(m.renderList(rows)),
-		previewStyle.Width(m.previewWidth()).Height(rows).Render(m.renderPreview(rows)),
+		listStyle.Width(m.listWidth()).Height(rows).Render(left),
+		previewStyle.Width(m.previewWidth()).Height(rows).Render(right),
 	)
 
 	return strings.Join([]string{m.renderPrompt(), body, m.renderFooter()}, "\n")
 }
 
 func (m model) renderPrompt() string {
+	if m.mode == modeWorkspace || m.mode == modeNewWS {
+		label, hint := " workspaces ", "enter to go there"
+		typed := ""
+		if m.mode == modeNewWS {
+			label, hint = " new workspace ", "name, then a path"
+			typed = " " + m.input + promptStyle.Render("▏")
+		}
+		left := newLabel.Render(label) + typed
+		right := countStyle.Render(hint)
+		gap := m.width - lipgloss.Width(left) - lipgloss.Width(right)
+		if gap < 1 {
+			gap = 1
+		}
+		return left + strings.Repeat(" ", gap) + right
+	}
 	if m.mode == modeNew {
 		// A distinct label, because this line creates rather than filters and the two look
 		// identical otherwise.
@@ -201,6 +258,74 @@ func (m model) renderList(rows int) string {
 	return b.String()
 }
 
+// renderWorkspaces is the left pane in workspace mode. Same shape as the item list, because it
+// is the same gesture one layer up: a cursor, a glyph carrying state, enter to go.
+func (m model) renderWorkspaces() string {
+	if len(m.peers) == 0 {
+		return hintStyle.Render("  no workspaces")
+	}
+	var b strings.Builder
+	for i, p := range m.peers {
+		lead := "  "
+		if i == m.wsCursor {
+			lead = pointer.String() + " "
+		}
+		glyph, colour := "○", colFolder
+		switch {
+		case !p.Ready:
+			glyph, colour = "✗", colFaint
+		case p.Attn > 0:
+			glyph, colour = "?", colAttn
+		case p.Live > 0:
+			glyph, colour = "●", colLive
+		}
+
+		style := rowStyle
+		if i == m.wsCursor {
+			style = rowSelected
+		}
+		line := lead + lipgloss.NewStyle().Foreground(colour).Render(glyph) + " " + style.Render(p.Name)
+		if p.Current {
+			line += repoStyle.Render("  (here)")
+		}
+		b.WriteString(truncate(line, m.listInner()))
+		if i < len(m.peers)-1 {
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
+}
+
+// renderWorkspaceDetail is the right pane in workspace mode: where the highlighted workspace
+// points and what is running in it. The path is the thing you actually need to see, since a
+// workspace that will not open is almost always one pointing somewhere unexpected.
+func (m model) renderWorkspaceDetail(rows int) string {
+	p := m.peer()
+	if p == nil {
+		return hintStyle.Render("no workspaces")
+	}
+	var lines []string
+	lines = append(lines, titleStyle.Render(p.Name), "", previewText.Render(p.Path), "")
+	switch {
+	case !p.Ready:
+		lines = append(lines,
+			errStyle.Render("does not exist yet"),
+			"",
+			previewText.Render("ctrl-n makes one; add -p to create the directory too."))
+	default:
+		lines = append(lines, previewText.Render(fmt.Sprintf("%d live, %d waiting on you", p.Live, p.Attn)))
+	}
+	// Not sanitizeLine: these strings are wisp's own and already carry styling, and stripping
+	// control characters would take the escape sequences with them.
+	for i, l := range lines {
+		lines[i] = truncate(l, m.previewInner())
+	}
+	for len(lines) < rows {
+		lines = append(lines, "")
+	}
+	return strings.Join(lines[:rows], "\n")
+}
+
 func (m model) renderPreview(rows int) string {
 	if m.preview == "" {
 		return hintStyle.Render("no preview")
@@ -226,9 +351,9 @@ func (m model) renderPreview(rows int) string {
 
 func (m model) renderFooter() string {
 	legend := []string{}
-	for _, s := range footerStates {
+	for _, e := range m.activeLegend() {
 		legend = append(legend,
-			lipgloss.NewStyle().Foreground(glyphColor(s)).Render(s.Glyph())+" "+keyStyle.Render(s.Label()))
+			lipgloss.NewStyle().Foreground(e.colour).Render(e.glyph)+" "+keyStyle.Render(e.label))
 	}
 
 	left := strings.Join(legend, "   ")

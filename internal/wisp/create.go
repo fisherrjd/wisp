@@ -97,6 +97,80 @@ func (c Config) CreateWorkspace(name, path string, mkdir bool) (string, error) {
 	return abs, nil
 }
 
+// Unregister drops a workspace from the user config.
+//
+// It touches nothing on disk. The vault, the repos, the worktrees and any session running there
+// all stay exactly where they are, and adding the name back restores it. Forgetting a workspace
+// and destroying one must not be the same keystroke, which is why there is no flag here to make
+// it the second thing.
+func (c Config) Unregister(name string) error {
+	if _, ok := c.Workspaces[name]; !ok {
+		return fmt.Errorf("no workspace named %q", name)
+	}
+	if name == c.Name {
+		return fmt.Errorf("%q is the workspace you are in; hop somewhere else first", name)
+	}
+
+	cfgPath := UserConfigPath()
+	raw, err := os.ReadFile(cfgPath)
+	if err != nil {
+		return err
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		return fmt.Errorf("%s: %w", cfgPath, err)
+	}
+	root := documentRoot(&doc)
+
+	removed := false
+	if ws := mapValue(root, "workspaces"); ws != nil {
+		removed = deleteMapKey(ws, name)
+	}
+	// Not in the block, so it can only have come from the older single `workspace:` key, which
+	// is folded into the set at load under its directory name.
+	if !removed {
+		deleteMapKey(root, "workspace")
+	}
+	// Leaving default pointing at something that is gone would make every bare `wisp` run from
+	// outside a workspace fail. Dropping the key lets the next load choose again.
+	if d := mapValue(root, "default"); d != nil && d.Value == name {
+		deleteMapKey(root, "default")
+	}
+
+	var out bytes.Buffer
+	enc := yaml.NewEncoder(&out)
+	enc.SetIndent(2)
+	if err := enc.Encode(&doc); err != nil {
+		return err
+	}
+	if err := enc.Close(); err != nil {
+		return err
+	}
+	return writeConfig(cfgPath, out.Bytes())
+}
+
+// deleteMapKey removes a key and its value from a mapping, reporting whether it was there.
+func deleteMapKey(m *yaml.Node, key string) bool {
+	for i := 0; i+1 < len(m.Content); i += 2 {
+		if m.Content[i].Value == key {
+			m.Content = append(m.Content[:i], m.Content[i+2:]...)
+			return true
+		}
+	}
+	return false
+}
+
+// Reload re-resolves this config from disk, for after the workspace set has been edited.
+//
+// By name when the workspace has one in the config, so a picker pinned to a workspace stays
+// pinned. By search otherwise, which is how it was resolved in the first place.
+func (c Config) Reload() (Config, error) {
+	if _, ok := c.Workspaces[c.Name]; ok {
+		return Load(c.Name)
+	}
+	return Load("")
+}
+
 // register adds the workspace to the user config, preserving everything already in the file.
 //
 // Written back through a yaml.Node rather than by marshalling the Config struct. Marshalling

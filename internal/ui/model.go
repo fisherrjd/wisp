@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/sahilm/fuzzy"
@@ -53,8 +54,10 @@ type previewMsg struct {
 type mode int
 
 const (
-	modeFilter mode = iota // typing narrows the list
-	modeNew                // typing names a new item, or pastes a GitLab URL
+	modeFilter    mode = iota // typing narrows the list
+	modeNew                   // typing names a new item, or pastes a GitLab URL
+	modeWorkspace             // the list is workspaces, not items
+	modeNewWS                 // typing names a new workspace
 )
 
 type model struct {
@@ -69,9 +72,10 @@ type model struct {
 	cursor   int
 	offset   int
 
-	// peers is every workspace's live tally, shown in the header. Without it the workspace ring
-	// is invisible from inside any one of its members.
-	peers []wisp.Peer
+	// peers is every workspace's live tally, shown in the header and, in workspace mode, as the
+	// list itself. Without it the workspace ring is invisible from inside any one of its members.
+	peers    []wisp.Peer
+	wsCursor int
 
 	mode  mode
 	input string // the new-item line, kept separate so cancelling restores the filter intact
@@ -135,6 +139,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = false
 		m.local = msg.board.Items
 		m.peers = msg.board.Peers
+		if m.wsCursor >= len(m.peers) {
+			m.wsCursor = max(0, len(m.peers)-1)
+		}
 		m.all = wisp.MergeAll(m.local, m.remote)
 		m.applyFilter()
 		return m, m.previewCmd()
@@ -157,10 +164,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
-		// The new-item line owns every key while it is open, so a URL containing characters
-		// that are bindings elsewhere still types through cleanly.
-		if m.mode == modeNew {
+		// Each mode owns every key while it is open. For the typed lines that is what lets a URL
+		// or a path containing characters that are bindings elsewhere still type through cleanly.
+		switch m.mode {
+		case modeNew:
 			return m.updateNew(msg)
+		case modeWorkspace:
+			return m.updateWorkspace(msg)
+		case modeNewWS:
+			return m.updateNewWS(msg)
 		}
 		switch msg.String() {
 		case "ctrl+c", "esc":
@@ -206,19 +218,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, loadLocal(m.cfg)
 			}
 
-		// The outer ring. Quitting to do the move keeps every switch-client in one place, the
-		// same path `wisp hop` takes from the shell, rather than having the picker drive tmux
-		// while it is still drawn on it.
+		// The outer ring, as a list rather than a blind step. Cycling is right for a tmux
+		// binding, where one key is the whole interface; here there is a screen to put the
+		// workspaces on, so you can see which one has an agent waiting and go straight to it.
 		case "ctrl+w":
-			// Checked here rather than left to the hop, because the home session redraws the
-			// picker the moment this process exits: an error printed on the way out scrolls off
-			// before it can be read, and ctrl-w just looks like it did nothing.
-			if !m.canHop() {
-				m.status = "nowhere to hop; `wisp ws` shows the workspaces and where they point"
-				return m, nil
+			m.mode = modeWorkspace
+			m.status = ""
+			m.wsCursor = 0
+			for i, p := range m.peers {
+				if p.Current {
+					m.wsCursor = i
+				}
 			}
-			m.hop = "next"
-			return m, tea.Quit
+			return m, nil
 
 		case "ctrl+r":
 			m.status = "refreshing gitlab"
@@ -342,15 +354,163 @@ func (m *model) applyFilter() {
 	}
 }
 
-// canHop reports whether the ring has another workspace that actually exists to move to. A
-// workspace named in the config but never created is not somewhere ctrl-w can land.
-func (m model) canHop() bool {
-	for _, p := range m.peers {
-		if !p.Current && p.Ready {
-			return true
+// updateWorkspace handles the workspace list: pick one, make one, forget one.
+func (m model) updateWorkspace(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "ctrl+c", "ctrl+w":
+		m.mode = modeFilter
+		m.status = ""
+		return m, nil
+
+	case "up", "ctrl+k":
+		if m.wsCursor > 0 {
+			m.wsCursor--
 		}
+		return m, nil
+
+	case "down", "ctrl+j":
+		if m.wsCursor < len(m.peers)-1 {
+			m.wsCursor++
+		}
+		return m, nil
+
+	case "enter":
+		p := m.peer()
+		switch {
+		case p == nil, p.Current:
+			m.mode = modeFilter
+			return m, nil
+		case !p.Ready:
+			// Named outright, so say why rather than skipping to one that works. The user
+			// pointed at this row.
+			m.status = p.Name + " does not exist yet: " + p.Path
+			return m, nil
+		}
+		m.hop = p.Name
+		return m, tea.Quit
+
+	case "ctrl+n":
+		m.mode = modeNewWS
+		m.input = ""
+		m.status = ""
+		return m, nil
+
+	// Forgets the workspace, and only that: nothing on disk is touched and any session running
+	// there keeps running. The same key kills a session in the item list, which is a heavier
+	// thing, so the footer says "forget" here rather than "kill".
+	case "ctrl+x":
+		p := m.peer()
+		if p == nil {
+			return m, nil
+		}
+		if err := m.cfg.Unregister(p.Name); err != nil {
+			m.status = err.Error()
+			return m, nil
+		}
+		m.status = "forgot " + p.Name + " (nothing on disk was touched)"
+		return m, m.reload()
 	}
-	return false
+	return m, nil
+}
+
+// updateNewWS handles the create line: `<name> [path]`, with -p to create the directory.
+func (m model) updateNewWS(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "ctrl+c":
+		m.mode = modeWorkspace
+		m.input = ""
+		m.status = ""
+		return m, nil
+
+	case "enter":
+		name, path, mkdir := parseWorkspaceLine(m.input)
+		if name == "" {
+			m.status = "give it a name, and a path if it is not the current directory"
+			return m, nil
+		}
+		if path == "" {
+			// The picker runs at the workspace root, so defaulting to the current directory
+			// here would only ever re-register the workspace you are already in.
+			m.status = "give it a path: `" + name + " ~/somewhere`, or add -p to create it"
+			return m, nil
+		}
+		if _, err := m.cfg.CreateWorkspace(name, path, mkdir); err != nil {
+			// Stay on the line with the text intact: a missing directory is fixed by adding -p,
+			// which is one keystroke from here.
+			m.status = firstLine(err.Error())
+			return m, nil
+		}
+		m.mode = modeWorkspace
+		m.input = ""
+		m.status = "created " + name
+		return m, m.reload()
+
+	case "backspace":
+		if m.input != "" {
+			r := []rune(m.input)
+			m.input = string(r[:len(r)-1])
+		}
+		return m, nil
+
+	case "ctrl+u":
+		m.input = ""
+		return m, nil
+
+	default:
+		switch msg.Type {
+		case tea.KeyRunes:
+			m.input += string(msg.Runes)
+		case tea.KeySpace:
+			m.input += " "
+		}
+		return m, nil
+	}
+}
+
+// parseWorkspaceLine splits `[-p] <name> [path]`. The flag is accepted anywhere, since it reads
+// as naturally after the path as before the name.
+func parseWorkspaceLine(s string) (name, path string, mkdir bool) {
+	var words []string
+	for _, f := range strings.Fields(s) {
+		if f == "-p" || f == "--parents" {
+			mkdir = true
+			continue
+		}
+		words = append(words, f)
+	}
+	if len(words) > 0 {
+		name = words[0]
+	}
+	if len(words) > 1 {
+		path = strings.Join(words[1:], " ")
+	}
+	return name, path, mkdir
+}
+
+// firstLine keeps a multi-line error to what fits on the status line. The full text is on the
+// command line version of the same operation.
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
+}
+
+// reload re-reads the config and the board after the workspace set has changed, so the list
+// reflects the edit without leaving the picker.
+func (m *model) reload() tea.Cmd {
+	if cfg, err := m.cfg.Reload(); err == nil {
+		m.cfg = cfg
+	}
+	return loadLocal(m.cfg)
+}
+
+func (m model) peer() *wisp.Peer {
+	if m.wsCursor < 0 || m.wsCursor >= len(m.peers) {
+		return nil
+	}
+	p := m.peers[m.wsCursor]
+	return &p
 }
 
 func (m model) current() *wisp.Item {

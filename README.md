@@ -46,13 +46,22 @@ wisp ls                    list live sessions, every workspace
 wisp ws                    list workspaces
 wisp ws new [-p] <name> [path]
                            make a directory a workspace and register it
+wisp ws rm <name>          forget one; nothing on disk is touched
 wisp kill <item>           kill an item's session
 wisp repos                 list workspace repos
 
 wisp -w <ws> <command>     run any of the above against a named workspace
 ```
 
-In the picker: type to filter, `enter` opens, `ctrl-n` creates (a name, or a pasted GitLab link), `ctrl-w` hops to the next workspace, `ctrl-x` kills the highlighted session, `ctrl-r` refreshes GitLab, `esc` quits and leaves everything running.
+In the picker: type to filter, `enter` opens, `ctrl-n` creates (a name, or a pasted GitLab link), `ctrl-w` opens the workspaces, `ctrl-x` kills the highlighted session, `ctrl-r` refreshes GitLab, `esc` quits and leaves everything running.
+
+`ctrl-w` swaps the list for the workspaces: same glyphs one layer up, `enter` goes there, `ctrl-n` makes a new one (`<name> <path>`, with `-p` to create the directory), `ctrl-x` forgets one, `esc` comes back. Nothing there touches disk except making the vault for a new workspace; forgetting one only edits the config.
+
+`hop` is the same move without the list, for a tmux binding where one key is the whole interface:
+
+```
+bind -N "wisp: next workspace" Up run-shell "wisp hop"
+```
 
 ## Workspace layout
 
@@ -105,7 +114,7 @@ Overrides: `WISP_WORKSPACE`, `WISP_PROGRAM`, `WISP_INSTALL`.
 
 **Workspace resolution**, in order: `-w <name>`; `WISP_WORKSPACE`; the nearest ancestor holding a `.wisp.yaml` or a vault directory (so wisp works from inside a repo or a worktree); the default workspace; otherwise an error naming the fixes.
 
-`wisp ws new` writes that entry for you, and makes the workspace:
+You never have to write that block by hand. `ctrl-w` then `ctrl-n` in the picker does the same thing, and `wisp ws new` does it from a shell:
 
 ```
 wisp ws new side                 # adopt the current directory
