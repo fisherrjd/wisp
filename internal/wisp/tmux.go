@@ -145,12 +145,31 @@ func (c Config) FindSession(item string) string {
 
 func (c Config) HasSession(item string) bool { return c.FindSession(item) != "" }
 
+// KillSession stops the work, which for a remote item means the session on the machine doing it
+// and not merely the terminal pointed at it.
+//
+// Dropping the wrapper alone would leave an agent running that nothing lists any more. Walking
+// away and leaving it running is what esc already does, so kill has to mean the heavier thing or
+// there is no way to say it.
 func (c Config) KillSession(item string) error {
 	session := c.FindSession(item)
-	if session == "" {
+	if c.IsRemote() {
+		if _, err := c.Location.run("kill", item); err != nil && session == "" {
+			return err
+		}
+	} else if session == "" {
 		return fmt.Errorf("no session for %s", item)
 	}
-	return exec.Command("tmux", "kill-session", "-t", "="+session).Run()
+	if session == "" {
+		return nil
+	}
+	// A wrapper usually dies on its own: killing the far side ends the ssh, which closes the
+	// window, which takes the session with it. Losing that race is not a failure, so the error
+	// only counts if the session is still standing afterwards.
+	if err := exec.Command("tmux", "kill-session", "-t", "="+session).Run(); err != nil && hasRawSession(session) {
+		return fmt.Errorf("could not kill %s: %w", session, err)
+	}
+	return nil
 }
 
 // CurrentSession is the session wisp itself is running inside, or "" when it is not in tmux.

@@ -119,6 +119,10 @@ func (c Config) EnsureWorktrees(item Item, entries []Entry, log func(string)) er
 // it runs at the workspace root and reads the context file. So the session opens straight away
 // and any missing worktrees are built in a side window that adds its own windows when done.
 func (c Config) Open(item Item, log func(string)) error {
+	if c.IsRemote() {
+		return c.openRemote(item)
+	}
+
 	// By identity, not by name: a session started by an older wisp is named differently but is
 	// still this item's session, and creating a second one beside it would split the work.
 	session := c.FindSession(item.Name)
@@ -165,6 +169,46 @@ func (c Config) Open(item Item, log func(string)) error {
 	}
 
 	// Recorded before attaching, so a hop out of this workspace and back returns to this item.
+	Remember(c.Name, session)
+	return Attach(session)
+}
+
+// openRemote wraps the far side's session in a local one.
+//
+// The wrapper is an ordinary wisp session here, tagged with the item and the workspace, whose
+// single window is an ssh into the machine that owns the work. That is what lets everything else
+// stay unchanged: next and prev walk it, the workspace ring counts it, the last-visited session
+// records it, and the needs-input check captures its pane, which is rendering the remote pane.
+//
+// Provisioning, the context file and the worktree windows are all the far side's business and
+// happen there. This end only carries the terminal.
+func (c Config) openRemote(item Item) error {
+	session := c.FindSession(item.Name)
+	if session == "" {
+		session = c.SessionName(item.Name)
+		// Somewhere that exists on this machine. The workspace path belongs to the other one.
+		dir, err := os.UserHomeDir()
+		if err != nil {
+			dir = "/"
+		}
+		// The failure stays on screen. tmux closes a window the moment its command returns, so
+		// an ssh that cannot connect would take the session with it and look exactly like wisp
+		// creating nothing at all.
+		line := fmt.Sprintf("%s || { echo; echo 'connection to %s ended; press enter'; read -r _; }",
+			c.Location.SSHLine(true, "open", item.Name), c.Location.Host)
+		if err := exec.Command("tmux", "new-session", "-d", "-s", session,
+			"-n", c.Location.Host, "-c", dir, line).Run(); err != nil {
+			return fmt.Errorf("could not create session: %w", err)
+		}
+		_ = exec.Command("tmux", "set-option", "-t", session, "history-limit", "10000").Run()
+		_ = exec.Command("tmux", "set-option", "-t", session, ItemOption, item.Name).Run()
+		_ = exec.Command("tmux", "set-option", "-t", session, WSOption, c.Name).Run()
+		// Said in the status bar rather than only known: two tmux servers are now stacked and
+		// the prefix key means two things, which is worth seeing rather than discovering.
+		_ = exec.Command("tmux", "set-option", "-t", session, "status", "on").Run()
+		_ = exec.Command("tmux", "set-option", "-t", session, "status-right",
+			fmt.Sprintf(" %s:%s ", c.Name, c.Location.Host)).Run()
+	}
 	Remember(c.Name, session)
 	return Attach(session)
 }

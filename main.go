@@ -1,16 +1,20 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/fisherrjd/wisp/internal/ui"
 	"github.com/fisherrjd/wisp/internal/wisp"
 )
 
-const version = "0.10.0"
+// The version lives in the wisp package: the two ends of a remote workspace are separate
+// installs, and each has to be able to say what it is.
+const version = wisp.Version
 
 const usage = `wisp - one work item, one tmux session
 
@@ -87,9 +91,11 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	// `ws` is the one command that has to work from outside a workspace: listing them is how you
-	// find out none is set up, and creating one is how you fix that.
-	if cmd != "ws" {
+	// Two commands have to work from outside a workspace. `ws` because listing them is how you
+	// find out none is set up and creating one is how you fix that; `board` because its whole
+	// job is reporting state, and "there is no workspace here" is a state a caller across the
+	// network needs told rather than inferred from a failure.
+	if cmd != "ws" && cmd != "board" {
 		if err := cfg.RequireWorkspace(); err != nil {
 			return err
 		}
@@ -182,7 +188,10 @@ func run(args []string) error {
 				mark = "*"
 			}
 			state := fmt.Sprintf("%d live, %d waiting", p.Live, p.Attn)
-			if !p.Ready {
+			switch {
+			case p.Unreachable:
+				state = p.Detail // names the host and what ssh said
+			case !p.Ready:
 				state = "does not exist yet"
 			}
 			fmt.Printf("%s %-12s %-40s %s\n", mark, p.Name, p.Path, state)
@@ -197,9 +206,94 @@ func run(args []string) error {
 		fmt.Println(strings.Join(repos, "\n"))
 		return nil
 
+	// The three commands a remote workspace is driven through. They are ordinary commands, not
+	// a mode: the far side is just wisp, answering about the workspace it owns.
+	case "board":
+		return emitBoard(cfg, hasFlag(args, "--gitlab"))
+
+	case "preview":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: wisp preview <item> [--width n]")
+		}
+		fmt.Print(cfg.Preview(wisp.Item{Name: args[1]}, flagInt(args, "--width", 80)))
+		return nil
+
+	case "new":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: wisp new <name|url> [--json]")
+		}
+		it, err := cfg.NewItem(args[1])
+		if err != nil {
+			return err
+		}
+		if hasFlag(args, "--json") {
+			return json.NewEncoder(os.Stdout).Encode(struct {
+				Name string `json:"name"`
+			}{it.Name})
+		}
+		fmt.Println(it.Name)
+		return nil
+
 	default:
 		return fmt.Errorf("unknown command %q\n\n%s", cmd, usage)
 	}
+}
+
+// emitBoard prints this workspace's state as JSON, for the wisp on another machine that has it
+// registered as a remote workspace.
+//
+// A missing workspace is reported rather than raised. "the host answered and there is no vault
+// there" and "the host did not answer" are different problems with different fixes, and
+// collapsing them into one non-zero exit would throw that away.
+func emitBoard(cfg wisp.Config, gitlab bool) error {
+	out := wisp.BoardJSON{Wire: wisp.WireVersion, Wisp: wisp.Version, Ready: cfg.Ready()}
+	if out.Ready {
+		// BoardItems, not Local: a board is about this workspace alone. Local also builds the
+		// tally, which probes every remote workspace this machine has configured, and a board
+		// request that did that would walk from host to host with nothing to stop it.
+		items, err := cfg.BoardItems()
+		if err != nil {
+			out.Note = err.Error()
+		}
+		if gitlab {
+			remote, err := cfg.GitLabItems()
+			if err != nil && out.Note == "" {
+				out.Note = err.Error()
+			}
+			items = wisp.MergeAll(items, remote)
+		}
+		for _, it := range items {
+			out.Items = append(out.Items, wisp.ItemJSON{Name: it.Name, State: int(it.State), Title: it.Title})
+			switch it.State {
+			case wisp.StateNeedsInput:
+				out.Attn++
+				out.Live++
+			case wisp.StateLive:
+				out.Live++
+			}
+		}
+	}
+	return json.NewEncoder(os.Stdout).Encode(out)
+}
+
+func hasFlag(args []string, flag string) bool {
+	for _, a := range args {
+		if a == flag {
+			return true
+		}
+	}
+	return false
+}
+
+func flagInt(args []string, flag string, fallback int) int {
+	for i, a := range args {
+		if a == flag && i+1 < len(args) {
+			if n, err := strconv.Atoi(args[i+1]); err == nil {
+				return n
+			}
+		}
+	}
+	return fallback
 }
 
 // newWorkspace handles `wisp ws new [-p] <name> [path]`. The path defaults to the current

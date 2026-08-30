@@ -43,9 +43,14 @@ type Config struct {
 	// workspace themselves, sends them looking in the wrong place entirely.
 	explicit bool `yaml:"-"`
 
-	// Workspaces is the set wisp can hop between, name to path. Only meaningful in the user
+	// Location is where this workspace lives. For a local one that is just Workspace again; for
+	// a remote one it carries the host, and Workspace is the path over there rather than
+	// anything that exists here.
+	Location Location `yaml:"-"`
+
+	// Workspaces is the set wisp can hop between, name to location. Only meaningful in the user
 	// config: a workspace does not get to name its neighbours.
-	Workspaces map[string]string `yaml:"workspaces"`
+	Workspaces map[string]Location `yaml:"workspaces"`
 
 	// Default names the workspace wisp goes to when it has no better answer, and the one that
 	// adopts sessions created before workspaces existed.
@@ -106,24 +111,40 @@ func Load(name string) (Config, error) {
 	c.normalizeWorkspaces()
 
 	if name != "" {
-		path, ok := c.Workspaces[name]
+		loc, ok := c.Workspaces[name]
 		if !ok {
 			return c, fmt.Errorf("no workspace named %q\n\nconfigured: %s\ndefine it under `workspaces:` in %s",
 				name, strings.Join(c.WorkspaceNames(), ", "), UserConfigPath())
 		}
-		abs, err := filepath.Abs(expandHome(path))
+		if loc.IsRemote() {
+			// Nothing further is knowable here. The far side owns the vault, the repos, the
+			// .wisp.yaml and the sessions, and every question about them is a question for it.
+			c.Name, c.Location, c.Workspace, c.explicit = name, loc, loc.Path, true
+			return c, nil
+		}
+		abs, err := filepath.Abs(expandHome(loc.Path))
 		if err != nil {
 			return c, err
 		}
 		c.Workspace = abs
 		c.explicit = true
 	} else {
-		ws, err := FindWorkspace(c.Workspaces[c.DefaultName()], c.Vault)
+		def := c.Workspaces[c.DefaultName()]
+		// A remote default cannot be a path to fall back to, and standing outside every local
+		// workspace is exactly when it should be used. Resolve it by name instead, which takes
+		// the branch above and stops there.
+		if def.IsRemote() && os.Getenv("WISP_WORKSPACE") == "" {
+			if cwd, err := os.Getwd(); err == nil && searchUp(cwd, c.Vault) == "" {
+				return Load(c.DefaultName())
+			}
+		}
+		ws, err := FindWorkspace(def.Path, c.Vault)
 		if err != nil {
 			return c, err
 		}
 		c.Workspace = ws
 	}
+	c.Location = Location{Path: c.Workspace}
 	c.resolveName()
 
 	// The workspace set belongs to the user config alone. A workspace naming its neighbours
@@ -151,12 +172,13 @@ func Load(name string) (Config, error) {
 // entry is the default, so everything downstream sees one shape.
 func (c *Config) normalizeWorkspaces() {
 	if c.Workspaces == nil {
-		c.Workspaces = map[string]string{}
+		c.Workspaces = map[string]Location{}
 	}
 	if c.DefaultWorkspace != "" {
-		name := wsToken(filepath.Base(strings.TrimRight(expandHome(c.DefaultWorkspace), "/")))
-		if !c.hasPath(c.DefaultWorkspace) && name != "" {
-			c.Workspaces[name] = c.DefaultWorkspace
+		loc := ParseLocation(c.DefaultWorkspace)
+		name := wsToken(filepath.Base(strings.TrimRight(expandHome(loc.Path), "/")))
+		if !c.hasLocation(loc) && name != "" {
+			c.Workspaces[name] = loc
 		}
 		if c.Default == "" {
 			c.Default = name
@@ -167,10 +189,21 @@ func (c *Config) normalizeWorkspaces() {
 	}
 }
 
-func (c Config) hasPath(path string) bool {
-	want := filepath.Clean(expandHome(path))
-	for _, p := range c.Workspaces {
-		if filepath.Clean(expandHome(p)) == want {
+// hasLocation reports whether the set already holds this workspace. Local paths are compared
+// resolved, since ~/work and /Users/x/work are the same directory; remote ones are compared as
+// written, because only the far side can say what its own path expands to.
+func (c Config) hasLocation(want Location) bool {
+	for _, loc := range c.Workspaces {
+		if loc.Host != want.Host {
+			continue
+		}
+		if loc.IsRemote() {
+			if loc.Path == want.Path {
+				return true
+			}
+			continue
+		}
+		if filepath.Clean(expandHome(loc.Path)) == filepath.Clean(expandHome(want.Path)) {
 			return true
 		}
 	}
@@ -182,8 +215,11 @@ func (c Config) hasPath(path string) bool {
 // else, including a workspace found by searching upward and never configured at all, is named
 // after its directory, which is stable across runs without needing to be written down.
 func (c *Config) resolveName() {
-	for name, path := range c.Workspaces {
-		if abs, err := filepath.Abs(expandHome(path)); err == nil && abs == c.Workspace {
+	for name, loc := range c.Workspaces {
+		if loc.IsRemote() {
+			continue // a path found by searching this filesystem is never one of those
+		}
+		if abs, err := filepath.Abs(expandHome(loc.Path)); err == nil && abs == c.Workspace {
 			c.Name = name
 			return
 		}
@@ -297,9 +333,17 @@ func (c Config) CachePath() string {
 // it. Naming a workspace in the config does not create one, so the set wisp knows about and the
 // set that exists are not the same thing.
 func (c Config) Ready() bool {
+	if c.IsRemote() {
+		// Not answerable from here without a round trip. The board probe decides, and until it
+		// has, a remote workspace is assumed fine rather than shown as broken.
+		return true
+	}
 	fi, err := os.Stat(c.VaultDir())
 	return err == nil && fi.IsDir()
 }
+
+// IsRemote reports whether this workspace lives on another machine.
+func (c Config) IsRemote() bool { return c.Location.IsRemote() }
 
 // RequireWorkspace fails early with an actionable message rather than letting every later
 // operation return an empty list.
@@ -309,7 +353,9 @@ func (c Config) Ready() bool {
 // one or to point the config elsewhere. A workspace nobody named is a failed search, and the fix
 // is to say where to look.
 func (c Config) RequireWorkspace() error {
-	if c.Ready() {
+	// A remote workspace cannot be checked without asking, and asking belongs in the board
+	// probe, which already reports a host that will not answer.
+	if c.IsRemote() || c.Ready() {
 		return nil
 	}
 	if c.explicit {

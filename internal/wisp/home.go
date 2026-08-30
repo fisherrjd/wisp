@@ -44,9 +44,22 @@ func (c Config) ensureHome() error {
 	// would have the home session spawning home sessions forever. And explicitly pinned to this
 	// workspace, because the loop must keep showing the same one even if the directory it
 	// started in stops resolving there.
-	loop := fmt.Sprintf("while true; do WISP_WORKSPACE=%q %q pick; done", c.Workspace, self)
+	//
+	// The picker runs here even for a remote workspace. Drawing it on the far side would make
+	// every keystroke a network round trip for the sake of redrawing a list; only the agent
+	// session needs to be over there. So the loop is pinned by name, and the directory is one
+	// that exists on this machine rather than the remote path.
+	dir, loop := c.Workspace, fmt.Sprintf("while true; do WISP_WORKSPACE=%q %q pick; done", c.Workspace, self)
+	if c.IsRemote() {
+		if home, err := os.UserHomeDir(); err == nil {
+			dir = home
+		} else {
+			dir = "/"
+		}
+		loop = fmt.Sprintf("while true; do %q -w %q pick; done", self, c.Name)
+	}
 	if err := exec.Command("tmux", "new-session", "-d",
-		"-s", c.HomeSession(), "-n", "wisp", "-c", c.Workspace, loop).Run(); err != nil {
+		"-s", c.HomeSession(), "-n", "wisp", "-c", dir, loop).Run(); err != nil {
 		return fmt.Errorf("could not create the wisp home session: %w", err)
 	}
 	_ = exec.Command("tmux", "set-option", "-t", c.HomeSession(), "status", "off").Run()

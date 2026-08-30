@@ -29,6 +29,21 @@ func (c Config) NewItem(input string) (Item, error) {
 	if input == "" {
 		return Item{}, fmt.Errorf("nothing to create")
 	}
+	// The folder belongs on the machine that owns the workspace, and so does the GitLab lookup
+	// that names it. Both happen there and only the name comes back.
+	if c.IsRemote() {
+		out, err := c.Location.run("new", input, "--json")
+		if err != nil {
+			return Item{}, err
+		}
+		var made struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(out, &made); err != nil || made.Name == "" {
+			return Item{}, fmt.Errorf("%s: could not read the created item back", c.Location.Host)
+		}
+		return Item{Name: made.Name, State: StateFolder}, nil
+	}
 
 	var name string
 	switch {

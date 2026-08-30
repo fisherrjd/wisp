@@ -29,6 +29,28 @@ var wsLegend = []legendEntry{
 	{"?", "waiting", colAttn},
 	{"○", "idle", colFolder},
 	{"✗", "missing", colFaint},
+	{"⚠", "unreachable", colAttn},
+}
+
+// wsGlyph is the one place a workspace's state becomes a mark, so the header and the list cannot
+// disagree about what a workspace looks like.
+//
+// Unreachable is separate from missing on purpose. Both are unusable, but one is fixed by
+// creating a directory and the other by fixing ssh, and a single glyph for both would send you
+// after the wrong one.
+func wsGlyph(p wisp.Peer) (string, lipgloss.AdaptiveColor) {
+	switch {
+	case p.Unreachable:
+		return "⚠", colAttn
+	case !p.Ready:
+		return "✗", colFaint
+	case p.Attn > 0:
+		return "?", colAttn
+	case p.Live > 0:
+		return "●", colLive
+	default:
+		return "○", colFolder
+	}
 }
 
 var (
@@ -201,12 +223,12 @@ func (m model) renderPeers() string {
 			style = wsCurrent
 		}
 		s := style.Render(p.Name)
+		glyph, colour := wsGlyph(p)
 		switch {
-		// Configured but never created. Marked rather than hidden, because a workspace missing
-		// from a list you wrote yourself reads as wisp losing it rather than as a path that
-		// does not exist. ctrl-w steps over these.
+		// Unusable, one way or another. Marked rather than hidden, because a workspace missing
+		// from a list you wrote yourself reads as wisp losing it rather than as something to fix.
 		case !p.Ready:
-			s = wsMissing.Render(p.Name + " ✗")
+			s = wsMissing.Render(p.Name) + lipgloss.NewStyle().Foreground(colour).Render(" "+glyph)
 		case p.Attn > 0:
 			s += lipgloss.NewStyle().Foreground(colAttn).Render(fmt.Sprintf(" ?%d", p.Attn))
 		case p.Live > 0:
@@ -270,15 +292,7 @@ func (m model) renderWorkspaces() string {
 		if i == m.wsCursor {
 			lead = pointer.String() + " "
 		}
-		glyph, colour := "○", colFolder
-		switch {
-		case !p.Ready:
-			glyph, colour = "✗", colFaint
-		case p.Attn > 0:
-			glyph, colour = "?", colAttn
-		case p.Live > 0:
-			glyph, colour = "●", colLive
-		}
+		glyph, colour := wsGlyph(p)
 
 		style := rowStyle
 		if i == m.wsCursor {
@@ -307,6 +321,8 @@ func (m model) renderWorkspaceDetail(rows int) string {
 	var lines []string
 	lines = append(lines, titleStyle.Render(p.Name), "", previewText.Render(p.Path), "")
 	switch {
+	case p.Unreachable:
+		lines = append(lines, errStyle.Render("unreachable"), "", previewText.Render(p.Detail))
 	case !p.Ready:
 		lines = append(lines,
 			errStyle.Render("does not exist yet"),

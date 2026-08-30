@@ -147,9 +147,28 @@ repos:
 
 It records intent, and deliberately not worktree paths: a path would be a cache pretending to be state.
 
-## Planned
+## Remote workspaces
 
-[Remote workspaces](docs/remote-workspaces.md): a workspace with a host in front of it, so the hop ring reaches another machine. Not built yet.
+A workspace with a host in front of it is on another machine. The hop ring reaches it, the picker lists it, and opening an item there puts you in the agent running on that machine.
+
+```yaml
+workspaces:
+  work: ~/work                    # local
+  desktop: bigbox:~/work          # the scp shorthand
+  laptop:                         # or the long form
+    host: macbook
+    path: ~/work
+```
+
+**The picker always runs locally. Only the agent session runs remotely.** Opening a remote item makes an ordinary wisp session here whose one window is an `ssh -t` into the machine that owns the work, so `next`, `prev`, the ring, the last-visited session and the needs-input check all keep working on it unchanged. Sessions running over there that you are not attached to come from asking the wisp on the far side, which needs to be installed and on its PATH.
+
+wisp does no authentication. If `ssh bigbox` works in your shell it works here, and if it does not, that is an ssh config problem with an ssh config fix.
+
+A workspace that will not answer is marked `⚠` rather than dropped, separately from the `✗` of one that does not exist: both are unusable, but one is fixed by making a directory and the other by fixing ssh.
+
+Attaching stacks two tmux servers, so the prefix key means two things. The wrapper's status bar says which workspace and host you are in; what the prefix does is your tmux config's call.
+
+[docs/remote-workspaces.md](docs/remote-workspaces.md) has the design and what is still missing.
 
 Without an `orchestration.md`, a single-repo item is inferred from the folder's parent with branch `feature/<slug>`. `_adhoc` items get no repos at all, which is correct: no repo can be inferred, and the session is notes-only.
 

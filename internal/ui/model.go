@@ -383,7 +383,11 @@ func (m model) updateWorkspace(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case !p.Ready:
 			// Named outright, so say why rather than skipping to one that works. The user
 			// pointed at this row.
-			m.status = p.Name + " does not exist yet: " + p.Path
+			if p.Detail != "" {
+				m.status = p.Name + ": " + p.Detail
+			} else {
+				m.status = p.Name + " does not exist yet: " + p.Path
+			}
 			return m, nil
 		}
 		m.hop = p.Name

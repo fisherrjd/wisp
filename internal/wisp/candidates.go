@@ -1,5 +1,10 @@
 package wisp
 
+import (
+	"errors"
+	"fmt"
+)
+
 // Peer is one workspace's live-session tally, for the picker's header.
 //
 // It exists because the workspace ring is otherwise invisible. The picker shows one workspace at
@@ -15,6 +20,10 @@ type Peer struct {
 	// difference should be visible here rather than only on the hop that fails.
 	Ready bool
 	Path  string
+	// Unreachable separates a workspace that is not there from one that could not be asked. Both
+	// are unusable, but only one of them is fixed by creating a directory.
+	Unreachable bool
+	Detail      string
 }
 
 // Board is what the picker loads without touching the network: this workspace's items, and a
@@ -36,57 +45,111 @@ type Board struct {
 func (c Config) Local() (Board, error) {
 	all := AllSessions()
 	resolveStates(all)
+	// One probe per remote workspace, reused for both the list and the header, because for the
+	// workspace you are actually in they answer the same question and a second round trip would
+	// be pure latency.
+	probes := c.probeRemotes(false)
 
-	byKey := map[string]Item{}
-	var order []string
-
-	// Order is the whole design: live sessions first, then local vault folders, then GitLab.
-	// Merge keeps the first name it sees for a given identity and the highest state, so a
-	// hand-chosen local slug always beats the one derived from a GitLab title, and an item never
-	// appears twice under two spellings.
-	for _, s := range c.claim(all) {
-		Merge(byKey, &order, Item{Name: s.Item, State: s.State})
+	var items []Item
+	var err error
+	if c.IsRemote() {
+		p, ok := probes[c.Name]
+		switch {
+		case !ok:
+			err = fmt.Errorf("%s is not in the workspace set", c.Name)
+		case p.err != nil:
+			err = p.err
+		default:
+			// Wrapper sessions first, then what the far side reports. Both describe the same
+			// items and Merge keeps the higher state, but the wrappers are observed here rather
+			// than reported, so they are the ones whose name and state win.
+			items = MergeAll(sessionItems(c.claim(all)), p.board.AsItems())
+			if p.board.Note != "" {
+				err = errors.New(p.board.Note)
+			}
+		}
+	} else {
+		items, err = c.Items(all)
 	}
 
+	// The tally goes back even when the list failed. A host that will not answer should show as
+	// a workspace you cannot reach, not as one that vanished.
+	return Board{Items: items, Peers: c.tally(all, probes)}, err
+}
+
+// Items is this workspace's own items and nothing else: live sessions, then the vault.
+//
+// Deliberately free of any reference to another workspace. This is what `board` answers with,
+// and a board that consulted the workspaces its own machine has configured would walk from host
+// to host with nothing to stop it.
+func (c Config) Items(all []Session) ([]Item, error) {
 	local, err := c.LocalItems()
 	if err != nil {
-		return Board{}, err
+		return nil, err
 	}
-	for _, it := range local {
-		Merge(byKey, &order, it)
-	}
+	// Order is the whole design: live sessions first, then vault folders, then GitLab. Merge
+	// keeps the first name it sees for a given identity and the highest state, so a hand-chosen
+	// local slug always beats the one derived from a GitLab title, and an item never appears
+	// twice under two spellings.
+	return MergeAll(sessionItems(c.claim(all)), local), nil
+}
 
-	items := make([]Item, 0, len(order))
-	for _, k := range order {
-		items = append(items, byKey[k])
+// BoardItems is Items with the session scan done for you, for callers outside a picker load.
+func (c Config) BoardItems() ([]Item, error) {
+	all := AllSessions()
+	resolveStates(all)
+	return c.Items(all)
+}
+
+func sessionItems(sessions []Session) []Item {
+	out := make([]Item, 0, len(sessions))
+	for _, s := range sessions {
+		out = append(out, Item{Name: s.Item, State: s.State})
 	}
-	return Board{Items: items, Peers: c.tally(all)}, nil
+	return out
 }
 
 // Peers is the workspace tallies on their own, for `wisp ws`.
 func (c Config) Peers() []Peer {
 	all := AllSessions()
 	resolveStates(all)
-	return c.tally(all)
+	return c.tally(all, c.probeRemotes(false))
 }
 
 // tally groups resolved sessions by workspace. Sessions from before workspaces existed carry no
 // workspace of their own and count towards the default, matching who claims them in the picker.
-func (c Config) tally(all []Session) []Peer {
+func (c Config) tally(all []Session, probes map[string]probe) []Peer {
 	names := c.WorkspaceNames()
 	at := make(map[string]int, len(names))
 	peers := make([]Peer, 0, len(names))
 	for _, n := range names {
-		p := Peer{Name: n, Current: n == c.Name, Ready: c.Ready(), Path: c.Workspace}
+		p := Peer{Name: n, Current: n == c.Name, Ready: c.Ready(), Path: c.Location.String()}
 		if !p.Current {
 			// Loaded rather than guessed at: another workspace can name its vault directory
 			// something else in its own .wisp.yaml, and a readiness check against this
 			// workspace's name would call it missing when it is only spelled differently.
 			if other, err := Load(n); err == nil {
-				p.Ready, p.Path = other.Ready(), other.Workspace
+				p.Ready, p.Path = other.Ready(), other.Location.String()
 			} else {
 				p.Ready = false
 			}
+		}
+		// A remote workspace's counts are the far side's to report, and whether it answered at
+		// all is what "ready" means for one. Sessions running there that nothing here is
+		// attached to are invisible locally, which is the whole reason for asking.
+		if pr, ok := probes[n]; ok {
+			if pr.err != nil {
+				p.Ready, p.Unreachable, p.Detail = false, true, pr.err.Error()
+			} else {
+				p.Ready = pr.board.Ready
+				p.Live, p.Attn = pr.board.Live, pr.board.Attn
+				if !p.Ready {
+					p.Detail = "no vault at " + p.Path
+				}
+			}
+			at[n] = len(peers)
+			peers = append(peers, p)
+			continue
 		}
 		at[n] = len(peers)
 		peers = append(peers, p)
@@ -101,6 +164,12 @@ func (c Config) tally(all []Session) []Peer {
 		i, ok := at[ws]
 		if !ok {
 			continue // a session belonging to a workspace no longer in the config
+		}
+		// Remote counts come from the far side, which already knows about every session there,
+		// including the ones this machine is attached to. Adding the wrapper would count it
+		// twice.
+		if _, remote := probes[ws]; remote {
+			continue
 		}
 		peers[i].Live++
 		if s.State == StateNeedsInput {

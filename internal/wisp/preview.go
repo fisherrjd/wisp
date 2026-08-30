@@ -13,8 +13,17 @@ import (
 // switching to it. For everything else it is the manifest (the most useful thing to know before
 // committing to an open) followed by the item's notes.
 func (c Config) Preview(item Item, width int) string {
+	// Attached from here, so the pane is already rendering whatever the agent is doing, whether
+	// that agent is on this machine or another one.
 	if session := c.FindSession(item.Name); session != "" {
 		return CapturePane(session, false)
+	}
+	if c.IsRemote() {
+		out, err := c.Location.Preview(item.Name, width)
+		if err != nil {
+			return err.Error()
+		}
+		return out
 	}
 
 	var b strings.Builder

@@ -2,6 +2,7 @@ package wisp
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -40,6 +41,18 @@ const query = `
 // with no group configured, no glab on PATH, or no network, it returns nothing and the picker
 // simply shows local items only.
 func (c Config) GitLabItems() ([]Item, error) {
+	// The far side owns its own remote source: the group, the credentials and the cache are all
+	// over there. Asking for its board with gitlab folded in is the whole of this end's job.
+	if c.IsRemote() {
+		b, err := c.Location.Board(true)
+		if err != nil {
+			return nil, err
+		}
+		if b.Note != "" {
+			return b.AsItems(), errors.New(b.Note)
+		}
+		return b.AsItems(), nil
+	}
 	// Say so rather than returning an empty list. An unconfigured remote source and a source
 	// with no assigned items look identical in the picker, and the silent version of this cost
 	// a real debugging session: after the group and username stopped being hardcoded, a

@@ -48,6 +48,20 @@ func (c Config) CreateWorkspace(name, path string, mkdir bool) (string, error) {
 	if name == "" {
 		return "", fmt.Errorf("a workspace needs a name: wisp ws new <name> [path]")
 	}
+
+	// A path with a host in front of it is registered, not built. The directory, the vault and
+	// the .wisp.yaml are all the far side's, and reaching over ssh to make them would be this
+	// machine deciding how another one is laid out. `wisp ws new` run over there does that job.
+	if loc := ParseLocation(path); loc.IsRemote() {
+		if err := c.checkFree(name, loc); err != nil {
+			return "", err
+		}
+		if err := c.register(name, loc); err != nil {
+			return "", err
+		}
+		return loc.String(), nil
+	}
+
 	abs, err := filepath.Abs(expandHome(path))
 	if err != nil {
 		return "", err
@@ -64,21 +78,8 @@ func (c Config) CreateWorkspace(name, path string, mkdir bool) (string, error) {
 		return "", fmt.Errorf("%s does not exist\n\nwisp adds a workspace to a directory you already have, so a mistyped path\nfails here rather than becoming a workspace somewhere you never meant.\nTo create it anyway:\n  wisp ws new -p %s %s", abs, name, path)
 	}
 
-	// Both directions of conflict, because they need different answers. A name already in use
-	// means picking another; a path already registered means the workspace exists and the name
-	// you wanted is a second alias for it, which hop would then show twice.
-	if existing, ok := c.Workspaces[name]; ok {
-		if other, err := filepath.Abs(expandHome(existing)); err != nil || other != abs {
-			return "", fmt.Errorf("workspace %q already points at %s", name, existing)
-		}
-	}
-	for n, p := range c.Workspaces {
-		if n == name {
-			continue
-		}
-		if other, err := filepath.Abs(expandHome(p)); err == nil && other == abs {
-			return "", fmt.Errorf("%s is already the workspace %q", abs, n)
-		}
+	if err := c.checkFree(name, Location{Path: abs}); err != nil {
+		return "", err
 	}
 
 	vault := filepath.Join(abs, c.Vault)
@@ -91,10 +92,37 @@ func (c Config) CreateWorkspace(name, path string, mkdir bool) (string, error) {
 			return "", fmt.Errorf("could not write %s: %w", MarkerFile, err)
 		}
 	}
-	if err := c.register(name, abs); err != nil {
+	if err := c.register(name, Location{Path: abs}); err != nil {
 		return "", err
 	}
 	return abs, nil
+}
+
+// checkFree refuses both directions of conflict, because they need different answers. A name
+// already in use means picking another; a location already registered means the workspace exists
+// and the name you wanted is a second alias for it, which the ring would then show twice.
+func (c Config) checkFree(name string, want Location) error {
+	if existing, ok := c.Workspaces[name]; ok && !sameLocation(existing, want) {
+		return fmt.Errorf("workspace %q already points at %s", name, existing)
+	}
+	for n, loc := range c.Workspaces {
+		if n != name && sameLocation(loc, want) {
+			return fmt.Errorf("%s is already the workspace %q", want, n)
+		}
+	}
+	return nil
+}
+
+func sameLocation(a, b Location) bool {
+	if a.Host != b.Host {
+		return false
+	}
+	if a.IsRemote() {
+		return a.Path == b.Path
+	}
+	x, err1 := filepath.Abs(expandHome(a.Path))
+	y, err2 := filepath.Abs(expandHome(b.Path))
+	return err1 == nil && err2 == nil && x == y
 }
 
 // Unregister drops a workspace from the user config.
@@ -176,7 +204,8 @@ func (c Config) Reload() (Config, error) {
 // Written back through a yaml.Node rather than by marshalling the Config struct. Marshalling
 // would emit every defaulted field wisp holds and drop every comment the user wrote, turning a
 // one-line addition into a rewrite of a file they own and did not ask to have reformatted.
-func (c Config) register(name, path string) error {
+func (c Config) register(name string, loc Location) error {
+	path := loc.String()
 	cfgPath := UserConfigPath()
 	if cfgPath == "" {
 		return fmt.Errorf("cannot locate a config directory to record the workspace in")

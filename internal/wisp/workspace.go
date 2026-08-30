@@ -5,11 +5,25 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 )
 
 // Repos lists the workspace's repo checkouts: immediate subdirectories holding a .git, minus
 // the vault itself, which is a git repo too but is not a code repo.
 func (c Config) Repos() ([]string, error) {
+	if c.IsRemote() {
+		out, err := c.Location.run("repos")
+		if err != nil {
+			return nil, err
+		}
+		var repos []string
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			if line != "" {
+				repos = append(repos, line)
+			}
+		}
+		return repos, nil
+	}
 	entries, err := os.ReadDir(c.Workspace)
 	if err != nil {
 		return nil, err

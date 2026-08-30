@@ -1,6 +1,6 @@
 # Remote workspaces
 
-Status: **plan**. Nothing here is built yet. Workspaces and the hop ring (v0.9.0) are the local half of it and shipped first on purpose: a remote workspace is a workspace with a host, and everything below plugs into machinery that already exists.
+Status: **built** as of v0.11.0, with the exceptions at the bottom. Workspaces and the hop ring shipped first on purpose: a remote workspace is a workspace with a host, and everything below plugs into machinery that already existed.
 
 ## The decision everything follows from
 
@@ -78,14 +78,22 @@ Three failures get their own message rather than a raw shell error:
 2. `wisp` not on the far side's PATH
 3. wire version mismatch
 
-## Phases
+## What a board must not do
 
-1. **Read-only.** `Location`, the ssh runner, `board --json`, remote items and tallies in the picker. You can see what the desktop is doing without leaving the laptop. Most of the plumbing, and useful on its own.
-2. **Attach.** Wrapper sessions, `Open` for remote items, hopping into a remote workspace. The edge cases live here.
-3. **Parity.** Remote preview, remote kill, `ls` and `ws` output, `wisp ws new` against a host.
+`board` reports one workspace and consults no other. It is the one place where that has to be said out loud: the obvious implementation reuses the picker's own loader, which builds the workspace tally, which probes every remote workspace the machine has configured. A board request that did that would walk from host to host with nothing to stop it, and a pair of machines each holding the other would never return at all.
 
-## Open decisions
+The same reasoning is why the tally does not add wrapper sessions to a remote workspace's counts. The far side already knows about every session it owns, including the ones this machine is attached to, so counting the wrapper as well would report each of them twice.
 
-**What `ctrl-x` means on a remote item.** Killing the remote session stops the agent; killing only the wrapper walks away and leaves it running. Proposed: kill the remote session, so `ctrl-x` means the same thing everywhere and walking away stays what `esc` already does.
+## Settled
 
-**Preview of a live remote session.** One ssh round trip per cursor move, or fetch only once the cursor rests. Proposed: debounce at roughly 150ms. The preview loader is already asynchronous and already discards results for a row the cursor has left.
+**`ctrl-x` on a remote item kills the remote session**, not just the wrapper. It means the same thing everywhere: stop this work. Walking away and leaving it running is what `esc` already does, so kill has to mean the heavier thing or there is no way to say it.
+
+**Killing races, and that is fine.** Ending the far session ends the ssh, which closes the window, which takes the wrapper with it, usually before the local kill runs. The local failure only counts if the session is still standing afterwards.
+
+## Not done
+
+**The preview is not debounced.** Every cursor move on a remote workspace is an ssh round trip. The shared connection makes it about 30ms and the loader is asynchronous, so it is not felt on a good link; on a bad one it will be. The fix is a rest timer before the fetch, not a change to anything above.
+
+**Nested tmux is documented, not handled.** Two servers are stacked when you attach to a remote item and the prefix key means two things. The wrapper's status bar says which workspace and host you are in; deciding what the prefix does belongs in your own tmux config, either a different prefix on the remote or a key bound to `send-prefix`.
+
+**`wisp ws new` against a host only registers it.** The directory, the vault and the `.wisp.yaml` are the far side's, and reaching across to create them would be one machine deciding how another is laid out. Run `wisp ws new` over there.
