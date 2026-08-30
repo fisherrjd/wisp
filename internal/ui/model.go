@@ -19,17 +19,23 @@ func Run(cfg wisp.Config) error {
 		return err
 	}
 	fm := final.(model)
-	if fm.chosen == nil {
-		return wisp.LeaveHome()
+	switch {
+	case fm.chosen != nil:
+		return cfg.Open(*fm.chosen, func(msg string) { fmt.Printf("--- %s\n", msg) })
+	case fm.hop != "":
+		// The home session's loop redraws the picker behind us as soon as this returns, so the
+		// workspace we left is still warm when we hop back to it.
+		return cfg.Hop(fm.hop)
+	default:
+		return cfg.LeaveHome()
 	}
-	return cfg.Open(*fm.chosen, func(msg string) { fmt.Printf("--- %s\n", msg) })
 }
 
 // Two messages, not one: local candidates paint immediately, remote ones fold in when the
 // network answers. Waiting for both before showing anything made opening the picker feel slow
 // for the sake of the least important rows.
 type candidatesMsg struct {
-	items []wisp.Item
+	board wisp.Board
 }
 
 type remoteMsg struct {
@@ -63,6 +69,10 @@ type model struct {
 	cursor   int
 	offset   int
 
+	// peers is every workspace's live tally, shown in the header. Without it the workspace ring
+	// is invisible from inside any one of its members.
+	peers []wisp.Peer
+
 	mode  mode
 	input string // the new-item line, kept separate so cancelling restores the filter intact
 
@@ -75,6 +85,9 @@ type model struct {
 	loading       bool
 	status        string
 	chosen        *wisp.Item
+	// hop is the workspace to move to once the picker exits, set by ctrl-w. Like chosen, the
+	// move happens after Run returns, because it replaces this process with tmux.
+	hop string
 }
 
 func newModel(cfg wisp.Config) model {
@@ -88,8 +101,8 @@ func (m model) Init() tea.Cmd {
 // loadLocal is the fast path: filesystem and tmux only, no network.
 func loadLocal(cfg wisp.Config) tea.Cmd {
 	return func() tea.Msg {
-		items, _ := cfg.LocalCandidates()
-		return candidatesMsg{items: items}
+		board, _ := cfg.Local()
+		return candidatesMsg{board: board}
 	}
 }
 
@@ -120,7 +133,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case candidatesMsg:
 		m.loading = false
-		m.local = msg.items
+		m.local = msg.board.Items
+		m.peers = msg.board.Peers
 		m.all = wisp.MergeAll(m.local, m.remote)
 		m.applyFilter()
 		return m, m.previewCmd()
@@ -181,16 +195,30 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// the session, so from a popup this looks like wisp crashing rather than like
 				// the kill succeeding. Running `wisp home` keeps the picker in its own session,
 				// where this cannot come up.
-				if wisp.IsCurrentSession(it.Name) {
+				if m.cfg.IsCurrentSession(it.Name) {
 					m.status = "that is the session you are in; switch away first, or use wisp home"
 					return m, nil
 				}
-				_ = wisp.KillSession(it.Name)
+				_ = m.cfg.KillSession(it.Name)
 				m.status = "killed " + it.Name
 				// Local only: a kill changes tmux state, not GitLab, and re-querying the
 				// network here would stall the list for no new information.
 				return m, loadLocal(m.cfg)
 			}
+
+		// The outer ring. Quitting to do the move keeps every switch-client in one place, the
+		// same path `wisp hop` takes from the shell, rather than having the picker drive tmux
+		// while it is still drawn on it.
+		case "ctrl+w":
+			// Checked here rather than left to the hop, because the home session redraws the
+			// picker the moment this process exits: an error printed on the way out scrolls off
+			// before it can be read, and ctrl-w just looks like it did nothing.
+			if !m.canHop() {
+				m.status = "nowhere to hop; `wisp ws` shows the workspaces and where they point"
+				return m, nil
+			}
+			m.hop = "next"
+			return m, tea.Quit
 
 		case "ctrl+r":
 			m.status = "refreshing gitlab"
@@ -312,6 +340,17 @@ func (m *model) applyFilter() {
 	if m.cursor >= m.listRows() {
 		m.offset = m.cursor - m.listRows() + 1
 	}
+}
+
+// canHop reports whether the ring has another workspace that actually exists to move to. A
+// workspace named in the config but never created is not somewhere ctrl-w can land.
+func (m model) canHop() bool {
+	for _, p := range m.peers {
+		if !p.Current && p.Ready {
+			return true
+		}
+	}
+	return false
 }
 
 func (m model) current() *wisp.Item {

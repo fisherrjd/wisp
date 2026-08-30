@@ -13,8 +13,8 @@ import (
 // switching to it. For everything else it is the manifest (the most useful thing to know before
 // committing to an open) followed by the item's notes.
 func (c Config) Preview(item Item, width int) string {
-	if HasSession(item.Name) {
-		return CapturePane(SessionFor(item.Name), false)
+	if session := c.FindSession(item.Name); session != "" {
+		return CapturePane(session, false)
 	}
 
 	var b strings.Builder

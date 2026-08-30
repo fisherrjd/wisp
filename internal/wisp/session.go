@@ -119,9 +119,12 @@ func (c Config) EnsureWorktrees(item Item, entries []Entry, log func(string)) er
 // it runs at the workspace root and reads the context file. So the session opens straight away
 // and any missing worktrees are built in a side window that adds its own windows when done.
 func (c Config) Open(item Item, log func(string)) error {
-	session := SessionFor(item.Name)
+	// By identity, not by name: a session started by an older wisp is named differently but is
+	// still this item's session, and creating a second one beside it would split the work.
+	session := c.FindSession(item.Name)
 
-	if !HasSession(item.Name) {
+	if session == "" {
+		session = c.SessionName(item.Name)
 		entries, err := c.Manifest(item)
 		if err != nil {
 			return err
@@ -143,6 +146,9 @@ func (c Config) Open(item Item, log func(string)) error {
 		}
 		_ = exec.Command("tmux", "set-option", "-t", session, "history-limit", "10000").Run()
 		_ = exec.Command("tmux", "set-option", "-t", session, ItemOption, item.Name).Run()
+		// Which workspace this belongs to, so the other workspaces' pickers do not list it and
+		// the tally in the header can attribute it.
+		_ = exec.Command("tmux", "set-option", "-t", session, WSOption, c.Name).Run()
 
 		// One shell window per worktree that already exists, for builds and dev servers.
 		if c.addWorktreeWindows(session, item, entries) < len(entries) {
@@ -158,6 +164,8 @@ func (c Config) Open(item Item, log func(string)) error {
 		_ = exec.Command("tmux", "select-window", "-t", session+":agent").Run()
 	}
 
+	// Recorded before attaching, so a hop out of this workspace and back returns to this item.
+	Remember(c.Name, session)
 	return Attach(session)
 }
 
@@ -234,8 +242,7 @@ func (c Config) ProvisionItem(item Item, log func(string)) error {
 	if err := c.EnsureWorktrees(item, entries, log); err != nil {
 		return err
 	}
-	session := SessionFor(item.Name)
-	if hasRawSession(session) {
+	if session := c.FindSession(item.Name); session != "" {
 		c.addWorktreeWindows(session, item, entries)
 	}
 	// Rewritten now that the checkouts exist, so an agent re-reading it sees real paths.

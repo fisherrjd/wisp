@@ -1,74 +1,113 @@
 package wisp
 
-import "sync"
-
-// Candidates merges the three sources into the picker's list.
+// Peer is one workspace's live-session tally, for the picker's header.
 //
-// Order is the whole design: live sessions first, then local vault folders, then GitLab. Merge
-// keeps the first name it sees for a given identity and the highest state, so a hand-chosen
-// local slug always beats the one derived from a GitLab title, and an item never appears twice
-// under two spellings.
-//
-// GitLab errors are returned alongside the results rather than instead of them. The remote
-// source is optional and a network failure must not empty the picker, but it should not be
-// silent either, which is what the bash version did.
-func (c Config) Candidates() ([]Item, error) {
-	local, err := c.LocalCandidates()
-	if err != nil {
-		return nil, err
-	}
-	remote, gitlabErr := c.GitLabItems()
-	return MergeAll(local, remote), gitlabErr
+// It exists because the workspace ring is otherwise invisible. The picker shows one workspace at
+// a time, so from inside it nothing hints that another one has an agent waiting on an answer,
+// and a ring you cannot see is one you never turn.
+type Peer struct {
+	Name    string
+	Live    int
+	Attn    int
+	Current bool
+	// Ready is false for a workspace named in the config whose vault does not exist yet. wisp
+	// never creates one, so the configured set and the set that exists can differ, and the
+	// difference should be visible here rather than only on the hop that fails.
+	Ready bool
+	Path  string
 }
 
-// LocalCandidates is everything reachable without the network: live tmux sessions and vault
-// folders. It is what the picker paints first.
+// Board is what the picker loads without touching the network: this workspace's items, and a
+// tally for every workspace.
 //
-// Split out because the remote source can take most of a second on a cold cache, and blocking
-// the whole list on it made the picker feel slow to open when the part that matters most, the
-// sessions already running, was available immediately.
-func (c Config) LocalCandidates() ([]Item, error) {
+// Both come out of one pass over tmux. They are needed at the same moment and the needs-input
+// check is a capture-pane per session, so gathering them separately would pay that cost twice.
+type Board struct {
+	Items []Item
+	Peers []Peer
+}
+
+// Local is the fast path: filesystem and tmux only, no network. It is what the picker paints
+// first.
+//
+// Split out from the remote source because that can take most of a second on a cold cache, and
+// blocking the whole list on it made the picker feel slow to open when the part that matters
+// most, the sessions already running, was available immediately.
+func (c Config) Local() (Board, error) {
+	all := AllSessions()
+	resolveStates(all)
+
 	byKey := map[string]Item{}
 	var order []string
 
-	// The needs-input check is a capture-pane per session, so run them together rather than
-	// paying for each in turn.
-	sessions := LiveSessions()
-	states := make([]State, len(sessions))
-	names := make([]string, len(sessions))
-	var wg sync.WaitGroup
-	for i, session := range sessions {
-		wg.Add(1)
-		go func(i int, session string) {
-			defer wg.Done()
-			names[i] = ItemFor(session)
-			if names[i] == "" {
-				names[i] = session
-			}
-			states[i] = StateLive
-			if NeedsInput(session) {
-				states[i] = StateNeedsInput
-			}
-		}(i, session)
-	}
-	wg.Wait()
-	for i := range sessions {
-		Merge(byKey, &order, Item{Name: names[i], State: states[i]})
+	// Order is the whole design: live sessions first, then local vault folders, then GitLab.
+	// Merge keeps the first name it sees for a given identity and the highest state, so a
+	// hand-chosen local slug always beats the one derived from a GitLab title, and an item never
+	// appears twice under two spellings.
+	for _, s := range c.claim(all) {
+		Merge(byKey, &order, Item{Name: s.Item, State: s.State})
 	}
 
 	local, err := c.LocalItems()
 	if err != nil {
-		return nil, err
+		return Board{}, err
 	}
 	for _, it := range local {
 		Merge(byKey, &order, it)
 	}
 
-	out := make([]Item, 0, len(order))
+	items := make([]Item, 0, len(order))
 	for _, k := range order {
-		out = append(out, byKey[k])
+		items = append(items, byKey[k])
 	}
-	return out, nil
+	return Board{Items: items, Peers: c.tally(all)}, nil
+}
+
+// Peers is the workspace tallies on their own, for `wisp ws`.
+func (c Config) Peers() []Peer {
+	all := AllSessions()
+	resolveStates(all)
+	return c.tally(all)
+}
+
+// tally groups resolved sessions by workspace. Sessions from before workspaces existed carry no
+// workspace of their own and count towards the default, matching who claims them in the picker.
+func (c Config) tally(all []Session) []Peer {
+	names := c.WorkspaceNames()
+	at := make(map[string]int, len(names))
+	peers := make([]Peer, 0, len(names))
+	for _, n := range names {
+		p := Peer{Name: n, Current: n == c.Name, Ready: c.Ready(), Path: c.Workspace}
+		if !p.Current {
+			// Loaded rather than guessed at: another workspace can name its vault directory
+			// something else in its own .wisp.yaml, and a readiness check against this
+			// workspace's name would call it missing when it is only spelled differently.
+			if other, err := Load(n); err == nil {
+				p.Ready, p.Path = other.Ready(), other.Workspace
+			} else {
+				p.Ready = false
+			}
+		}
+		at[n] = len(peers)
+		peers = append(peers, p)
+	}
+
+	def := c.DefaultName()
+	for _, s := range all {
+		ws := s.WS
+		if ws == "" {
+			ws = def
+		}
+		i, ok := at[ws]
+		if !ok {
+			continue // a session belonging to a workspace no longer in the config
+		}
+		peers[i].Live++
+		if s.State == StateNeedsInput {
+			peers[i].Attn++
+		}
+	}
+	return peers
 }
 
 // MergeAll folds later lists into the first, keeping its ordering and precedence. Used to add

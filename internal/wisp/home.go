@@ -4,68 +4,77 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"sort"
+	"strings"
 )
 
-// HomeSession is the picker's own tmux session: the place you come back to.
+// HomeSession is this workspace's picker session: the place you come back to.
 //
-// Deliberately not prefixed with SessionPrefix, so LiveSessions never picks it up and home
-// never appears in its own list as an item.
-const HomeSession = "wisp"
+// One per workspace, because the picker is scoped to a workspace and a shared home would have
+// to keep asking which one it was showing. Deliberately joined with a dash rather than the
+// underscore of SessionPrefix, so AllSessions never picks a home up and no home ever appears in
+// its own list as an item.
+func (c Config) HomeSession() string { return "wisp-" + wsToken(c.Name) }
 
-// Home switches to the picker session, creating it if it is not running.
+// Home switches to this workspace's picker session, creating it if it is not running.
 //
 // This exists because the picker used to be a popup over whatever session you happened to be
 // in, which made it transient and translucent rather than somewhere you navigate to. As a real
 // session it is a fixed destination: switch to it, pick an item, switch to that item, switch
 // back to home. The tmux client stack does the work and nothing overlays anything.
 func (c Config) Home() error {
-	if !hasRawSession(HomeSession) {
-		self, err := os.Executable()
-		if err != nil {
-			return fmt.Errorf("cannot locate the wisp binary: %w", err)
-		}
-		// Looping is what makes it a home rather than a one-shot. Picking an item replaces this
-		// process with `tmux switch-client`, and quitting exits it; either way the loop draws
-		// the picker again, so returning here always lands on the list.
-		//
-		// Explicitly `pick`, never bare `wisp`: bare wisp means home, so a bare invocation here
-		// would have the home session spawning home sessions forever.
-		loop := fmt.Sprintf("while true; do %q pick; done", self)
-		if err := exec.Command("tmux", "new-session", "-d",
-			"-s", HomeSession, "-n", "wisp", "-c", c.Workspace, loop).Run(); err != nil {
-			return fmt.Errorf("could not create the wisp home session: %w", err)
-		}
-		_ = exec.Command("tmux", "set-option", "-t", HomeSession, "status", "off").Run()
+	if err := c.ensureHome(); err != nil {
+		return err
 	}
-	return Attach(HomeSession)
+	return Attach(c.HomeSession())
 }
 
-func hasRawSession(name string) bool {
-	return exec.Command("tmux", "has-session", "-t", "="+name).Run() == nil
+func (c Config) ensureHome() error {
+	if hasRawSession(c.HomeSession()) {
+		return nil
+	}
+	self, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("cannot locate the wisp binary: %w", err)
+	}
+	// Looping is what makes it a home rather than a one-shot. Picking an item replaces this
+	// process with `tmux switch-client`, and quitting exits it; either way the loop draws the
+	// picker again, so returning here always lands on the list.
+	//
+	// Explicitly `pick`, never bare `wisp`: bare wisp means home, so a bare invocation here
+	// would have the home session spawning home sessions forever. And explicitly pinned to this
+	// workspace, because the loop must keep showing the same one even if the directory it
+	// started in stops resolving there.
+	loop := fmt.Sprintf("while true; do WISP_WORKSPACE=%q %q pick; done", c.Workspace, self)
+	if err := exec.Command("tmux", "new-session", "-d",
+		"-s", c.HomeSession(), "-n", "wisp", "-c", c.Workspace, loop).Run(); err != nil {
+		return fmt.Errorf("could not create the wisp home session: %w", err)
+	}
+	_ = exec.Command("tmux", "set-option", "-t", c.HomeSession(), "status", "off").Run()
+	return nil
 }
 
-// Cycle moves to the next (+1) or previous (-1) item session, wrapping at both ends.
+// Cycle moves to the next (+1) or previous (-1) item session in this workspace, wrapping at
+// both ends. This is the inner ring; Hop is the outer one.
 //
 // tmux has switch-client -n and -p, but those walk every session on the server. This walks only
-// wisp's, in a stable sorted order, so flipping between work is unaffected by whatever else
-// happens to be running. Home is not in the rotation: it is a destination, not a stop.
-func Cycle(delta int) error {
+// this workspace's, in a stable sorted order, so flipping between work is unaffected by whatever
+// else happens to be running, including the sessions of another workspace. Home is not in the
+// rotation: it is a destination, not a stop.
+func (c Config) Cycle(delta int) error {
 	if !InsideTmux() {
 		return fmt.Errorf("not inside tmux")
 	}
-	live := LiveSessions()
+	live := c.claim(AllSessions())
 	if len(live) == 0 {
 		return nil
 	}
-	sort.Strings(live)
 
 	// From home, or from anywhere that is not an item session, enter the ring at the end that
 	// matches the direction travelled rather than jumping to an arbitrary member.
 	idx := -1
 	current := CurrentSession()
 	for i, s := range live {
-		if s == current {
+		if s.Name == current {
 			idx = i
 			break
 		}
@@ -73,14 +82,151 @@ func Cycle(delta int) error {
 	var target string
 	switch {
 	case idx < 0 && delta > 0:
-		target = live[0]
+		target = live[0].Name
 	case idx < 0:
-		target = live[len(live)-1]
+		target = live[len(live)-1].Name
 	default:
 		// Positive modulo: Go's % keeps the sign of the dividend, so -1 % n is -1, not n-1.
-		target = live[((idx+delta)%len(live)+len(live))%len(live)]
+		target = live[((idx+delta)%len(live)+len(live))%len(live)].Name
 	}
-	return exec.Command("tmux", "switch-client", "-t", "="+target).Run()
+	return c.switchTo(target)
+}
+
+// switchTo moves the client and records where it landed, so a later hop back into this
+// workspace can return to the same place.
+func (c Config) switchTo(session string) error {
+	if err := switchClient(session); err != nil {
+		return err
+	}
+	Remember(c.Name, session)
+	return nil
+}
+
+// Hop walks the workspace ring: the outer layer, above the item sessions Cycle moves between.
+// The target is "next", "prev", or a workspace name.
+//
+// Where it lands matters more than that it moves. Hopping back into a workspace returns you to
+// the session you were last in there, not to its picker, so a trip out and back is a round trip
+// rather than a reset. The picker is the fallback, for a workspace you have not opened anything
+// in yet or whose last session has since been killed.
+func (c Config) Hop(target string) error {
+	if !InsideTmux() {
+		return fmt.Errorf("not inside tmux")
+	}
+	switch target {
+	case "next", "", "+":
+		return c.walk(1)
+	case "prev", "-":
+		return c.walk(-1)
+	case c.Name:
+		return nil
+	default:
+		// Named outright, so it has to work. Nothing is skipped and nothing is created: a
+		// workspace configured but never made is an error worth reading, not a stop to step
+		// over quietly.
+		next, err := Load(target)
+		if err != nil {
+			return err
+		}
+		return c.enter(next)
+	}
+}
+
+// walk moves to the next workspace in the ring that is actually set up, stepping over any whose
+// vault does not exist yet.
+//
+// A ring walk should land somewhere you can work. A workspace named in the config but never
+// created is a stop with nothing in it, and stopping there would strand you on an error message
+// with no way onward but to name the next one by hand.
+func (c Config) walk(delta int) error {
+	names := c.WorkspaceNames()
+	if len(names) < 2 {
+		return fmt.Errorf("only one workspace (%s); add more under `workspaces:` in %s",
+			c.Name, UserConfigPath())
+	}
+	name := c.Name
+	var skipped []string
+	for range names[1:] {
+		name = step(names, name, delta)
+		next, err := Load(name)
+		if err == nil && next.Ready() {
+			return c.enter(next)
+		}
+		skipped = append(skipped, name)
+	}
+	return fmt.Errorf("nowhere to hop: %s %s no vault directory yet; `wisp ws` shows where they point",
+		strings.Join(skipped, ", "), plural(len(skipped), "has", "have"))
+}
+
+// enter moves the client into another workspace, landing on the session you were last in there.
+func (c Config) enter(next Config) error {
+	if next.Name == c.Name {
+		return nil
+	}
+	// Record the session being left before moving, so hopping straight back returns here rather
+	// than to whatever was remembered before this visit. Only if it is actually one of this
+	// workspace's: `wisp hop` run from an unrelated session would otherwise file that session as
+	// the place to come back to, and the next hop in would land somewhere with nothing to do
+	// with the workspace.
+	if cur := CurrentSession(); c.owns(cur) {
+		Remember(c.Name, cur)
+	}
+	if last := lastVisited(next.Name); next.owns(last) {
+		return switchClient(last)
+	}
+	if err := next.RequireWorkspace(); err != nil {
+		return err
+	}
+	if err := next.ensureHome(); err != nil {
+		return err
+	}
+	return switchClient(next.HomeSession())
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
+}
+
+// owns reports whether a session is one of this workspace's item sessions. It guards both ends
+// of the recorded last-visit: a session that is not this workspace's must never be filed as
+// where you were, and a name recorded earlier must still resolve to that workspace before a hop
+// will return to it.
+func (c Config) owns(session string) bool {
+	if session == "" {
+		return false
+	}
+	for _, s := range c.claim(AllSessions()) {
+		if s.Name == session {
+			return true
+		}
+	}
+	return false
+}
+
+// switchClient moves the attached client, naming the destination when it cannot. The bare exit
+// status tmux returns is not something anyone can act on.
+func switchClient(session string) error {
+	if err := exec.Command("tmux", "switch-client", "-t", "="+session).Run(); err != nil {
+		return fmt.Errorf("could not switch to %s: %w", session, err)
+	}
+	return nil
+}
+
+// step walks a ring, wrapping at both ends, entering at the start when the current member is
+// not in it at all.
+func step(names []string, current string, delta int) string {
+	idx := 0
+	for i, n := range names {
+		if n == current {
+			idx = i
+			break
+		}
+	}
+	// Positive modulo: Go's % keeps the sign of the dividend, so -1 % n is -1, not n-1.
+	return names[((idx+delta)%len(names)+len(names))%len(names)]
 }
 
 // LeaveHome is what quitting the picker does when the picker is home.
@@ -89,8 +235,8 @@ func Cycle(delta int) error {
 // broken. Leaving means moving the client somewhere else, back to the session you came from, or
 // off tmux entirely when there is nowhere to go back to. The loop still restarts the picker
 // behind you, so the next visit gets a freshly loaded list.
-func LeaveHome() error {
-	if !InsideTmux() || CurrentSession() != HomeSession {
+func (c Config) LeaveHome() error {
+	if !InsideTmux() || CurrentSession() != c.HomeSession() {
 		return nil // a one-shot `wisp pick` just exits, which is already correct
 	}
 	// Detach, rather than switching to some other session. esc means quit: leave tmux and get

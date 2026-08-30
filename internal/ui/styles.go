@@ -47,6 +47,12 @@ var (
 	promptStyle = lipgloss.NewStyle().Foreground(colAcc)
 	countStyle  = lipgloss.NewStyle().Foreground(colFaint)
 
+	// The workspace ring in the header. The current one is the only lit name, so which
+	// workspace the list belongs to reads at a glance without a label saying so.
+	wsCurrent = lipgloss.NewStyle().Foreground(colAcc).Bold(true)
+	wsOther   = lipgloss.NewStyle().Foreground(colFaint)
+	wsMissing = lipgloss.NewStyle().Foreground(colFaint).Italic(true)
+
 	// Reverse video rather than another hue: the create line is a mode, and it should be
 	// unmistakable without spending a second accent colour on it.
 	newLabel = lipgloss.NewStyle().Foreground(colAcc).Reverse(true).Bold(true)

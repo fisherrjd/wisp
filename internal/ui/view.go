@@ -17,7 +17,7 @@ const listFraction = 0.40
 // same list.
 var (
 	footerStates = []wisp.State{wisp.StateLive, wisp.StateNeedsInput, wisp.StateFolder, wisp.StateRemote}
-	footerKeys   = []string{"enter open", "ctrl-n new", "ctrl-x kill", "ctrl-r refresh", "esc quit"}
+	footerKeys   = []string{"enter open", "ctrl-n new", "ctrl-w workspace", "ctrl-x kill", "ctrl-r refresh", "esc quit"}
 	// The create line has its own keys, since most of the list bindings do not apply while a
 	// name is being typed.
 	newKeys = []string{"enter create", "esc cancel"}
@@ -116,12 +116,48 @@ func (m model) renderPrompt() string {
 	}
 	left := promptStyle.Render("› ") + m.query + promptStyle.Render("▏")
 	right := countStyle.Render(count)
+	if ring := m.renderPeers(); ring != "" {
+		right = ring + countStyle.Render("   ") + right
+	}
 
 	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < 1 {
 		gap = 1
 	}
 	return left + strings.Repeat(" ", gap) + right
+}
+
+// renderPeers draws the workspace ring: every workspace, the current one lit, each with a tally
+// of what is running there.
+//
+// This is the only place the cross-workspace view survives. The list itself is scoped to one
+// workspace on purpose, but an agent waiting on an answer somewhere else is a reason to hop, so
+// the count that matters most, needs-input, is the one that displaces the plain live count.
+func (m model) renderPeers() string {
+	if len(m.peers) < 2 {
+		return "" // nothing to hop to, so the ring is noise
+	}
+	parts := make([]string, 0, len(m.peers))
+	for _, p := range m.peers {
+		style := wsOther
+		if p.Current {
+			style = wsCurrent
+		}
+		s := style.Render(p.Name)
+		switch {
+		// Configured but never created. Marked rather than hidden, because a workspace missing
+		// from a list you wrote yourself reads as wisp losing it rather than as a path that
+		// does not exist. ctrl-w steps over these.
+		case !p.Ready:
+			s = wsMissing.Render(p.Name + " ✗")
+		case p.Attn > 0:
+			s += lipgloss.NewStyle().Foreground(colAttn).Render(fmt.Sprintf(" ?%d", p.Attn))
+		case p.Live > 0:
+			s += lipgloss.NewStyle().Foreground(colLive).Render(fmt.Sprintf(" ●%d", p.Live))
+		}
+		parts = append(parts, s)
+	}
+	return strings.Join(parts, wsOther.Render(" · "))
 }
 
 func (m model) renderList(rows int) string {
