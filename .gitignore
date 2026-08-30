@@ -3,6 +3,7 @@
 result*
 
 # go
+/wisp
 *.exe
 *.exe~
 *.dll

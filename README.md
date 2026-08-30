@@ -138,6 +138,10 @@ repos:
 
 It records intent, and deliberately not worktree paths: a path would be a cache pretending to be state.
 
+## Planned
+
+[Remote workspaces](docs/remote-workspaces.md): a workspace with a host in front of it, so the hop ring reaches another machine. Not built yet.
+
 Without an `orchestration.md`, a single-repo item is inferred from the folder's parent with branch `feature/<slug>`. `_adhoc` items get no repos at all, which is correct: no repo can be inferred, and the session is notes-only.
 
 ## Requirements
