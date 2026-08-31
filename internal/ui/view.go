@@ -182,7 +182,7 @@ func (m model) View() string {
 	rows := m.listRows()
 	left, right := m.renderList(rows), m.renderPreview(rows)
 	if m.mode == modeWorkspace || m.mode == modeNewWS || m.mode == modeNewHost {
-		left, right = m.renderWorkspaces(), m.renderWorkspaceDetail(rows)
+		left, right = m.renderWorkspaces(rows), m.renderWorkspaceDetail(rows)
 	}
 	body := lipgloss.JoinHorizontal(
 		lipgloss.Top,
@@ -340,12 +340,17 @@ func (m model) renderList(rows int) string {
 // Machines are headers rather than rows. `eldo` and `eldo/side` in one flat list is the tree
 // written out as strings, which reads as four unrelated names when it is one machine holding
 // three things.
-func (m model) renderWorkspaces() string {
+func (m model) renderWorkspaces(rows int) string {
 	if len(m.peers) == 0 {
 		return hintStyle.Render("  no workspaces")
 	}
+	// Windowed by wsOffset exactly as the item list is by offset. Rendering the whole tree made
+	// the pane taller than the terminal on any machine holding more workspaces than it has lines.
+	all := m.wsRows()
+	end := min(m.wsOffset+rows, len(all))
 	var out []string
-	for i, r := range m.wsRows() {
+	for i := m.wsOffset; i < end; i++ {
+		r := all[i]
 		sel := i == m.wsCursor
 		lead := "  "
 		if sel {

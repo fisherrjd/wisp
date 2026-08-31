@@ -19,7 +19,10 @@ func Run(cfg wisp.Config) error {
 	if err != nil {
 		return err
 	}
-	fm := final.(model)
+	fm, ok := final.(model)
+	if !ok {
+		return nil // bubbletea handed back something else; nothing was chosen, so nothing to do
+	}
 	switch {
 	case fm.chosen != nil:
 		return cfg.Open(*fm.chosen, func(msg string) { fmt.Printf("--- %s\n", msg) })
@@ -75,8 +78,12 @@ type model struct {
 
 	// peers is every workspace's live tally, shown in the header and, in workspace mode, as the
 	// list itself. Without it the workspace ring is invisible from inside any one of its members.
-	peers    []wisp.Peer
+	peers []wisp.Peer
+	// wsCursor and wsOffset index the tree's rows, which interleave a machine header before each
+	// machine's workspaces. That is a different index space from peers, and conflating the two is
+	// what made the detail pane describe the wrong workspace.
 	wsCursor int
+	wsOffset int
 
 	mode  mode
 	input string // the new-item line, kept separate so cancelling restores the filter intact
@@ -134,15 +141,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+		// The window the tree scrolls within is derived from the height, so a resize can leave the
+		// cursor outside it.
+		m.scrollWorkspaces()
 		return m, m.previewCmd()
 
 	case candidatesMsg:
 		m.loading = false
 		m.local = msg.board.Items
 		m.peers = msg.board.Peers
-		if m.wsCursor >= len(m.peers) {
-			m.wsCursor = max(0, len(m.peers)-1)
+		// Against the rows, not the peers: the rows include a header per machine, so clamping to
+		// the peer count would drag a cursor parked on a late row backwards on every reload.
+		if rows := len(m.wsRows()); m.wsCursor >= rows {
+			m.wsCursor = max(0, rows-1)
 		}
+		m.scrollWorkspaces()
 		m.all = wisp.MergeAll(m.local, m.remote)
 		m.applyFilter()
 		return m, m.previewCmd()
@@ -235,6 +248,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.wsCursor = i
 				}
 			}
+			m.scrollWorkspaces()
 			return m, nil
 
 		case "ctrl+r":
@@ -372,22 +386,26 @@ func (m model) updateWorkspace(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.wsCursor > 0 {
 			m.wsCursor--
 		}
+		m.scrollWorkspaces()
 		return m, nil
 
 	case "down", "j", "ctrl+j":
 		if m.wsCursor < len(rows)-1 {
 			m.wsCursor++
 		}
+		m.scrollWorkspaces()
 		return m, nil
 
 	// A whole machine at a time. Up and down walk one row, which on a machine holding several
 	// workspaces means several presses to get past it; left and right are the level above.
 	case "left", "h":
 		m.wsCursor = m.systemStep(rows, -1)
+		m.scrollWorkspaces()
 		return m, nil
 
 	case "right", "l":
 		m.wsCursor = m.systemStep(rows, 1)
+		m.scrollWorkspaces()
 		return m, nil
 
 	case "enter":
@@ -435,6 +453,13 @@ func (m model) updateWorkspace(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// running. The same key kills a session in the item list, which is a heavier thing, so the
 	// footer says "forget" here rather than "kill".
 	case "x", "ctrl+x":
+		// This machine is where wisp is running, not an entry anybody added, so there is nothing
+		// here to drop. Said out loud rather than ignored: a key that silently does nothing reads
+		// as a broken binding, and the footer offers "x forget" on every row alike.
+		if r := m.row(rows); r != nil && r.Head != nil && r.Head.Name == "" {
+			m.status = "this machine is not something to forget; x drops a workspace, or a machine you added"
+			return m, nil
+		}
 		name := m.forgetTarget(rows)
 		if name == "" {
 			return m, nil
@@ -473,6 +498,29 @@ func (m model) wsRows() []wsRow {
 	return rows
 }
 
+// scrollWorkspaces keeps the workspace cursor inside the visible window, the same way move()
+// does for the item list.
+//
+// The tree used to render every row it had. lipgloss's Height is a floor rather than a ceiling,
+// so on a machine holding more workspaces than the terminal has lines the pane grew past the
+// bottom and took the footer with it.
+func (m *model) scrollWorkspaces() {
+	total := len(m.wsRows())
+	if m.wsCursor >= total {
+		m.wsCursor = max(0, total-1)
+	}
+	rows := m.listRows()
+	if m.wsCursor < m.wsOffset {
+		m.wsOffset = m.wsCursor
+	}
+	if m.wsCursor >= m.wsOffset+rows {
+		m.wsOffset = m.wsCursor - rows + 1
+	}
+	// Never past the end: a list that shrank under the cursor would otherwise leave the window
+	// scrolled onto blank rows below the last workspace.
+	m.wsOffset = clamp(m.wsOffset, 0, max(0, total-rows))
+}
+
 func (m model) row(rows []wsRow) *wsRow {
 	if m.wsCursor < 0 || m.wsCursor >= len(rows) {
 		return nil
@@ -503,7 +551,7 @@ func (m model) forgetTarget(rows []wsRow) string {
 	case r == nil:
 		return ""
 	case r.Head != nil:
-		return r.Head.Name // "" for this machine, which Unregister refuses by name
+		return r.Head.Name // "" for this machine, which the caller answers for rather than dropping
 	default:
 		return r.Peer.Name
 	}
@@ -692,13 +740,13 @@ func (m model) systemStep(rows []wsRow, delta int) int {
 	return heads[((at+delta)%len(heads)+len(heads))%len(heads)]
 }
 
-func (m model) peer() *wisp.Peer {
-	if m.wsCursor < 0 || m.wsCursor >= len(m.peers) {
-		return nil
-	}
-	p := m.peers[m.wsCursor]
-	return &p
-}
+// peer is the workspace the detail pane describes: whatever enter would go to from here.
+//
+// Through the rows, not into m.peers directly. wsCursor counts machine headers as well as
+// workspaces, so the two index spaces differ by one per machine above the cursor, and indexing
+// the peer list with a row number described the wrong workspace and ran off the end of the list
+// on the last row.
+func (m model) peer() *wisp.Peer { return m.target(m.wsRows()) }
 
 func (m model) current() *wisp.Item {
 	if m.cursor < 0 || m.cursor >= len(m.filtered) {
