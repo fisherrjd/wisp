@@ -3,6 +3,7 @@ package wisp
 import (
 	"errors"
 	"sort"
+	"sync"
 )
 
 // Peer is one workspace's live-session tally, for the picker's header.
@@ -54,6 +55,11 @@ func (c Config) Local() (Board, error) {
 	// One probe per remote workspace, reused for both the list and the header, because for the
 	// workspace you are actually in they answer the same question and a second round trip would
 	// be pure latency.
+	//
+	// The two probe rounds overlap. Each is internally parallel but they used to run one after the
+	// other, which made the picker wait the sum rather than the slower of the two: a machine that
+	// is asleep costs the ssh connect timeout once per round.
+	hosts, probesReady := c.probeHostsAsync()
 	probes := c.probeRemotes(false)
 
 	var items []Item
@@ -64,9 +70,23 @@ func (c Config) Local() (Board, error) {
 		items, err = c.Items(all)
 	}
 
+	probesReady()
 	// The tally goes back even when the list failed. A host that will not answer should show as
 	// a workspace you cannot reach, not as one that vanished.
-	return Board{Items: items, Peers: c.tally(all, c.probeHosts(), probes)}, err
+	return Board{Items: items, Peers: c.tally(all, *hosts, probes)}, err
+}
+
+// probeHostsAsync starts the machine probes and hands back the destination plus the wait for it,
+// so the caller can get on with the remote-workspace probes rather than queueing behind these.
+func (c Config) probeHostsAsync() (*map[string]hostProbe, func()) {
+	out := new(map[string]hostProbe)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		*out = c.probeHosts()
+	}()
+	return out, wg.Wait
 }
 
 // remoteItems is what a remote workspace holds: the wrapper sessions attached from here, then
@@ -126,7 +146,12 @@ func sessionItems(sessions []Session) []Item {
 func (c Config) Peers() []Peer {
 	all := AllSessions()
 	resolveStates(all)
-	return c.tally(all, c.probeHosts(), c.probeRemotes(false))
+	// Overlapped for the same reason Local overlaps them: two independent rounds of ssh, and
+	// running them in turn makes `wisp ws` and every ring hop wait the sum of both.
+	hosts, ready := c.probeHostsAsync()
+	probes := c.probeRemotes(false)
+	ready()
+	return c.tally(all, *hosts, probes)
 }
 
 // LocalPeers is the tallies for this machine's own workspaces, asking no other machine.
