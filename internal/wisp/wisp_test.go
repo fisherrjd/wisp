@@ -405,3 +405,221 @@ func TestShellQuote(t *testing.T) {
 		}
 	}
 }
+
+func TestProjectPath(t *testing.T) {
+	for in, want := range map[string]string{
+		"https://gitlab.com/grp/repo/-/issues/42":            "grp/repo",
+		"https://gitlab.com/grp/sub/deep/repo/-/issues/42":   "grp/sub/deep/repo",
+		"https://gitlab.com/grp/repo/-/merge_requests/7":     "grp/repo",
+		"https://gitlab.com/grp/repo/-/work_items/9":         "grp/repo",
+		"http://gitlab.internal/grp/repo/-/issues/1":         "grp/repo",
+		"https://gitlab.com/grp/repo/-/issues/42#note_12345": "grp/repo",
+		// A group-level epic has no project to belong to, and neither does a bare repo link.
+		"https://gitlab.com/groups/grp/-/epics/3": "",
+		"https://gitlab.com/grp/repo":             "",
+		"not a url":                               "",
+	} {
+		if got := projectPath(in); got != want {
+			t.Errorf("projectPath(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// The kind decides which field is asked for: a merge request is not a work item in GitLab's
+// schema, so asking workItems for one returns nothing at all.
+func TestItemQueryFollowsKind(t *testing.T) {
+	mr := itemQuery("grp/repo", "merge_requests", "7")
+	if !strings.Contains(mr, "mergeRequest(iid: \"7\")") {
+		t.Errorf("merge request query does not ask for mergeRequest: %s", mr)
+	}
+	for _, kind := range []string{"issues", "work_items"} {
+		q := itemQuery("grp/repo", kind, "42")
+		if !strings.Contains(q, "workItems(iid: \"42\")") {
+			t.Errorf("%s query does not ask for workItems: %s", kind, q)
+		}
+		if strings.Contains(q, "mergeRequest") {
+			t.Errorf("%s query asks for a merge request: %s", kind, q)
+		}
+	}
+	// The path is quoted rather than interpolated raw, so a name with a quote in it cannot end
+	// the string early and change the query.
+	if q := itemQuery(`grp/re"po`, "issues", "1"); !strings.Contains(q, `\"`) {
+		t.Errorf("project path is not quoted: %s", q)
+	}
+}
+
+func TestTitleFromResponse(t *testing.T) {
+	for name, tc := range map[string]struct{ raw, want string }{
+		"work item":     {`{"data":{"project":{"workItems":{"nodes":[{"title":"fix the thing"}]}}}}`, "fix the thing"},
+		"merge request": {`{"data":{"project":{"mergeRequest":{"title":"bump deps"}}}}`, "bump deps"},
+		// Not there, or not visible to this token. Distinct from an unparseable response, and
+		// the caller turns it into a message that names both possibilities.
+		"missing item": {`{"data":{"project":{"workItems":{"nodes":[]}}}}`, ""},
+		"no project":   {`{"data":{"project":null}}`, ""},
+	} {
+		got, err := titleFromResponse([]byte(tc.raw))
+		if err != nil {
+			t.Errorf("%s: %v", name, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("%s: got %q, want %q", name, got, tc.want)
+		}
+	}
+	if _, err := titleFromResponse([]byte("not json")); err == nil {
+		t.Error("unparseable response did not error")
+	}
+}
+
+// The point of the fix: a title lookup must not depend on being the assignee. The cache only ever
+// holds assigned items, so a miss has to fall through to a lookup rather than refuse.
+func TestCachedTitleMatchesOnProjectNotJustNumber(t *testing.T) {
+	dir := t.TempDir()
+	c := Config{Workspace: dir, Vault: "working_items", Name: "t"}
+	body := `{"data":{"group":{"workItems":{"nodes":[
+		{"iid":"42","title":"mine in repo-a","webUrl":"https://gitlab.com/grp/repo-a/-/issues/42"}
+	]}}}}`
+	if err := os.WriteFile(c.CachePath(), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.cachedTitle("grp/repo-a", "42"); got != "mine in repo-a" {
+		t.Errorf("own project: got %q, want %q", got, "mine in repo-a")
+	}
+	// Same number, different project. Numbering is per-project, so this must miss rather than
+	// hand back a title belonging to entirely different work.
+	if got := c.cachedTitle("grp/repo-b", "42"); got != "" {
+		t.Errorf("other project: got %q, want \"\"", got)
+	}
+}
+
+// Marking an item done must not disturb the rest of its note. The frontmatter belongs to whoever
+// writes it and can hold anything their editor puts there.
+func TestSetDoneInPreservesTheNote(t *testing.T) {
+	note := "---\ntags:\n    - review\naliases:\n    - the thing\n---\n\n# my item\n\nsome prose.\n"
+	out, err := setDoneIn([]byte(note), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"tags:", "review", "aliases:", "the thing", "# my item", "some prose."} {
+		if !strings.Contains(string(out), want) {
+			t.Errorf("setDoneIn dropped %q:\n%s", want, out)
+		}
+	}
+	if !doneIn(out) {
+		t.Errorf("setDoneIn did not mark it done:\n%s", out)
+	}
+	// And back again, still without losing anything.
+	back, err := setDoneIn(out, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doneIn(back) {
+		t.Errorf("undo did not clear the flag:\n%s", back)
+	}
+	if !strings.Contains(string(back), "some prose.") || !strings.Contains(string(back), "review") {
+		t.Errorf("undo lost part of the note:\n%s", back)
+	}
+}
+
+// A note with no frontmatter at all is the common case: makeItemDir writes a bare heading.
+func TestSetDoneInAddsFrontmatterWhenThereIsNone(t *testing.T) {
+	out, err := setDoneIn([]byte("# my item\n\nprose.\n"), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !doneIn(out) {
+		t.Errorf("not marked done:\n%s", out)
+	}
+	if !strings.Contains(string(out), "# my item") {
+		t.Errorf("body lost:\n%s", out)
+	}
+	// Reopening something never closed must not grow a frontmatter block for a false.
+	same, err := setDoneIn([]byte("# my item\n\nprose.\n"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(same), "---") {
+		t.Errorf("undo on a plain note added frontmatter:\n%s", same)
+	}
+}
+
+// The rule the picker turns on: closed out means hidden, unless something is running under that
+// name. Hiding a live session would leave an agent on the machine with nothing pointing at it.
+func TestHideDoneKeepsLiveSessions(t *testing.T) {
+	items := []Item{
+		{Name: "repo/1-open", State: StateFolder},
+		{Name: "repo/2-closed", State: StateFolder, Done: true},
+		{Name: "repo/3-closed-but-running", State: StateLive, Done: true},
+		{Name: "repo/4-closed-and-waiting", State: StateNeedsInput, Done: true},
+		{Name: "repo/5-closed-on-gitlab", State: StateRemote, Done: true},
+	}
+	var got []string
+	for _, it := range HideDone(items) {
+		got = append(got, it.Name)
+	}
+	want := []string{"repo/1-open", "repo/3-closed-but-running", "repo/4-closed-and-waiting"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("HideDone = %v, want %v", got, want)
+	}
+}
+
+// Done is a separate axis from State, so it must survive a merge from a source that cannot know
+// it. Only the vault row reads the note; a session or a GitLab row arriving second carries false.
+func TestMergeKeepsDoneFromWhicheverSourceKnew(t *testing.T) {
+	sessions := []Item{{Name: "repo/1-thing", State: StateLive}}
+	vault := []Item{{Name: "repo/1-thing", State: StateFolder, Done: true}}
+	gitlab := []Item{{Name: "repo/1-different-slug", State: StateRemote}}
+	merged := MergeAll(sessions, vault, gitlab)
+	if len(merged) != 1 {
+		t.Fatalf("got %d items, want 1: %v", len(merged), merged)
+	}
+	if !merged[0].Done {
+		t.Error("done was lost merging a session and a gitlab row over the vault")
+	}
+	if merged[0].State != StateLive {
+		t.Errorf("state = %v, want live", merged[0].State)
+	}
+}
+
+// End to end over a real vault: the flag is written, read back through LocalItems, and survives
+// the merge that Items does.
+func TestItemDoneRoundTripsThroughTheVault(t *testing.T) {
+	dir := t.TempDir()
+	c := Config{Workspace: dir, Vault: "working_items", Name: "t"}
+	for _, name := range []string{"repo/1-one", "repo/2-two"} {
+		if err := c.makeItemDir(Item{Name: name}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if c.ItemDone("repo/1-one") {
+		t.Error("a fresh item is already done")
+	}
+	if err := c.SetDone("repo/1-one", true); err != nil {
+		t.Fatal(err)
+	}
+	if !c.ItemDone("repo/1-one") {
+		t.Error("SetDone did not stick")
+	}
+	if c.ItemDone("repo/2-two") {
+		t.Error("SetDone marked the wrong item")
+	}
+	items, err := c.LocalItems()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, it := range items {
+		if want := it.Name == "repo/1-one"; it.Done != want {
+			t.Errorf("LocalItems: %s done = %v, want %v", it.Name, it.Done, want)
+		}
+	}
+	if n := len(HideDone(items)); n != 1 {
+		t.Errorf("HideDone left %d of 2 items, want 1", n)
+	}
+	// An item with no note at all must not read as done, or a folder made by hand would vanish.
+	if err := os.Remove(c.NotesPath("repo/2-two")); err != nil {
+		t.Fatal(err)
+	}
+	if c.ItemDone("repo/2-two") {
+		t.Error("an item with no notes.md reads as done")
+	}
+}

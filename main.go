@@ -27,6 +27,9 @@ usage:
   wisp new <name|url>     make an item: a name, or a gitlab link to derive
                           <repo>/<iid>-<slug> from
   wisp ls                 list live sessions, every workspace
+  wisp done <item>        mark an item closed out; it leaves the picker but
+                          nothing on disk is removed. --undo brings it back,
+                          --list shows what has been closed out
   wisp ws                 list workspaces
   wisp ws new [-p] <name> [path]
                           make a directory a workspace and register it;
@@ -253,6 +256,34 @@ func run(args []string) error {
 		fmt.Print(cfg.Preview(wisp.Item{Name: args[1]}, flagInt(args, "--width", 80)))
 		return nil
 
+	// The counterpart to `new`. It writes one line of frontmatter into the item's notes.md, so
+	// whatever closes an item out, a person or the agent finishing its write-up, can end the
+	// work and clear the row in the same action rather than leaving the list to be tidied later.
+	case "done":
+		if hasFlag(args, "--list") {
+			items, err := cfg.BoardItems()
+			if err != nil {
+				return err
+			}
+			for _, it := range wisp.DoneOnly(items) {
+				fmt.Println(it.Name)
+			}
+			return nil
+		}
+		if len(args) < 2 {
+			return fmt.Errorf("usage: wisp done <item> [--undo] | wisp done --list")
+		}
+		undo := hasFlag(args, "--undo")
+		if err := cfg.SetDone(args[1], !undo); err != nil {
+			return err
+		}
+		if undo {
+			fmt.Printf("reopened %s\n", args[1])
+		} else {
+			fmt.Printf("closed out %s; it is out of the picker, nothing on disk was touched\n", args[1])
+		}
+		return nil
+
 	case "new":
 		if len(args) < 2 {
 			return fmt.Errorf("usage: wisp new <name|url> [--json]")
@@ -298,7 +329,7 @@ func emitBoard(cfg wisp.Config, gitlab bool) error {
 			items = wisp.MergeAll(items, remote)
 		}
 		for _, it := range items {
-			out.Items = append(out.Items, wisp.ItemJSON{Name: it.Name, State: int(it.State), Title: it.Title})
+			out.Items = append(out.Items, wisp.ItemJSON{Name: it.Name, State: int(it.State), Title: it.Title, Done: it.Done})
 			switch it.State {
 			case wisp.StateNeedsInput:
 				out.Attn++

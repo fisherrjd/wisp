@@ -50,6 +50,8 @@ wisp open <item>           open an item directly
 wisp next / wisp prev      cycle to the next or previous item session
 wisp hop [next|prev|<ws>]  move to another workspace
 wisp ls                    list live sessions, every workspace
+wisp done <item>           mark an item closed out; --undo reopens it,
+                           --list shows what has been closed out
 wisp ws                    list workspaces
 wisp ws new [-p] <name> [path]
                            make a directory a workspace and register it
@@ -67,7 +69,11 @@ wisp -w <ws> <command>     run any of the above against a named workspace
 
 `board`, `preview` and `new` also exist. They are how one wisp asks another about a workspace it owns, not things to run by hand.
 
-In the picker: type to filter, `enter` opens, `ctrl-n` creates (a name, or a pasted GitLab link), `ctrl-w` opens the tree of machines and workspaces, `ctrl-x` kills the highlighted session, `ctrl-r` refreshes GitLab, `esc` quits and leaves everything running.
+In the picker: type to filter, `enter` opens, `ctrl-n` creates (a name, or a pasted GitLab link), `ctrl-d` closes an item out, `ctrl-t` shows the closed-out ones again, `ctrl-w` opens the tree of machines and workspaces, `ctrl-x` kills the highlighted session, `ctrl-r` refreshes GitLab, `esc` quits and leaves everything running.
+
+`ctrl-d` and `ctrl-x` are the two ways of being finished, and they are not the same one. `ctrl-x` stops what is running and leaves the item; `ctrl-d` ends the work and leaves the list. It writes `done: true` into the item's `notes.md` frontmatter, so nothing on disk is removed and whatever writes your closing notes can set it in the same pass. An item with a live session keeps its row either way: something is still on the machine, and hiding it would leave an agent with nothing pointing at it.
+
+A pasted GitLab link does not have to be assigned to you. Being the assignee is what fills the `+` section of the list, not what decides whether you can open something: reviewing a colleague's merge request is a link away.
 
 `ctrl-w` swaps the list for the tree above it: machines as headers, their workspaces under them, same glyphs one layer up.
 

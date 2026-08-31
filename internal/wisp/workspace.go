@@ -67,9 +67,14 @@ func (c Config) LocalItems() ([]Item, error) {
 			if !child.IsDir() || skipDirs[child.Name()] {
 				continue
 			}
+			name := parent.Name() + "/" + child.Name()
+			// Read here rather than on demand later because this walk is already at the folder,
+			// and because the vault row is the only source that can know: sessions and GitLab
+			// rows have no note to read and merge in as not-done.
 			out = append(out, Item{
-				Name:  parent.Name() + "/" + child.Name(),
+				Name:  name,
 				State: StateFolder,
+				Done:  c.ItemDone(name),
 			})
 		}
 	}

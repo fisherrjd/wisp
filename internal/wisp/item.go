@@ -49,6 +49,10 @@ type Item struct {
 	Name  string
 	State State
 	Title string // GitLab title, when the item came from there
+	// Done is set from the vault folder's notes.md. Not a State, because the states are a ladder
+	// and this is a separate axis: an item can be finished and still have a session running on
+	// it, and the two facts do not overrule each other. See done.go.
+	Done bool
 }
 
 var iidRe = regexp.MustCompile(`^([^/]+)/([0-9]+)-`)
@@ -97,6 +101,12 @@ func Merge(into map[string]Item, order *[]string, it Item) {
 	}
 	if existing.Title == "" {
 		existing.Title = it.Title
+	}
+	// Kept if any source knew it, rather than taken from the winner. Only the vault row reads the
+	// note, so a session or a GitLab row merging over it carries Done=false and would otherwise
+	// reopen an item by arriving second.
+	if it.Done {
+		existing.Done = true
 	}
 	into[k] = existing
 }

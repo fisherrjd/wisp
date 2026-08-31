@@ -12,7 +12,7 @@ import (
 
 // Version is wisp's own version. It lives here rather than in main because the two ends of a
 // remote workspace are separate installs that have to be able to say what they are.
-const Version = "0.15.0"
+const Version = "0.16.0"
 
 // WireVersion is the shape of what `wisp board --json` prints. The two ends are separate
 // installs and will drift, so a mismatch refuses by name and number rather than half-parsing a
@@ -37,13 +37,17 @@ type ItemJSON struct {
 	Name  string `json:"name"`
 	State int    `json:"state"`
 	Title string `json:"title,omitempty"`
+	// Done is additive and omitted when false, so this did not need a new wire number: an older
+	// wisp on either end ignores a field it does not know and reads a missing one as not done,
+	// which is the behaviour it had before the flag existed.
+	Done bool `json:"done,omitempty"`
 }
 
 // Items converts the wire form back into what the picker merges.
 func (b BoardJSON) AsItems() []Item {
 	out := make([]Item, 0, len(b.Items))
 	for _, it := range b.Items {
-		out = append(out, Item{Name: it.Name, State: State(it.State), Title: it.Title})
+		out = append(out, Item{Name: it.Name, State: State(it.State), Title: it.Title, Done: it.Done})
 	}
 	return out
 }

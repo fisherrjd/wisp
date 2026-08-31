@@ -9,9 +9,18 @@ import (
 	"strings"
 )
 
-// iidFromURL pulls the number out of a GitLab item URL. Work items, issues and merge requests
-// all share the /-/<kind>/<n> shape, so one pattern covers every link you might paste.
-var iidFromURL = regexp.MustCompile(`/-/(?:work_items|issues|merge_requests)/([0-9]+)`)
+// iidFromURL pulls the kind and the number out of a GitLab item URL. Work items, issues and
+// merge requests all share the /-/<kind>/<n> shape, so one pattern covers every link you might
+// paste. The kind is kept because merge requests are not work items in GitLab's schema and have
+// to be asked for by a different name.
+var iidFromURL = regexp.MustCompile(`/-/(work_items|issues|merge_requests)/([0-9]+)`)
+
+// projectFromURL pulls a project's full path out of an item URL: everything between the host and
+// the /-/ that introduces the kind.
+//
+// Needed as well as the repo name because item numbers are per-project and the group holds many,
+// so `42` on its own does not identify anything.
+var projectFromURL = regexp.MustCompile(`^https?://[^/]+/(.+?)/-/(?:work_items|issues|merge_requests)/[0-9]+`)
 
 // NewItem turns a line of user input into an item on disk, ready to open.
 //
@@ -117,34 +126,47 @@ func (c Config) itemFromURL(url string) (string, error) {
 	if iidMatch == nil {
 		return "", fmt.Errorf("no item number in that URL")
 	}
-	repo, iid := repoMatch[1], iidMatch[1]
+	repo, kind, iid := repoMatch[1], iidMatch[1], iidMatch[2]
 
-	title, err := c.titleFor(iid)
+	title, err := c.titleFor(url, kind, iid)
 	if err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("%s/%s-%s", repo, iid, slugify(title)), nil
 }
 
-// titleFor finds an item's title so the folder gets a readable slug. It checks the cache first
-// and refreshes once before giving up, since a link is usually pasted precisely because the
-// item is new enough not to be cached yet.
-func (c Config) titleFor(iid string) (string, error) {
-	if title := c.cachedTitle(iid); title != "" {
+// titleFor finds an item's title so the folder gets a readable slug.
+//
+// The cache is only ever the assigned-items query, so it is taken as a free hit and never relied
+// on: an item you are not the assignee of is looked up on its own terms. Being assigned is what
+// puts something in your queue, not what makes it something you can open, and for a while this
+// conflated the two, so pasting a link to a colleague's merge request to review it was refused.
+func (c Config) titleFor(url, kind, iid string) (string, error) {
+	project := projectPath(url)
+	if project == "" {
+		return "", fmt.Errorf("no project path in that URL")
+	}
+	if title := c.cachedTitle(project, iid); title != "" {
 		return title, nil
 	}
-	if err := c.RefreshCache(); err != nil {
-		return "", fmt.Errorf("could not reach gitlab to name #%s: %w", iid, err)
-	}
-	if title := c.cachedTitle(iid); title != "" {
-		return title, nil
-	}
-	// Assigned-to-you is the query, so an unassigned item is invisible here. Say so, and point
-	// at the way round it.
-	return "", fmt.Errorf("#%s is not in your assigned items; type a name instead of a URL", iid)
+	return fetchTitle(project, kind, iid)
 }
 
-func (c Config) cachedTitle(iid string) string {
+// projectPath is a project's full path from one of its item URLs, or "" if the URL is not one.
+func projectPath(url string) string {
+	m := projectFromURL.FindStringSubmatch(url)
+	if m == nil {
+		return ""
+	}
+	return m[1]
+}
+
+// cachedTitle looks an item up in the assigned-items cache.
+//
+// Matched on the project as well as the number. The group query spans every project under the
+// group and numbering is per-project, so on the number alone a paste of one project's #42 would
+// take another project's title and file the folder under a name belonging to different work.
+func (c Config) cachedTitle(project, iid string) string {
 	raw, err := os.ReadFile(c.CachePath())
 	if err != nil {
 		return ""
@@ -154,7 +176,7 @@ func (c Config) cachedTitle(iid string) string {
 		return ""
 	}
 	for _, n := range parsed.Data.Group.WorkItems.Nodes {
-		if n.IID == iid {
+		if n.IID == iid && projectPath(n.WebURL) == project {
 			return n.Title
 		}
 	}

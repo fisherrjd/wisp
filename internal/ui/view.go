@@ -55,7 +55,7 @@ func wsGlyph(p wisp.Peer) (string, lipgloss.AdaptiveColor) {
 
 var (
 	footerStates = []wisp.State{wisp.StateLive, wisp.StateNeedsInput, wisp.StateFolder, wisp.StateRemote}
-	footerKeys   = []string{"enter open", "ctrl-n new", "ctrl-w workspaces", "ctrl-x kill", "ctrl-r refresh", "esc quit"}
+	footerKeys   = []string{"enter open", "ctrl-n new", "ctrl-d done", "ctrl-w workspaces", "ctrl-x kill", "ctrl-r refresh", "esc quit"}
 	// The create line has its own keys, since most of the list bindings do not apply while a
 	// name is being typed.
 	newKeys = []string{"enter create", "esc cancel"}
@@ -88,9 +88,14 @@ func (m model) activeLegend() []legendEntry {
 	if m.mode == modeWorkspace || m.mode == modeNewWS || m.mode == modeNewHost {
 		return wsLegend
 	}
-	out := make([]legendEntry, 0, len(footerStates))
+	out := make([]legendEntry, 0, len(footerStates)+1)
 	for _, s := range footerStates {
 		out = append(out, legendEntry{s.Glyph(), s.Label(), glyphColor(s)})
+	}
+	// Only while they are being shown. A key for a mark that is not on screen is noise, and the
+	// footer is already the widest thing competing for the bottom line.
+	if m.showDone {
+		out = append(out, legendEntry{"✓", "done", colFaint})
 	}
 	return out
 }
@@ -309,7 +314,14 @@ func (m model) renderList(rows int) string {
 		if selected {
 			lead = pointer.String() + " "
 		}
-		glyph := lipgloss.NewStyle().Foreground(glyphColor(it.State)).Render(it.State.Glyph())
+		// Done overrides the state glyph only while nothing is running. A live closed-out item
+		// keeps its "●": something is on the machine holding an agent, and marking the row
+		// finished would hide the one fact that still needs acting on.
+		mark, colour := it.State.Glyph(), glyphColor(it.State)
+		if it.Done && it.State < wisp.StateLive {
+			mark, colour = "✓", colFaint
+		}
+		glyph := lipgloss.NewStyle().Foreground(colour).Render(mark)
 
 		// Dim the repo prefix so the part that differs between rows is what reads first.
 		name := it.Name

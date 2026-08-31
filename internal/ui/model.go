@@ -75,6 +75,10 @@ type model struct {
 	filtered []wisp.Item
 	cursor   int
 	offset   int
+	// showDone reveals the closed-out items, which the list leaves out by default. A hidden
+	// thing needs a way back into view or ctrl-d is a one-way door, and an item marked finished
+	// by mistake would only be recoverable by editing its note by hand.
+	showDone bool
 
 	// peers is every workspace's live tally, shown in the header and, in workspace mode, as the
 	// list itself. Without it the workspace ring is invisible from inside any one of its members.
@@ -156,14 +160,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.wsCursor = max(0, rows-1)
 		}
 		m.scrollWorkspaces()
-		m.all = wisp.MergeAll(m.local, m.remote)
-		m.applyFilter()
+		m.rebuild()
 		return m, m.previewCmd()
 
 	case remoteMsg:
 		m.remote = msg.items
-		m.all = wisp.MergeAll(m.local, m.remote)
-		m.applyFilter()
+		m.rebuild()
 		if msg.err != nil {
 			// Remote failures are shown, not swallowed: an empty "+" section otherwise looks
 			// like having no assigned items rather than a broken query.
@@ -237,6 +239,37 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// The outer ring, as a list rather than a blind step. Cycling is right for a tmux
 		// binding, where one key is the whole interface; here there is a screen to put the
 		// workspaces on, so you can see which one has an agent waiting and go straight to it.
+		// Closing an item out, and looking back at what has been. Both are list-level rather
+		// than session-level: ctrl-x already owns "stop the thing that is running", and this is
+		// the other half, "I am finished with this piece of work", which usually happens when
+		// nothing is running at all.
+		case "ctrl+d":
+			if it := m.current(); it != nil {
+				done := !it.Done
+				if err := m.cfg.SetDone(it.Name, done); err != nil {
+					m.status = err.Error()
+					return m, nil
+				}
+				if done {
+					m.status = "closed out " + it.Name + "; ctrl-t shows it again"
+				} else {
+					m.status = "reopened " + it.Name
+				}
+				// Local only. Being finished with something is a fact about this vault, and
+				// re-querying gitlab here would stall the list to learn nothing.
+				return m, loadLocal(m.cfg)
+			}
+
+		case "ctrl+t":
+			m.showDone = !m.showDone
+			if m.showDone {
+				m.status = "showing closed-out items"
+			} else {
+				m.status = ""
+			}
+			m.rebuild()
+			return m, m.previewCmd()
+
 		case "ctrl+w":
 			m.mode = modeWorkspace
 			m.status = ""
@@ -300,7 +333,7 @@ func (m model) updateNew(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		it, err := m.cfg.NewItem(m.input)
 		if err != nil {
 			// Stay on the line with the text intact: these errors are things the user can
-			// correct in place, like a URL for an item that is not assigned to them.
+			// correct in place, like a link whose repo half no repo_pattern matches.
 			m.status = err.Error()
 			return m, nil
 		}
@@ -348,6 +381,19 @@ func (m *model) move(delta int) {
 	if m.cursor >= m.offset+rows {
 		m.offset = m.cursor - rows + 1
 	}
+}
+
+// rebuild merges the two sources and drops what has been closed out, then re-runs the query.
+//
+// The hiding happens here rather than in either source. Filtering local items before the merge
+// would let a still-open GitLab row re-add the item that had just been hidden, since only the
+// vault row carries the flag.
+func (m *model) rebuild() {
+	m.all = wisp.MergeAll(m.local, m.remote)
+	if !m.showDone {
+		m.all = wisp.HideDone(m.all)
+	}
+	m.applyFilter()
 }
 
 func (m *model) applyFilter() {

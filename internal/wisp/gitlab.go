@@ -37,6 +37,76 @@ const query = `
   }
 }`
 
+// itemResponse is the answer to itemQuery. Both fields are asked for by kind, never together, so
+// only one of them is ever populated.
+type itemResponse struct {
+	Data struct {
+		Project struct {
+			MergeRequest *struct {
+				Title string `json:"title"`
+			} `json:"mergeRequest"`
+			WorkItems struct {
+				Nodes []glabNode `json:"nodes"`
+			} `json:"workItems"`
+		} `json:"project"`
+	} `json:"data"`
+}
+
+// itemQuery asks for one item's title, by project and number.
+//
+// Deliberately not a widening of the queue query above. That one answers "what is on my plate"
+// and is filtered to the assignee for good reason; this one answers "what is this link", which
+// has no business caring who the item belongs to. They only ever looked like the same question
+// because the queue's cache was the sole place a title had ever been written down.
+func itemQuery(project, kind, iid string) string {
+	// Merge requests are not work items in GitLab's schema, so the field follows the kind that
+	// was in the URL rather than guessing and retrying.
+	if kind == "merge_requests" {
+		return fmt.Sprintf(`{ project(fullPath: %q) { mergeRequest(iid: %q) { title } } }`, project, iid)
+	}
+	return fmt.Sprintf(`{ project(fullPath: %q) { workItems(iid: %q) { nodes { title } } } }`, project, iid)
+}
+
+// titleFromResponse reads the title back out, whichever field it came in. Returns "" when the
+// item is simply not there, which is a different failure from the query not running at all.
+func titleFromResponse(raw []byte) (string, error) {
+	var parsed itemResponse
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return "", fmt.Errorf("unreadable gitlab response: %w", err)
+	}
+	p := parsed.Data.Project
+	if p.MergeRequest != nil && p.MergeRequest.Title != "" {
+		return p.MergeRequest.Title, nil
+	}
+	for _, n := range p.WorkItems.Nodes {
+		if n.Title != "" {
+			return n.Title, nil
+		}
+	}
+	return "", nil
+}
+
+// fetchTitle asks GitLab what a single item is called. No cache: this runs once, when a link is
+// pasted by hand, and the thing it is being asked about is usually too new or too much someone
+// else's to have been cached by anything.
+func fetchTitle(project, kind, iid string) (string, error) {
+	if _, err := exec.LookPath("glab"); err != nil {
+		return "", fmt.Errorf("glab not on PATH, so #%s cannot be named from its link; type a name instead", iid)
+	}
+	out, err := exec.Command("glab", "api", "graphql", "-f", "query="+itemQuery(project, kind, iid)).Output()
+	if err != nil {
+		return "", fmt.Errorf("could not reach gitlab to name #%s: %w", iid, err)
+	}
+	title, err := titleFromResponse(out)
+	if err != nil {
+		return "", err
+	}
+	if title == "" {
+		return "", fmt.Errorf("gitlab has no #%s in %s, or your token cannot see it", iid, project)
+	}
+	return title, nil
+}
+
 // GitLabItems returns open work items assigned to the configured user. It is entirely optional:
 // with no group configured, no glab on PATH, or no network, it returns nothing and the picker
 // simply shows local items only.
