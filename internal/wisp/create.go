@@ -49,6 +49,11 @@ func (c Config) CreateWorkspace(name, path string, mkdir bool) (string, error) {
 		return "", fmt.Errorf("a workspace needs a name: wisp ws new <name> [path]")
 	}
 
+	// A host with nothing after the colon is the machine itself, not one workspace on it.
+	if loc := ParseLocation(path); loc.IsRemote() && loc.Path == "" {
+		return c.AddHost(name, loc.Host)
+	}
+
 	// A path with a host in front of it. Registering it here is always the local half; -p also
 	// makes it over there, by running the same command on the far side rather than by reaching
 	// into its filesystem. Same bargain as locally: without the flag the workspace has to exist
@@ -104,6 +109,46 @@ func (c Config) CreateWorkspace(name, path string, mkdir bool) (string, error) {
 	return abs, nil
 }
 
+// AddHost registers a machine, which makes every workspace it holds reachable at once.
+//
+// A machine rather than a path, because the machine already knows what it holds. Listing its
+// workspaces here as well would be a second copy of a list only one side owns, and the two would
+// drift the moment one was made over there.
+//
+// An unreachable machine is still added, with a summary saying so. It is almost always a typo,
+// but it is also sometimes a desktop that is asleep, and forgetting one is a single keystroke.
+func (c Config) AddHost(name, target string) (string, error) {
+	if name == "" {
+		name = HostName(target)
+	}
+	name = wsToken(name)
+	if name == "" {
+		return "", fmt.Errorf("a machine needs a name: wisp ws new <name> <host>:")
+	}
+	if existing, ok := c.Hosts[name]; ok && existing != target {
+		return "", fmt.Errorf("machine %q already points at %s", name, existing)
+	}
+	for n, t := range c.Hosts {
+		if n != name && t == target {
+			return "", fmt.Errorf("%s is already the machine %q", target, n)
+		}
+	}
+	if err := c.registerHost(name, target); err != nil {
+		return "", err
+	}
+
+	h, err := Enumerate(target)
+	switch {
+	case err != nil:
+		return target + ", but it did not answer: " + err.Error(), nil
+	case len(h.Workspaces) == 0:
+		return target + ", which has no workspaces registered yet", nil
+	default:
+		return fmt.Sprintf("%s, %d %s", target, len(h.Workspaces),
+			plural(len(h.Workspaces), "workspace", "workspaces")), nil
+	}
+}
+
 // checkFree refuses both directions of conflict, because they need different answers. A name
 // already in use means picking another; a location already registered means the workspace exists
 // and the name you wanted is a second alias for it, which the ring would then show twice.
@@ -138,7 +183,14 @@ func sameLocation(a, b Location) bool {
 // and destroying one must not be the same keystroke, which is why there is no flag here to make
 // it the second thing.
 func (c Config) Unregister(name string) error {
-	if _, ok := c.Workspaces[name]; !ok {
+	_, isWorkspace := c.Workspaces[name]
+	_, isHost := c.Hosts[name]
+	if !isWorkspace && !isHost {
+		// A workspace discovered through a machine is not something this end registered, so
+		// there is nothing here to remove. The machine is the entry.
+		if host, _, ok := c.splitQualified(name); ok {
+			return fmt.Errorf("%s belongs to the machine %q; forget the machine to drop all of its workspaces", name, host)
+		}
 		return fmt.Errorf("no workspace named %q", name)
 	}
 	if name == c.Name {
@@ -159,6 +211,11 @@ func (c Config) Unregister(name string) error {
 	removed := false
 	if ws := mapValue(root, "workspaces"); ws != nil {
 		removed = deleteMapKey(ws, name)
+	}
+	// Machines can be written as a list as well as a mapping, so both shapes have to be handled
+	// rather than only the one wisp itself writes.
+	if !removed {
+		removed = deleteHost(mapValue(root, "hosts"), name, c.Hosts[name])
 	}
 	// Not in the block, so it can only have come from the older single `workspace:` key, which
 	// is folded into the set at load under its directory name.
@@ -181,6 +238,32 @@ func (c Config) Unregister(name string) error {
 		return err
 	}
 	return writeConfig(cfgPath, out.Bytes())
+}
+
+// registerHost adds a machine to the user config, preserving what is already in the file.
+func (c Config) registerHost(name, target string) error {
+	return c.writeInto("hosts", name, target)
+}
+
+// deleteHost removes a machine from either shape the hosts key can take: a mapping keyed by
+// name, or a plain list of targets whose names were derived from the target itself.
+func deleteHost(hosts *yaml.Node, name, target string) bool {
+	if hosts == nil {
+		return false
+	}
+	if hosts.Kind == yaml.MappingNode {
+		return deleteMapKey(hosts, name)
+	}
+	if hosts.Kind != yaml.SequenceNode {
+		return false
+	}
+	for i, item := range hosts.Content {
+		if item.Value == target || HostName(item.Value) == name {
+			hosts.Content = append(hosts.Content[:i], hosts.Content[i+1:]...)
+			return true
+		}
+	}
+	return false
 }
 
 // deleteMapKey removes a key and its value from a mapping, reporting whether it was there.
@@ -211,10 +294,18 @@ func (c Config) Reload() (Config, error) {
 // would emit every defaulted field wisp holds and drop every comment the user wrote, turning a
 // one-line addition into a rewrite of a file they own and did not ask to have reformatted.
 func (c Config) register(name string, loc Location) error {
-	path := loc.String()
+	return c.writeInto("workspaces", name, loc.String())
+}
+
+// writeInto adds one `section: {key: value}` entry to the user config.
+//
+// Written back through a yaml.Node rather than by marshalling the Config struct. Marshalling
+// would emit every defaulted field wisp holds and drop every comment the user wrote, turning a
+// one-line addition into a rewrite of a file they own and did not ask to have reformatted.
+func (c Config) writeInto(section, name, value string) error {
 	cfgPath := UserConfigPath()
 	if cfgPath == "" {
-		return fmt.Errorf("cannot locate a config directory to record the workspace in")
+		return fmt.Errorf("cannot locate a config directory to record this in")
 	}
 
 	var doc yaml.Node
@@ -229,29 +320,38 @@ func (c Config) register(name string, loc Location) error {
 	}
 
 	root := documentRoot(&doc)
+	// A default is only ever chosen for a workspace. Machines are reached, not fallen back to.
+	needsDefault := section == "workspaces" &&
+		mapValue(root, "default") == nil && mapValue(root, "workspace") == nil
 
 	// Nothing to merge into, so add the block rather than re-emitting the file. yaml.v3 keeps
 	// comments through a round trip but not blank lines, and reflowing a config someone wrote by
-	// hand is a poor trade for adding two lines to the end of it. Once a workspaces block exists,
-	// it is one wisp is most likely to have written itself, and the encoder path below takes over.
-	if mapValue(root, "workspaces") == nil {
-		block := fmt.Sprintf("workspaces:\n  %s: %s\n", name, quoteYAML(path))
-		if mapValue(root, "default") == nil && mapValue(root, "workspace") == nil {
+	// hand is a poor trade for adding two lines to the end of it. Once the block exists, it is
+	// one wisp is most likely to have written itself, and the encoder path below takes over.
+	existing := mapValue(root, section)
+	if existing == nil {
+		block := fmt.Sprintf("%s:\n  %s: %s\n", section, name, quoteYAML(value))
+		if needsDefault {
 			block += fmt.Sprintf("default: %s\n", name)
 		}
 		return writeConfig(cfgPath, appendBlock(raw, block))
 	}
-	workspaces := mapValue(root, "workspaces")
-	if workspaces == nil {
-		workspaces = &yaml.Node{Kind: yaml.MappingNode}
-		setMapValue(root, "workspaces", workspaces)
+	// A hosts list written by hand rather than as a mapping. Converted rather than appended to,
+	// so that naming one machine does not force naming all of them.
+	if existing.Kind == yaml.SequenceNode {
+		converted := &yaml.Node{Kind: yaml.MappingNode}
+		for _, item := range existing.Content {
+			setMapValue(converted, HostName(item.Value), &yaml.Node{Kind: yaml.ScalarNode, Value: item.Value})
+		}
+		setMapValue(root, section, converted)
+		existing = converted
 	}
-	setMapValue(workspaces, name, &yaml.Node{Kind: yaml.ScalarNode, Value: path})
+	setMapValue(existing, name, &yaml.Node{Kind: yaml.ScalarNode, Value: value})
 
 	// Only when nothing already answers the question. Both `default:` and the older
 	// `workspace:` key say which one wisp falls back to, and quietly moving that because a new
 	// workspace was added would redirect every bare `wisp` run from outside a workspace.
-	if mapValue(root, "default") == nil && mapValue(root, "workspace") == nil {
+	if needsDefault {
 		setMapValue(root, "default", &yaml.Node{Kind: yaml.ScalarNode, Value: name})
 	}
 

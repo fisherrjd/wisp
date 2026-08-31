@@ -8,22 +8,29 @@ Status: **built** as of v0.11.0, with the exceptions at the bottom. Workspaces a
 
 The alternative, running the picker on the far side over `ssh -t`, makes every keystroke a network round trip for the sake of redrawing a list. The picker is already built to load slowly and paint fast: local candidates arrive first and the remote source folds in when it answers. A machine across the network is just another slow source.
 
-## Config
+## Config: a machine, not a path
 
-A workspace's location grows a host. Both spellings are accepted, because the scp shorthand is already in everyone's fingers and the explicit form is what you want once there is more to say.
+```yaml
+hosts:
+  - jade@eldo
+  - bigbox
+```
+
+The unit is the machine, because the machine already knows what it holds. Registering its workspaces here as well would be a second copy of a list only one side owns, and the two would drift the moment one was made over there. It is also cheaper: one round trip per machine, where a per-workspace list costs one each and gets slower the more you add.
+
+Names default to the hostname, without the account in front or the domain behind. A machine's **default workspace takes its bare name**, and anything else it holds is `eldo/side`: one machine usually holds one workspace, and `eldo/work` where `eldo` would do is ceremony. The mapping form, `box: jade@eldo`, renames a machine when the hostname is not what you want to call it.
+
+A machine's config is a list of what it was told about, not a scan of its disk, so a workspace it has never registered still needs a path here:
 
 ```yaml
 workspaces:
-  work: ~/work                    # local, unchanged
-  desktop: bigbox:~/work          # shorthand
-  laptop:                         # explicit
-    host: macbook
-    path: ~/work
+  work: ~/work                    # local
+  scratch: bigbox:~/scratch       # a path on a machine
 ```
 
-`Workspaces map[string]string` becomes `map[string]Location` where `Location` is `{Host, Path}` and an empty host means local. A custom `UnmarshalYAML` accepts a scalar or a mapping.
+`Location` is `{Host, Path, Name}`. An empty host is local. A discovered workspace carries a host and a `Name` but no path, and is asked for by that name (`wisp -w side board --json`), because the machine that owns it is the one that knows where it is. A path copied over here would be a second answer to a question only one side can answer, and it would also mean resolving a name required a network call — this way it is pure syntax.
 
-A scalar is remote when it holds a colon before the first slash. That makes `/var/lib/a:b` a local path and `bigbox:~/work` a remote one, with no mode flag to set and no ambiguity worth worrying about.
+A scalar location is remote when it holds a colon before the first slash. That makes `/var/lib/a:b` a local path and `bigbox:~/work` a remote one, with no mode flag to set. A trailing colon with nothing after it is the machine itself, which is what lets one create line in the picker add either.
 
 ## The wire
 
@@ -80,7 +87,9 @@ Three failures get their own message rather than a raw shell error:
 
 ## What a board must not do
 
-`board` reports one workspace and consults no other. It is the one place where that has to be said out loud: the obvious implementation reuses the picker's own loader, which builds the workspace tally, which probes every remote workspace the machine has configured. A board request that did that would walk from host to host with nothing to stop it, and a pair of machines each holding the other would never return at all.
+`board` reports one workspace and consults no other, and `ws --json` reports only the machine's own workspaces. It is the one thing that has to be said out loud twice: the obvious implementation of each reuses the picker's own loader, which builds the workspace tally, which asks every machine configured here. A pair of machines each holding the other would never return at all.
+
+`ws --json` is narrower still. It reports what the machine has **registered**, not the workspace its current directory happens to resolve to — an ssh command lands in `$HOME`, and reporting whatever that resolved to would put a row in the asking machine's ring for a workspace nobody registered anywhere.
 
 The same reasoning is why the tally does not add wrapper sessions to a remote workspace's counts. The far side already knows about every session it owns, including the ones this machine is attached to, so counting the wrapper as well would report each of them twice.
 

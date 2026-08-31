@@ -28,8 +28,11 @@ usage:
   wisp ws                 list workspaces
   wisp ws new [-p] <name> [path]
                           make a directory a workspace and register it;
-                          -p creates the directory too
-  wisp ws rm <name>       forget a workspace; nothing on disk is touched
+                          -p creates the directory too. The path may be
+                          local, host:path, or host: for every workspace
+                          on that machine
+  wisp ws rm <name>       forget a workspace or machine; nothing on disk
+                          is touched
   wisp kill <item>        kill an item's session
   wisp repos              list workspace repos
   wisp version            print the version
@@ -182,6 +185,18 @@ func run(args []string) error {
 			fmt.Printf("forgot %s; nothing on disk was touched\n", args[2])
 			return nil
 		}
+		// --json is how another machine asks what this one holds. Its own workspaces only: a
+		// machine that enumerated its remote ones would let two of them holding each other
+		// enumerate forever.
+		if hasFlag(args, "--json") {
+			out := wisp.HostJSON{Wire: wisp.WireVersion, Wisp: wisp.Version, Default: cfg.DefaultName()}
+			for _, p := range cfg.LocalPeers() {
+				out.Workspaces = append(out.Workspaces, wisp.WSJSON{
+					Name: p.Name, Path: p.Path, Ready: p.Ready, Live: p.Live, Attn: p.Attn,
+				})
+			}
+			return json.NewEncoder(os.Stdout).Encode(out)
+		}
 		for _, p := range cfg.Peers() {
 			mark := " "
 			if p.Current {
@@ -325,6 +340,15 @@ func newWorkspace(cfg wisp.Config, args []string) error {
 	if err != nil {
 		return err
 	}
+
+	// A machine, not a workspace: it stands in for everything it holds, so there is nothing here
+	// to name a path for.
+	if loc := wisp.ParseLocation(path); loc.IsRemote() && loc.Path == "" {
+		fmt.Printf("machine %s at %s\n\n  wisp ws        its workspaces\n  wisp -w %s%s go to it\n",
+			name, created, name, strings.Repeat(" ", max(1, 8-len(name))))
+		return nil
+	}
+
 	fmt.Printf("workspace %s at %s\n", name, created)
 
 	// A remote one was registered, not built: the vault and the config over there are the far

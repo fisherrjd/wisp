@@ -149,15 +149,21 @@ It records intent, and deliberately not worktree paths: a path would be a cache 
 
 ## Remote workspaces
 
-A workspace with a host in front of it is on another machine. The hop ring reaches it, the picker lists it, and opening an item there puts you in the agent running on that machine.
+You register a **machine**, not a path. The machine already knows what it holds, so listing its workspaces here as well would be a second copy of a list only one side owns, and the two would drift the moment you made one over there.
 
 ```yaml
-workspaces:
-  work: ~/work                    # local
-  desktop: bigbox:~/work          # the scp shorthand
-  laptop:                         # or the long form
-    host: macbook
-    path: ~/work
+hosts:
+  - jade@eldo                     # named after the machine
+  - bigbox
+
+hosts:                            # or a mapping, to call one something else
+  box: jade@eldo
+```
+
+Everything on it joins the ring, and opening an item there puts you in the agent running on that machine. The machine's default workspace takes its bare name, since a machine usually holds one and calling it `eldo/work` where `eldo` would do is ceremony; anything else it holds is `eldo/side`.
+
+```
+› ▏                              near ●2 · eldo ?1 · eldo/side · box ⚠      4/9
 ```
 
 **The picker always runs locally. Only the agent session runs remotely.** Opening a remote item makes an ordinary wisp session here whose one window is an `ssh -t` into the machine that owns the work, so `next`, `prev`, the ring, the last-visited session and the needs-input check all keep working on it unchanged. Sessions running over there that you are not attached to come from asking the wisp on the far side, which needs to be installed and on its PATH.
@@ -165,15 +171,18 @@ workspaces:
 Adding one is the same gesture as adding a local workspace, from the shell or from `ctrl-w` `ctrl-n` in the picker:
 
 ```
-wisp ws new desktop bigbox:~/work        # register one that is already there
-wisp ws new desktop -p bigbox:~/work     # and make it there too
+wisp ws new eldo jade@eldo:              # the machine, and everything on it
+wisp ws new scratch bigbox:~/scratch     # one workspace it has not registered
+wisp ws new scratch -p bigbox:~/scratch  # and make it there too
 ```
 
-`-p` runs the same command on the far side rather than reaching into its filesystem. The ssh user belongs in the location, `jade@bigbox:~/work`, so a host whose account does not match your local one needs nothing in `~/.ssh/config`.
+The trailing colon separates the two: a host with nothing after it means the machine. `-p` runs the same command on the far side rather than reaching into its filesystem. The ssh user belongs in the target, `jade@eldo`, so a machine whose account does not match your local one needs nothing in `~/.ssh/config`.
 
-Beyond that wisp does no authentication. If `ssh bigbox` works in your shell it works here, and if it does not, that is an ssh config problem with an ssh config fix.
+Beyond that wisp does no authentication. If `ssh eldo` works in your shell it works here, and if it does not, that is an ssh config problem with an ssh config fix.
 
-A workspace that will not answer is marked `⚠` rather than dropped, separately from the `✗` of one that does not exist: both are unusable, but one is fixed by making a directory and the other by fixing ssh.
+A machine that will not answer keeps its own row, marked `⚠`, rather than silently taking its workspaces out of the list. That is separate from the `✗` of a workspace that does not exist: both are unusable, but one is fixed by making a directory and the other by fixing ssh.
+
+Forgetting a machine drops everything on it at once. `ctrl-x` on one of its workspaces says so rather than pretending to remove a row that was never registered here.
 
 Attaching stacks two tmux servers, so the prefix key means two things. The wrapper's status bar says which workspace and host you are in; what the prefix does is your tmux config's call.
 

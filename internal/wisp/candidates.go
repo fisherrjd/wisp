@@ -2,7 +2,7 @@ package wisp
 
 import (
 	"errors"
-	"fmt"
+	"sort"
 )
 
 // Peer is one workspace's live-session tally, for the picker's header.
@@ -53,28 +53,35 @@ func (c Config) Local() (Board, error) {
 	var items []Item
 	var err error
 	if c.IsRemote() {
-		p, ok := probes[c.Name]
-		switch {
-		case !ok:
-			err = fmt.Errorf("%s is not in the workspace set", c.Name)
-		case p.err != nil:
-			err = p.err
-		default:
-			// Wrapper sessions first, then what the far side reports. Both describe the same
-			// items and Merge keeps the higher state, but the wrappers are observed here rather
-			// than reported, so they are the ones whose name and state win.
-			items = MergeAll(sessionItems(c.claim(all)), p.board.AsItems())
-			if p.board.Note != "" {
-				err = errors.New(p.board.Note)
-			}
-		}
+		items, err = c.remoteItems(all, probes)
 	} else {
 		items, err = c.Items(all)
 	}
 
 	// The tally goes back even when the list failed. A host that will not answer should show as
 	// a workspace you cannot reach, not as one that vanished.
-	return Board{Items: items, Peers: c.tally(all, probes)}, err
+	return Board{Items: items, Peers: c.tally(all, c.probeHosts(), probes)}, err
+}
+
+// remoteItems is what a remote workspace holds: the wrapper sessions attached from here, then
+// what the machine that owns it reports.
+//
+// Wrappers first because Merge keeps the first name and the highest state, and their state is
+// observed here rather than reported from the other end.
+func (c Config) remoteItems(all []Session, probes map[string]probe) ([]Item, error) {
+	wrappers := sessionItems(c.claim(all))
+	board, err := c.Location.Board(false)
+	if p, ok := probes[c.Name]; ok {
+		board, err = p.board, p.err
+	}
+	if err != nil {
+		return wrappers, err
+	}
+	items := MergeAll(wrappers, board.AsItems())
+	if board.Note != "" {
+		return items, errors.New(board.Note)
+	}
+	return items, nil
 }
 
 // Items is this workspace's own items and nothing else: live sessions, then the vault.
@@ -113,16 +120,42 @@ func sessionItems(sessions []Session) []Item {
 func (c Config) Peers() []Peer {
 	all := AllSessions()
 	resolveStates(all)
-	return c.tally(all, c.probeRemotes(false))
+	return c.tally(all, c.probeHosts(), c.probeRemotes(false))
+}
+
+// LocalPeers is the tallies for this machine's own workspaces, asking no other machine.
+//
+// What `wisp ws --json` answers with. A machine enumerating its own remote workspaces would let
+// two of them holding each other enumerate forever, the same trap `board` has a guard for.
+func (c Config) LocalPeers() []Peer {
+	all := AllSessions()
+	resolveStates(all)
+	// Registered workspaces only. The one the current directory happens to resolve to is not
+	// something this machine was told to hold, and reporting it would put a row in the asking
+	// machine's ring for wherever an ssh session happened to land.
+	var out []Peer
+	for _, p := range c.tally(all, nil, nil) {
+		if loc, ok := c.Workspaces[p.Name]; ok && !loc.IsRemote() {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // tally groups resolved sessions by workspace. Sessions from before workspaces existed carry no
 // workspace of their own and count towards the default, matching who claims them in the picker.
-func (c Config) tally(all []Session, probes map[string]probe) []Peer {
+func (c Config) tally(all []Session, hosts map[string]hostProbe, probes map[string]probe) []Peer {
 	names := c.WorkspaceNames()
 	at := make(map[string]int, len(names))
 	peers := make([]Peer, 0, len(names))
 	for _, n := range names {
+		// A machine stands in for whatever it holds, so its bare name is replaced by one row per
+		// workspace it reports. The bare name survives only when it cannot be asked, which is
+		// the one case where there is nothing better to show.
+		if pr, ok := hosts[n]; ok {
+			peers = append(peers, c.hostPeers(n, pr)...)
+			continue
+		}
 		p := Peer{Name: n, Current: n == c.Name, Ready: c.Ready(), Path: c.Location.String()}
 		if !p.Current {
 			// Loaded rather than guessed at: another workspace can name its vault directory
@@ -176,7 +209,42 @@ func (c Config) tally(all []Session, probes map[string]probe) []Peer {
 			peers[i].Attn++
 		}
 	}
+	sort.Slice(peers, func(i, j int) bool { return peers[i].Name < peers[j].Name })
 	return peers
+}
+
+// hostPeers turns one machine's answer into rows.
+//
+// Its default workspace takes the machine's bare name, because a machine usually holds one and
+// calling it `eldo/work` when `eldo` would do reads as ceremony. Only the machines with more
+// than one need the longer form, and only for the others.
+func (c Config) hostPeers(host string, pr hostProbe) []Peer {
+	if pr.err != nil {
+		return []Peer{{Name: host, Path: c.Hosts[host], Unreachable: true, Detail: pr.err.Error()}}
+	}
+	if len(pr.host.Workspaces) == 0 {
+		return []Peer{{
+			Name: host, Path: c.Hosts[host], Ready: false,
+			Detail: "no workspaces registered on " + c.Hosts[host] + "; make one there, or add it here with a path",
+		}}
+	}
+	out := make([]Peer, 0, len(pr.host.Workspaces))
+	for _, ws := range pr.host.Workspaces {
+		name := qualify(host, ws.Name, ws.Name == pr.host.Default)
+		p := Peer{
+			Name:    name,
+			Current: name == c.Name,
+			Ready:   ws.Ready,
+			Path:    c.Hosts[host] + ":" + ws.Path,
+			Live:    ws.Live,
+			Attn:    ws.Attn,
+		}
+		if !p.Ready {
+			p.Detail = "no vault at " + ws.Path + " on " + c.Hosts[host]
+		}
+		out = append(out, p)
+	}
+	return out
 }
 
 // MergeAll folds later lists into the first, keeping its ordering and precedence. Used to add

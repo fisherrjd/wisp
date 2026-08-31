@@ -152,23 +152,33 @@ func (c Config) Hop(target string) error {
 // created is a stop with nothing in it, and stopping there would strand you on an error message
 // with no way onward but to name the next one by hand.
 func (c Config) walk(delta int) error {
-	names := c.WorkspaceNames()
-	if len(names) < 2 {
-		return fmt.Errorf("only one workspace (%s); add more under `workspaces:` in %s",
+	// The same list the picker shows, which for a configured machine means the workspaces it
+	// reports rather than only its name. Costs a round trip per machine; a ring that visited a
+	// different set of places than the list in front of you would be worse.
+	peers := c.Peers()
+	if len(peers) < 2 {
+		return fmt.Errorf("only one workspace (%s); add a machine under `hosts:` or a workspace under `workspaces:` in %s",
 			c.Name, UserConfigPath())
 	}
+	names := make([]string, len(peers))
+	ready := make(map[string]bool, len(peers))
+	for i, p := range peers {
+		names[i], ready[p.Name] = p.Name, p.Ready
+	}
+
 	name := c.Name
 	var skipped []string
 	for range names[1:] {
 		name = step(names, name, delta)
-		next, err := Load(name)
-		if err == nil && next.Ready() {
-			return c.enter(next)
+		if ready[name] {
+			if next, err := Load(name); err == nil {
+				return c.enter(next)
+			}
 		}
 		skipped = append(skipped, name)
 	}
-	return fmt.Errorf("nowhere to hop: %s %s no vault directory yet; `wisp ws` shows where they point",
-		strings.Join(skipped, ", "), plural(len(skipped), "has", "have"))
+	return fmt.Errorf("nowhere to hop: %s %s not reachable; `wisp ws` shows why",
+		strings.Join(skipped, ", "), plural(len(skipped), "is", "are"))
 }
 
 // enter moves the client into another workspace, landing on the session you were last in there.

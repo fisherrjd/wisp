@@ -15,12 +15,28 @@ import (
 type Location struct {
 	Host string `yaml:"host"`
 	Path string `yaml:"path"`
+
+	// Name is the far side's own name for the workspace, set when it was discovered by asking a
+	// machine what it holds rather than by being written down here with a path.
+	//
+	// Naming it beats pinning its path: the machine that owns the workspace is the one that
+	// knows where it is, and a path copied over here is a second answer to a question only one
+	// side can answer. Empty means that machine's default workspace.
+	Name string `yaml:"-"`
 }
 
 func (l Location) IsRemote() bool { return l.Host != "" }
 
+// Discovered reports whether this came from asking a machine rather than from a written path.
+func (l Location) Discovered() bool { return l.Host != "" && l.Path == "" }
+
 func (l Location) String() string {
-	if l.IsRemote() {
+	switch {
+	case l.IsRemote() && l.Path == "" && l.Name != "":
+		return l.Host + ":" + l.Name
+	case l.IsRemote() && l.Path == "":
+		return l.Host
+	case l.IsRemote():
 		return l.Host + ":" + l.Path
 	}
 	return l.Path

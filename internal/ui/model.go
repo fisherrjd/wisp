@@ -438,7 +438,8 @@ func (m model) updateNewWS(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.status = "give it a path: `" + name + " ~/somewhere` or `" + name + " host:~/somewhere`"
 			return m, nil
 		}
-		if _, err := m.cfg.CreateWorkspace(name, path, mkdir); err != nil {
+		summary, err := m.cfg.CreateWorkspace(name, path, mkdir)
+		if err != nil {
 			// Stay on the line with the text intact: a missing directory is fixed by adding -p,
 			// which is one keystroke from here.
 			m.status = firstLine(err.Error())
@@ -446,7 +447,7 @@ func (m model) updateNewWS(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.mode = modeWorkspace
 		m.input = ""
-		m.status = "created " + name
+		m.status = name + ": " + summary
 		return m, m.reload()
 
 	case "backspace":

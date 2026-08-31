@@ -12,7 +12,7 @@ import (
 
 // Version is wisp's own version. It lives here rather than in main because the two ends of a
 // remote workspace are separate installs that have to be able to say what they are.
-const Version = "0.11.0"
+const Version = "0.12.0"
 
 // WireVersion is the shape of what `wisp board --json` prints. The two ends are separate
 // installs and will drift, so a mismatch refuses by name and number rather than half-parsing a
@@ -68,13 +68,19 @@ func (l Location) sshArgs(interactive bool) []string {
 	return append(args, "-o", "BatchMode=yes", "-o", "ConnectTimeout=3", l.Host)
 }
 
-// command is the shell line run on the far side.
-//
-// The workspace is passed by path in the environment rather than by name with -w. The name is a
-// local label: the other machine has its own config and no reason to know what you call its
-// workspace here.
+// command is the shell line run on the far side, scoped to this workspace.
 func (l Location) command(args ...string) string {
-	return "WISP_WORKSPACE=" + remotePath(l.Path) + " " + bareCommand(args...)
+	// A discovered workspace is asked for by the far side's own name for it, which is the one
+	// thing about it that machine is authoritative about. A written-down one is asked for by the
+	// path, since the far side may never have registered it at all.
+	switch {
+	case l.Discovered() && l.Name != "":
+		return bareCommand(append([]string{"-w", l.Name}, args...)...)
+	case l.Discovered():
+		return bareCommand(args...) // that machine's default workspace
+	default:
+		return "WISP_WORKSPACE=" + remotePath(l.Path) + " " + bareCommand(args...)
+	}
 }
 
 // bareCommand is a wisp command on the far side that is not about a particular workspace, such
@@ -138,8 +144,8 @@ func (l Location) diagnose(err error, stderr string) error {
 	// The likeliest failure of all, and the most confusing without this: the far side is a wisp
 	// from before remote workspaces existed, so it rejects the command and prints its own usage,
 	// whose last line says nothing about why.
-	if strings.Contains(stderr, `unknown command "board"`) {
-		return fmt.Errorf("wisp on %s is too old for this: it has no board command (this one is %s)", l.Host, Version)
+	if strings.Contains(stderr, "unknown command") {
+		return fmt.Errorf("wisp on %s is too old for this (this one is %s)", l.Host, Version)
 	}
 	msg := lastLine(stderr)
 	var exit *exec.ExitError
@@ -192,10 +198,79 @@ func (l Location) Board(gitlab bool) (BoardJSON, error) {
 	return b, nil
 }
 
+// HostJSON is what a machine says it holds, from `wisp ws --json`.
+type HostJSON struct {
+	Wire       int      `json:"wire"`
+	Wisp       string   `json:"wisp"`
+	Default    string   `json:"default"`
+	Workspaces []WSJSON `json:"workspaces"`
+}
+
+type WSJSON struct {
+	Name  string `json:"name"`
+	Path  string `json:"path"`
+	Ready bool   `json:"ready"`
+	Live  int    `json:"live"`
+	Attn  int    `json:"attn"`
+}
+
+// Enumerate asks a machine which workspaces it holds and what is running in each.
+//
+// One round trip per machine, not per workspace: the far side already computes exactly this for
+// its own `wisp ws`, so asking it once is both cheaper and more current than keeping a copy of
+// its list over here.
+func Enumerate(target string) (HostJSON, error) {
+	l := Location{Host: target}
+	out, err := l.runBare("ws", "--json")
+	if err != nil {
+		return HostJSON{}, err
+	}
+	var h HostJSON
+	if err := json.Unmarshal(out, &h); err != nil {
+		return HostJSON{}, fmt.Errorf("%s: unreadable workspace list; wisp there is probably older than this one (%s)", target, Version)
+	}
+	if h.Wire != WireVersion {
+		return HostJSON{}, fmt.Errorf("%s runs wisp %s speaking wire %d; this one speaks wire %d",
+			target, h.Wisp, h.Wire, WireVersion)
+	}
+	return h, nil
+}
+
 // Preview is the far side's preview text for an item, used when nothing is attached to it here.
 func (l Location) Preview(item string, width int) (string, error) {
 	out, err := l.run("preview", item, "--width", fmt.Sprint(width))
 	return string(out), err
+}
+
+// hostProbe is one machine's workspace list, or the error explaining why there is none.
+type hostProbe struct {
+	host HostJSON
+	err  error
+}
+
+// probeHosts asks every configured machine what it holds, all at once.
+//
+// In parallel because they are independent and each is a network round trip: in turn would make
+// the picker's load time the sum of every machine you have rather than the slowest one.
+func (c Config) probeHosts() map[string]hostProbe {
+	if len(c.Hosts) == 0 {
+		return nil
+	}
+	out := make(map[string]hostProbe, len(c.Hosts))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for name, target := range c.Hosts {
+		wg.Add(1)
+		go func(name, target string) {
+			defer wg.Done()
+			h, err := Enumerate(target)
+			mu.Lock()
+			out[name] = hostProbe{host: h, err: err}
+			mu.Unlock()
+		}(name, target)
+	}
+	wg.Wait()
+	return out
 }
 
 // probe is one remote workspace's board, or the error explaining why there is none.

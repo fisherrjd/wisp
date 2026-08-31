@@ -48,8 +48,15 @@ type Config struct {
 	// anything that exists here.
 	Location Location `yaml:"-"`
 
+	// Hosts is the machines wisp can reach. Each contributes every workspace it holds, so
+	// making one over there needs nothing written down here.
+	Hosts HostSet `yaml:"hosts"`
+
 	// Workspaces is the set wisp can hop between, name to location. Only meaningful in the user
 	// config: a workspace does not get to name its neighbours.
+	//
+	// Still here alongside Hosts, for a workspace on a machine that has not registered it. A
+	// machine's config is a list of what it was told about, not a scan of its disk.
 	Workspaces map[string]Location `yaml:"workspaces"`
 
 	// Default names the workspace wisp goes to when it has no better answer, and the one that
@@ -113,7 +120,16 @@ func Load(name string) (Config, error) {
 	if name != "" {
 		loc, ok := c.Workspaces[name]
 		if !ok {
-			return c, fmt.Errorf("no workspace named %q\n\nconfigured: %s\ndefine it under `workspaces:` in %s",
+			// A name on a machine resolves without asking anyone: the host comes from the
+			// config and the rest is that machine's own name for the workspace, which it will
+			// resolve itself. Nothing here needs to know where it is, which is why adding a
+			// machine is enough and adding its workspaces is not.
+			if host, remote, isHost := c.splitQualified(name); isHost {
+				loc, ok = Location{Host: c.Hosts[host], Name: remote}, true
+			}
+		}
+		if !ok {
+			return c, fmt.Errorf("no workspace named %q\n\nknown: %s\nadd a machine under `hosts:` or a workspace under `workspaces:` in %s",
 				name, strings.Join(c.WorkspaceNames(), ", "), UserConfigPath())
 		}
 		if loc.IsRemote() {
@@ -240,17 +256,28 @@ func (c Config) DefaultName() string {
 // WorkspaceNames is every configured workspace, plus the current one when it was found by
 // searching upward and does not appear in the config. Sorted, because this is the order the
 // workspace ring walks and it must not depend on map iteration.
+// A machine contributes its bare name here and no more. What else it holds is only knowable by
+// asking it, which belongs in the tally rather than in every command that needs a list of names.
 func (c Config) WorkspaceNames() []string {
-	out := make([]string, 0, len(c.Workspaces)+1)
-	seen := false
-	for n := range c.Workspaces {
-		out = append(out, n)
-		if n == c.Name {
-			seen = true
+	out := make([]string, 0, len(c.Workspaces)+len(c.Hosts)+1)
+	seen := map[string]bool{}
+	add := func(n string) {
+		if n != "" && !seen[n] {
+			seen[n] = true
+			out = append(out, n)
 		}
 	}
-	if !seen && c.Name != "" {
-		out = append(out, c.Name)
+	for n := range c.Workspaces {
+		add(n)
+	}
+	for n := range c.Hosts {
+		add(n)
+	}
+	// The current workspace, unless a machine already stands for it. A name like `eldo/side`
+	// arrives through that machine's own list, and adding it here as well would put two rows in
+	// the ring for one workspace, which reads as a duplicate and steps like a dead end.
+	if _, _, viaHost := c.splitQualified(c.Name); !viaHost {
+		add(c.Name)
 	}
 	sort.Strings(out)
 	return out
