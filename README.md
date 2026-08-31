@@ -13,7 +13,7 @@ wisp turns a unit of work into a running workspace: it finds the item (locally o
 ● live  ? needs input  ○ folder  + gitlab     enter open  ctrl-n new
 ```
 
-**Documentation:** [Commands](docs/commands.md) · [Configuration](docs/configuration.md) · [The picker](docs/picker.md) · [Sessions and worktrees](docs/sessions.md) · [Items](docs/items.md) · [Remote workspaces](docs/remote-workspaces.md)
+**Documentation:** [Commands](docs/commands.md) · [Configuration](docs/configuration.md) · [The picker](docs/picker.md) · [Sessions and worktrees](docs/sessions.md) · [Items](docs/items.md) · [Remote workspaces](docs/remote-workspaces.md) · [Hooks](docs/hooks.md) *(design)*
 
 ## The model
 
