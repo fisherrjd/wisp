@@ -11,10 +11,10 @@ import (
 type State int
 
 const (
-	StateRemote State = iota // on GitLab, nothing local
-	StateFolder              // vault folder exists, no session
-	StateLive                // tmux session running
-	StateNeedsInput          // running, but the agent is waiting on a human
+	StateRemote     State = iota // on GitLab, nothing local
+	StateFolder                  // vault folder exists, no session
+	StateLive                    // tmux session running
+	StateNeedsInput              // running, but the agent is waiting on a human
 )
 
 func (s State) Glyph() string {

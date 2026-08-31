@@ -6,7 +6,7 @@
 , glab
 }:
 
-buildGoModule rec {
+buildGoModule {
   pname = "wisp";
   version = "0.15.0";
 

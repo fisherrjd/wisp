@@ -131,7 +131,9 @@ func (c Config) AddHost(name, target string) (string, error) {
 	}
 	name = wsToken(name)
 	if name == "" {
-		return "", fmt.Errorf("a machine needs a name: wisp ws new <name> <host>:")
+		// Named after this command, not after `ws new`. `wisp ws new <name> <host>:` is the exact
+		// form CreateWorkspace refuses above, so pointing there sends the user to a second refusal.
+		return "", fmt.Errorf("a machine needs a name: wisp host add <name> <ssh target>")
 	}
 	if existing, ok := c.Hosts[name]; ok && existing != target {
 		return "", fmt.Errorf("machine %q already points at %s", name, existing)
