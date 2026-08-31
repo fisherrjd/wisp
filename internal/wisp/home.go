@@ -49,14 +49,18 @@ func (c Config) ensureHome() error {
 	// every keystroke a network round trip for the sake of redrawing a list; only the agent
 	// session needs to be over there. So the loop is pinned by name, and the directory is one
 	// that exists on this machine rather than the remote path.
-	dir, loop := c.Workspace, fmt.Sprintf("while true; do WISP_WORKSPACE=%q %q pick; done", c.Workspace, self)
+	// shellQuote, not %q: tmux hands this line to /bin/sh, and Go's quoting leaves $, backtick and
+	// backslash live inside the double quotes it produces. A workspace path or an install prefix
+	// holding any of them would be expanded by the shell rather than passed through.
+	dir := c.Workspace
+	loop := "while true; do WISP_WORKSPACE=" + shellQuote(c.Workspace) + " " + shellQuote(self) + " pick; done"
 	if c.IsRemote() {
 		if home, err := os.UserHomeDir(); err == nil {
 			dir = home
 		} else {
 			dir = "/"
 		}
-		loop = fmt.Sprintf("while true; do %q -w %q pick; done", self, c.Name)
+		loop = "while true; do " + shellQuote(self) + " -w " + shellQuote(c.Name) + " pick; done"
 	}
 	if err := exec.Command("tmux", "new-session", "-d",
 		"-s", c.HomeSession(), "-n", "wisp", "-c", dir, loop).Run(); err != nil {

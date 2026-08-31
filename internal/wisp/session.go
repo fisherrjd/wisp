@@ -129,6 +129,14 @@ func (c Config) Open(item Item, log func(string)) error {
 
 	if session == "" {
 		session = c.SessionName(item.Name)
+		// An item picked straight off GitLab has never had a folder here. Make it now: the vault
+		// is where its notes and its context file go, and without one WriteContext wrote nothing,
+		// so the agent started with no prompt at all, not even the name of the item it was on.
+		if !isDir(c.ItemDir(item.Name)) {
+			if err := c.makeItemDir(item); err != nil {
+				return fmt.Errorf("could not create the item folder: %w", err)
+			}
+		}
 		entries, err := c.Manifest(item)
 		if err != nil {
 			return err
@@ -160,8 +168,10 @@ func (c Config) Open(item Item, log func(string)) error {
 			// visible and interruptible rather than hidden behind a frozen picker. The window
 			// closes itself when the command finishes.
 			if self, err := os.Executable(); err == nil {
+				// shellQuote, not %q: this line goes to /bin/sh, where Go's quoting leaves $,
+				// backtick and backslash live inside the double quotes it produces.
 				_ = exec.Command("tmux", "new-window", "-t", session, "-n", "provision",
-					"-c", c.Workspace, fmt.Sprintf("%q provision %q", self, item.Name)).Run()
+					"-c", c.Workspace, shellQuote(self)+" provision "+shellQuote(item.Name)).Run()
 			}
 		}
 		// By name, not index: base-index may be 1, so session:0 is not reliably the first window.
