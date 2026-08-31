@@ -14,12 +14,18 @@ import (
 // out, so the file parses to nothing and the defaults still apply. It exists to be edited: the
 // keys anyone will want are already here with the right spelling, which is otherwise a trip to
 // the README.
-const wispYAMLTemplate = `# wisp workspace config. Everything here is optional; these are the defaults.
+const wispYAMLTemplate = `# wisp workspace config. Everything here is optional.
 #
-# program: claude --permission-mode auto   # what runs in the agent window
-# install: false                           # install dependencies when provisioning
+# Defaults, uncomment to change:
+#
+# program: claude
+# install: false
 # vault: working_items
 # worktrees: .worktrees
+# provision: .claude/scripts/provision-worktree.sh
+#
+# The remote source is off until all three are set. These are examples, not
+# defaults; there is nothing sensible to default them to.
 #
 # gitlab:
 #   group: your-group/subgroup

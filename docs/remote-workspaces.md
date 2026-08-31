@@ -1,6 +1,6 @@
 # Remote workspaces
 
-Status: **built** as of v0.11.0, with the exceptions at the bottom. Workspaces and the hop ring shipped first on purpose: a remote workspace is a workspace with a host, and everything below plugs into machinery that already existed.
+Status: **built** as of v0.14.0, with the exceptions at the bottom. Workspaces and the hop ring shipped first on purpose: a remote workspace is a workspace with a host, and everything below plugs into machinery that already existed.
 
 ## The decision everything follows from
 
@@ -37,8 +37,13 @@ A scalar location is remote when it holds a colon before the first slash. That m
 wisp on the far side is the authority. Local wisp never touches the remote filesystem or the remote tmux server directly: driving raw `tmux ls` and `capture-pane` over ssh would be a round trip per session per redraw, and it would put a second, subtly different implementation of the workspace model on the near side.
 
 ```
+ssh <host> wisp ws --json                which workspaces the machine holds
 ssh <host> wisp -w work board --json     items, states, tally, ready
 ssh <host> wisp -w work preview <item>   the pane text for the preview
+ssh <host> wisp -w work new <input>      makes an item over there
+ssh <host> wisp -w work kill <item>      stops one
+ssh <host> wisp -w work repos            its repo checkouts
+ssh <host> wisp ws new <name> -p <path>  makes a workspace over there
 ssh -t <host> wisp -w work open <item>   creates and attaches, interactively
 ```
 
@@ -56,7 +61,7 @@ Every non-interactive call is made with:
 
 ## Attaching: the local wrapper
 
-Opening a remote item creates a **local** tmux session, `wisp_desktop_<item>`, whose one window runs:
+Opening a remote item creates a **local** tmux session, `wisp_<workspace>_<item>`, whose one window runs:
 
 ```
 ssh -t bigbox wisp -w work open <item>
@@ -77,7 +82,7 @@ The cost is nested tmux and a prefix key that now means two things. The fixes ar
 
 An unreachable host must never empty the list you are looking at. This is the same rule the GitLab source already follows, for the same reason: a missing optional source and a source with nothing in it look identical, and the silent version costs a debugging session.
 
-`Peer.Ready` generalises to cover it. A remote workspace that will not answer is marked in the picker's header and `hop next` steps over it, exactly as a local workspace whose directory does not exist. Named outright it still fails loudly, because you asked for that one.
+`Peer.Ready` covers being unusable and `Peer.Unreachable` separates the two ways of it: both stop you working there, but one is fixed by making a directory and the other by fixing ssh, and one glyph for both would send you after the wrong one. Either way `hop next` steps over it. Named outright it still fails loudly, because you asked for that one.
 
 Three failures get their own message rather than a raw shell error:
 
@@ -99,12 +104,14 @@ The same reasoning is why the tally does not add wrapper sessions to a remote wo
 
 **Killing races, and that is fine.** Ending the far session ends the ssh, which closes the window, which takes the wrapper with it, usually before the local kill runs. The local failure only counts if the session is still standing afterwards.
 
+**Nothing needs a config file edited by hand.** `wisp ws new <name> host:path` registers a workspace on a machine, and `-p` also makes it over there by running the same command on the far side rather than reaching into its filesystem. `wisp host add <target>` registers the machine itself. Both have keys in the picker, `ctrl-n` and `ctrl-a`.
+
+They are two commands rather than one because they are two things at two levels. An earlier version told them apart by a trailing colon on a shared line, which is the tree flattened into syntax and not something anyone would guess.
+
+The ssh user goes in the target, `jade@eldo`, so reaching a machine whose account does not match the local one needs no `~/.ssh/config` entry either.
+
 ## Not done
 
 **The preview is not debounced.** Every cursor move on a remote workspace is an ssh round trip. The shared connection makes it about 30ms and the loader is asynchronous, so it is not felt on a good link; on a bad one it will be. The fix is a rest timer before the fetch, not a change to anything above.
 
 **Nested tmux is documented, not handled.** Two servers are stacked when you attach to a remote item and the prefix key means two things. The wrapper's status bar says which workspace and host you are in; deciding what the prefix does belongs in your own tmux config, either a different prefix on the remote or a key bound to `send-prefix`.
-
-**Nothing needs a config file edited by hand.** `wisp ws new <name> host:path` registers a remote workspace, and `-p` also makes it over there, by running the same command on the far side rather than reaching into its filesystem. Both work from the picker's own create line, so adding a machine never means leaving the TUI.
-
-The ssh user goes in the location, `jade@eldo:~/work`, so reaching a host whose account does not match the local one needs no `~/.ssh/config` entry either.

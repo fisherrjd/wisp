@@ -24,7 +24,7 @@ usage:
   wisp next / wisp prev   cycle to the next or previous item session
   wisp hop [next|prev|<ws>]  move to another workspace
   wisp open <item>        open an item directly
-  wisp ls                 list live sessions
+  wisp ls                 list live sessions, every workspace
   wisp ws                 list workspaces
   wisp ws new [-p] <name> [path]
                           make a directory a workspace and register it;
@@ -42,8 +42,9 @@ usage:
 
   -w <workspace>          act on a named workspace instead of the one you are in
 
-two rings: next/prev walks the item sessions inside a workspace, hop walks the
-workspaces themselves. Hopping lands on the session you were last in there.
+three levels: next/prev walks the sessions inside a workspace, hop walks the
+workspaces, and a workspace on another machine is host/name. Hopping lands on
+the session you were last in there.
 
 workspace resolution, in order:
   -w <name>, if given
@@ -53,7 +54,8 @@ workspace resolution, in order:
 
 config:
   <workspace>/.wisp.yaml, then ~/.config/wisp/config.yaml
-  WISP_PROGRAM    agent command for window 0 (default: claude)
+  workspaces:, hosts: and default: are read from the user config only
+  WISP_PROGRAM    agent command for the agent window (default: claude)
   WISP_INSTALL    set to install dependencies when provisioning
 `
 

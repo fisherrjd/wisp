@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"sort"
@@ -166,7 +167,11 @@ func Load(name string) (Config, error) {
 	// The workspace set belongs to the user config alone. A workspace naming its neighbours
 	// would let one of them rename or hide another, so whatever the file below says about them
 	// is discarded rather than merged.
-	set, hosts, def, name, explicit := c.Workspaces, c.Hosts, c.Default, c.Name, c.explicit
+	// Copies, not the maps themselves. yaml.v3 decodes into a non-nil map by adding keys to it,
+	// so holding the reference and putting it back afterwards restores nothing: the workspace
+	// file's entries are already in the map the reference points at.
+	set, hosts := maps.Clone(c.Workspaces), maps.Clone(c.Hosts)
+	def, name, explicit := c.Default, c.Name, c.explicit
 
 	// A parse error in the workspace file is worth reporting: it is the file the user just
 	// edited, and silently falling back to defaults would look like wisp ignoring them.
