@@ -166,7 +166,7 @@ func (m model) renderPrompt() string {
 		label, hint := " workspaces ", "enter to go there"
 		typed := ""
 		if m.mode == modeNewWS {
-			label, hint = " new workspace ", "name, then a path"
+			label, hint = " new workspace ", "name, then a path or host:path"
 			typed = " " + m.input + promptStyle.Render("▏")
 		}
 		left := newLabel.Render(label) + typed

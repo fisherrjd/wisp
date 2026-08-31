@@ -74,10 +74,14 @@ func (l Location) sshArgs(interactive bool) []string {
 // local label: the other machine has its own config and no reason to know what you call its
 // workspace here.
 func (l Location) command(args ...string) string {
+	return "WISP_WORKSPACE=" + remotePath(l.Path) + " " + bareCommand(args...)
+}
+
+// bareCommand is a wisp command on the far side that is not about a particular workspace, such
+// as making one. Nothing is pinned, because there is nothing to pin yet.
+func bareCommand(args ...string) string {
 	var b strings.Builder
-	b.WriteString("WISP_WORKSPACE=")
-	b.WriteString(remotePath(l.Path))
-	b.WriteString(" wisp")
+	b.WriteString("wisp")
 	for _, a := range args {
 		b.WriteByte(' ')
 		b.WriteString(shellQuote(a))
@@ -108,12 +112,17 @@ func (l Location) SSHLine(interactive bool, args ...string) string {
 	return strings.Join(quoted, " ") + " " + shellQuote(l.command(args...))
 }
 
-// run executes a wisp command on the far side and returns its stdout.
-func (l Location) run(args ...string) ([]byte, error) {
+// run executes a wisp command on the far side, against this workspace.
+func (l Location) run(args ...string) ([]byte, error) { return l.exec(l.command(args...)) }
+
+// runBare executes a wisp command on the far side that is not scoped to a workspace.
+func (l Location) runBare(args ...string) ([]byte, error) { return l.exec(bareCommand(args...)) }
+
+func (l Location) exec(line string) ([]byte, error) {
 	if !l.IsRemote() {
 		return nil, fmt.Errorf("not a remote workspace")
 	}
-	cmd := exec.Command("ssh", append(l.sshArgs(false), l.command(args...))...)
+	cmd := exec.Command("ssh", append(l.sshArgs(false), line)...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()

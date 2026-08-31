@@ -162,7 +162,16 @@ workspaces:
 
 **The picker always runs locally. Only the agent session runs remotely.** Opening a remote item makes an ordinary wisp session here whose one window is an `ssh -t` into the machine that owns the work, so `next`, `prev`, the ring, the last-visited session and the needs-input check all keep working on it unchanged. Sessions running over there that you are not attached to come from asking the wisp on the far side, which needs to be installed and on its PATH.
 
-wisp does no authentication. If `ssh bigbox` works in your shell it works here, and if it does not, that is an ssh config problem with an ssh config fix.
+Adding one is the same gesture as adding a local workspace, from the shell or from `ctrl-w` `ctrl-n` in the picker:
+
+```
+wisp ws new desktop bigbox:~/work        # register one that is already there
+wisp ws new desktop -p bigbox:~/work     # and make it there too
+```
+
+`-p` runs the same command on the far side rather than reaching into its filesystem. The ssh user belongs in the location, `jade@bigbox:~/work`, so a host whose account does not match your local one needs nothing in `~/.ssh/config`.
+
+Beyond that wisp does no authentication. If `ssh bigbox` works in your shell it works here, and if it does not, that is an ssh config problem with an ssh config fix.
 
 A workspace that will not answer is marked `⚠` rather than dropped, separately from the `✗` of one that does not exist: both are unusable, but one is fixed by making a directory and the other by fixing ssh.
 

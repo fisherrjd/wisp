@@ -331,16 +331,15 @@ func newWorkspace(cfg wisp.Config, args []string) error {
 	// side's, and this end never made them. Saying "edit its .wisp.yaml" would be pointing at a
 	// file that does not exist.
 	if loc := wisp.ParseLocation(created); loc.IsRemote() {
-		fmt.Printf(`
-registered, not created: the workspace itself belongs to %s.
-
-Set it up there, if it is not already:
-  ssh %s 'wisp ws new %s %s'
-
-Both ends need wisp %s or newer. Then:
-  wisp ws        check that it answers
-  wisp -w %s     go there
-`, loc.Host, loc.Host, name, loc.Path, wisp.Version, name)
+		if mkdir {
+			fmt.Printf("\nmade on %s as well. Both ends need wisp %s or newer.\n", loc.Host, wisp.Version)
+		} else {
+			// Registered only, so say so: the vault over there is the far side's and this end
+			// did not make one. Naming the flag beats naming the ssh command it stands for.
+			fmt.Printf("\nregistered only; it has to exist on %s already.\nAdd -p to make it there too.\n", loc.Host)
+		}
+		fmt.Printf("\n  wisp ws        check that it answers\n  wisp -w %s%s go there\n",
+			name, strings.Repeat(" ", max(1, 8-len(name))))
 		return nil
 	}
 

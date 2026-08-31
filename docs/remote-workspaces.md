@@ -96,4 +96,6 @@ The same reasoning is why the tally does not add wrapper sessions to a remote wo
 
 **Nested tmux is documented, not handled.** Two servers are stacked when you attach to a remote item and the prefix key means two things. The wrapper's status bar says which workspace and host you are in; deciding what the prefix does belongs in your own tmux config, either a different prefix on the remote or a key bound to `send-prefix`.
 
-**`wisp ws new` against a host only registers it.** The directory, the vault and the `.wisp.yaml` are the far side's, and reaching across to create them would be one machine deciding how another is laid out. Run `wisp ws new` over there.
+**Nothing needs a config file edited by hand.** `wisp ws new <name> host:path` registers a remote workspace, and `-p` also makes it over there, by running the same command on the far side rather than reaching into its filesystem. Both work from the picker's own create line, so adding a machine never means leaving the TUI.
+
+The ssh user goes in the location, `jade@eldo:~/work`, so reaching a host whose account does not match the local one needs no `~/.ssh/config` entry either.

@@ -49,12 +49,18 @@ func (c Config) CreateWorkspace(name, path string, mkdir bool) (string, error) {
 		return "", fmt.Errorf("a workspace needs a name: wisp ws new <name> [path]")
 	}
 
-	// A path with a host in front of it is registered, not built. The directory, the vault and
-	// the .wisp.yaml are all the far side's, and reaching over ssh to make them would be this
-	// machine deciding how another one is laid out. `wisp ws new` run over there does that job.
+	// A path with a host in front of it. Registering it here is always the local half; -p also
+	// makes it over there, by running the same command on the far side rather than by reaching
+	// into its filesystem. Same bargain as locally: without the flag the workspace has to exist
+	// already, so a mistyped path fails instead of quietly appearing on another machine.
 	if loc := ParseLocation(path); loc.IsRemote() {
 		if err := c.checkFree(name, loc); err != nil {
 			return "", err
+		}
+		if mkdir {
+			if _, err := loc.runBare("ws", "new", name, "-p", loc.Path); err != nil {
+				return "", fmt.Errorf("could not create it on %s: %w", loc.Host, err)
+			}
 		}
 		if err := c.register(name, loc); err != nil {
 			return "", err

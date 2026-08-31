@@ -435,7 +435,7 @@ func (m model) updateNewWS(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if path == "" {
 			// The picker runs at the workspace root, so defaulting to the current directory
 			// here would only ever re-register the workspace you are already in.
-			m.status = "give it a path: `" + name + " ~/somewhere`, or add -p to create it"
+			m.status = "give it a path: `" + name + " ~/somewhere` or `" + name + " host:~/somewhere`"
 			return m, nil
 		}
 		if _, err := m.cfg.CreateWorkspace(name, path, mkdir); err != nil {
