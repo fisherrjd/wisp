@@ -12,6 +12,9 @@
     {
       overlays.default = final: _prev: {
         wisp = final.callPackage ./package.nix { };
+        # The docs site is an output too, so whoever serves it gets it from the same revision as
+        # the binary rather than keeping a copy that has to be remembered about.
+        wisp-docs = final.callPackage ./docs/site/package.nix { };
       };
     }
     // flake-utils.lib.eachDefaultSystem (system:
@@ -20,6 +23,7 @@
       in
       {
         packages.wisp = pkgs.callPackage ./package.nix { };
+        packages.wisp-docs = pkgs.callPackage ./docs/site/package.nix { };
         packages.default = self.packages.${system}.wisp;
 
         # `nix develop` for contributors who do not use the direnv/default.nix path.
