@@ -62,7 +62,7 @@ var (
 	// Workspace mode. ctrl-x is "forget" rather than "kill": it edits the config and leaves
 	// every file and every session alone, and calling both of them kill would be a lie about
 	// one of them.
-	wsKeys   = []string{"enter go", "ctrl-n new", "ctrl-x forget", "esc back"}
+	wsKeys   = []string{"enter go", "← → machine", "ctrl-n new", "ctrl-x forget", "esc back"}
 	newWSKey = []string{"enter create", "esc cancel", "-p to create the directory"}
 )
 
@@ -216,23 +216,33 @@ func (m model) renderPeers() string {
 	if len(m.peers) < 2 {
 		return "" // nothing to hop to, so the ring is noise
 	}
-	parts := make([]string, 0, len(m.peers))
-	for _, p := range m.peers {
+	// Machines, not workspaces. The header has room for one level, and a machine with an agent
+	// waiting is the thing worth seeing from inside a list that shows neither; which of its
+	// workspaces it is in is what ctrl-w is for.
+	systems := wisp.Systems(m.peers)
+	if len(systems) < 2 && len(m.peers) < 2 {
+		return ""
+	}
+	parts := make([]string, 0, len(systems))
+	for _, sys := range systems {
+		name := sys.Name
+		if name == "" {
+			name = wisp.ThisSystem()
+		}
 		style := wsOther
-		if p.Current {
+		if sys.Current {
 			style = wsCurrent
 		}
-		s := style.Render(p.Name)
-		glyph, colour := wsGlyph(p)
+		s := style.Render(name)
 		switch {
-		// Unusable, one way or another. Marked rather than hidden, because a workspace missing
+		// Unusable, one way or another. Marked rather than hidden, because a machine missing
 		// from a list you wrote yourself reads as wisp losing it rather than as something to fix.
-		case !p.Ready:
-			s = wsMissing.Render(p.Name) + lipgloss.NewStyle().Foreground(colour).Render(" "+glyph)
-		case p.Attn > 0:
-			s += lipgloss.NewStyle().Foreground(colAttn).Render(fmt.Sprintf(" ?%d", p.Attn))
-		case p.Live > 0:
-			s += lipgloss.NewStyle().Foreground(colLive).Render(fmt.Sprintf(" ●%d", p.Live))
+		case !sys.Reachable:
+			s = wsMissing.Render(name) + lipgloss.NewStyle().Foreground(colAttn).Render(" ⚠")
+		case sys.Attn > 0:
+			s += lipgloss.NewStyle().Foreground(colAttn).Render(fmt.Sprintf(" ?%d", sys.Attn))
+		case sys.Live > 0:
+			s += lipgloss.NewStyle().Foreground(colLive).Render(fmt.Sprintf(" ●%d", sys.Live))
 		}
 		parts = append(parts, s)
 	}
@@ -282,32 +292,69 @@ func (m model) renderList(rows int) string {
 
 // renderWorkspaces is the left pane in workspace mode. Same shape as the item list, because it
 // is the same gesture one layer up: a cursor, a glyph carrying state, enter to go.
+// renderWorkspaces is the left pane in workspace mode: the two levels above a session, drawn as
+// the tree they are.
+//
+// Machines are headers rather than rows. `eldo` and `eldo/side` in one flat list is the tree
+// written out as strings, which reads as four unrelated names when it is one machine holding
+// three things.
 func (m model) renderWorkspaces() string {
 	if len(m.peers) == 0 {
 		return hintStyle.Render("  no workspaces")
 	}
 	var b strings.Builder
-	for i, p := range m.peers {
-		lead := "  "
-		if i == m.wsCursor {
-			lead = pointer.String() + " "
-		}
-		glyph, colour := wsGlyph(p)
-
-		style := rowStyle
-		if i == m.wsCursor {
-			style = rowSelected
-		}
-		line := lead + lipgloss.NewStyle().Foreground(colour).Render(glyph) + " " + style.Render(p.Name)
-		if p.Current {
-			line += repoStyle.Render("  (here)")
-		}
-		b.WriteString(truncate(line, m.listInner()))
-		if i < len(m.peers)-1 {
+	lines := 0
+	i := 0
+	for _, sys := range wisp.Systems(m.peers) {
+		if lines > 0 {
 			b.WriteString("\n")
+		}
+		b.WriteString(truncate(m.renderSystemHeader(sys), m.listInner()))
+		lines++
+		for _, p := range sys.Peers {
+			glyph, colour := wsGlyph(p)
+			lead, style := "    ", rowStyle
+			if i == m.wsCursor {
+				lead, style = pointer.String()+"   ", rowSelected
+			}
+			// The workspace's own name under its machine. The qualified form is what you type,
+			// not what you read: repeating `eldo/` on every row under a header saying `eldo`
+			// spends the width that the name itself needs.
+			label := p.Workspace
+			if label == "" {
+				label = p.Name
+			}
+			line := lead + lipgloss.NewStyle().Foreground(colour).Render(glyph) + " " + style.Render(label)
+			if p.Current {
+				line += repoStyle.Render("  (here)")
+			}
+			b.WriteString("\n" + truncate(line, m.listInner()))
+			lines++
+			i++
 		}
 	}
 	return b.String()
+}
+
+func (m model) renderSystemHeader(sys wisp.System) string {
+	name := sys.Name
+	if name == "" {
+		name = wisp.ThisSystem()
+	}
+	style := wsOther
+	if sys.Current {
+		style = wsCurrent
+	}
+	head := style.Render(name)
+	switch {
+	case !sys.Reachable:
+		head = wsMissing.Render(name) + lipgloss.NewStyle().Foreground(colAttn).Render(" ⚠")
+	case sys.Attn > 0:
+		head += lipgloss.NewStyle().Foreground(colAttn).Render(fmt.Sprintf("  ?%d", sys.Attn))
+	case sys.Live > 0:
+		head += lipgloss.NewStyle().Foreground(colLive).Render(fmt.Sprintf("  ●%d", sys.Live))
+	}
+	return head
 }
 
 // renderWorkspaceDetail is the right pane in workspace mode: where the highlighted workspace
@@ -320,6 +367,9 @@ func (m model) renderWorkspaceDetail(rows int) string {
 	}
 	var lines []string
 	lines = append(lines, titleStyle.Render(p.Name), "", previewText.Render(p.Path), "")
+	if p.System != "" {
+		lines = append(lines, previewText.Render("on "+p.System), "")
+	}
 	switch {
 	case p.Unreachable:
 		lines = append(lines, errStyle.Render("unreachable"), "", previewText.Render(p.Detail))

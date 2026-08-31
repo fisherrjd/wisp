@@ -11,7 +11,13 @@ import (
 // a time, so from inside it nothing hints that another one has an agent waiting on an answer,
 // and a ring you cannot see is one you never turn.
 type Peer struct {
-	Name    string
+	// Name is what you hop to: `near`, `eldo`, `eldo/side`. System and Workspace are the same
+	// thing split into the two levels above a session, so the picker can show the tree rather
+	// than a flat list of names with slashes in them.
+	Name      string
+	System    string // the machine, or "" for this one
+	Workspace string // that machine's own name for it
+
 	Live    int
 	Attn    int
 	Current bool
@@ -156,7 +162,7 @@ func (c Config) tally(all []Session, hosts map[string]hostProbe, probes map[stri
 			peers = append(peers, c.hostPeers(n, pr)...)
 			continue
 		}
-		p := Peer{Name: n, Current: n == c.Name, Ready: c.Ready(), Path: c.Location.String()}
+		p := Peer{Name: n, Workspace: n, Current: n == c.Name, Ready: c.Ready(), Path: c.Location.String()}
 		if !p.Current {
 			// Loaded rather than guessed at: another workspace can name its vault directory
 			// something else in its own .wisp.yaml, and a readiness check against this
@@ -209,8 +215,47 @@ func (c Config) tally(all []Session, hosts map[string]hostProbe, probes map[stri
 			peers[i].Attn++
 		}
 	}
-	sort.Slice(peers, func(i, j int) bool { return peers[i].Name < peers[j].Name })
+	// This machine first, then one machine at a time. The order is the tree flattened, so the
+	// picker can group by walking it once and the ring visits everything on a machine before
+	// moving to the next.
+	sort.Slice(peers, func(i, j int) bool {
+		if peers[i].System != peers[j].System {
+			if peers[i].System == "" || peers[j].System == "" {
+				return peers[i].System == ""
+			}
+			return peers[i].System < peers[j].System
+		}
+		return peers[i].Name < peers[j].Name
+	})
 	return peers
+}
+
+// Systems is the peers grouped by machine, in ring order, with this machine first.
+func Systems(peers []Peer) []System {
+	var out []System
+	for _, p := range peers {
+		if len(out) == 0 || out[len(out)-1].Name != p.System {
+			out = append(out, System{Name: p.System})
+		}
+		s := &out[len(out)-1]
+		s.Peers = append(s.Peers, p)
+		s.Live += p.Live
+		s.Attn += p.Attn
+		s.Current = s.Current || p.Current
+		s.Reachable = s.Reachable || !p.Unreachable
+	}
+	return out
+}
+
+// System is one machine and the workspaces on it: the top of the three levels wisp moves
+// between, above workspaces and sessions.
+type System struct {
+	Name      string // "" for this machine
+	Peers     []Peer
+	Live      int
+	Attn      int
+	Current   bool
+	Reachable bool
 }
 
 // hostPeers turns one machine's answer into rows.
@@ -220,11 +265,11 @@ func (c Config) tally(all []Session, hosts map[string]hostProbe, probes map[stri
 // than one need the longer form, and only for the others.
 func (c Config) hostPeers(host string, pr hostProbe) []Peer {
 	if pr.err != nil {
-		return []Peer{{Name: host, Path: c.Hosts[host], Unreachable: true, Detail: pr.err.Error()}}
+		return []Peer{{Name: host, System: host, Path: c.Hosts[host], Unreachable: true, Detail: pr.err.Error()}}
 	}
 	if len(pr.host.Workspaces) == 0 {
 		return []Peer{{
-			Name: host, Path: c.Hosts[host], Ready: false,
+			Name: host, System: host, Path: c.Hosts[host], Ready: false,
 			Detail: "no workspaces registered on " + c.Hosts[host] + "; make one there, or add it here with a path",
 		}}
 	}
@@ -232,12 +277,14 @@ func (c Config) hostPeers(host string, pr hostProbe) []Peer {
 	for _, ws := range pr.host.Workspaces {
 		name := qualify(host, ws.Name, ws.Name == pr.host.Default)
 		p := Peer{
-			Name:    name,
-			Current: name == c.Name,
-			Ready:   ws.Ready,
-			Path:    c.Hosts[host] + ":" + ws.Path,
-			Live:    ws.Live,
-			Attn:    ws.Attn,
+			Name:      name,
+			System:    host,
+			Workspace: ws.Name,
+			Current:   name == c.Name,
+			Ready:     ws.Ready,
+			Path:      c.Hosts[host] + ":" + ws.Path,
+			Live:      ws.Live,
+			Attn:      ws.Attn,
 		}
 		if !p.Ready {
 			p.Detail = "no vault at " + ws.Path + " on " + c.Hosts[host]

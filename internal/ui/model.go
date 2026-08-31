@@ -374,6 +374,16 @@ func (m model) updateWorkspace(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	// A whole machine at a time. Up and down walk workspaces, which on a machine holding several
+	// means several presses to get past it; left and right are the level above.
+	case "left", "ctrl+h":
+		m.wsCursor = m.systemStep(-1)
+		return m, nil
+
+	case "right", "ctrl+l":
+		m.wsCursor = m.systemStep(1)
+		return m, nil
+
 	case "enter":
 		p := m.peer()
 		switch {
@@ -508,6 +518,28 @@ func (m *model) reload() tea.Cmd {
 		m.cfg = cfg
 	}
 	return loadLocal(m.cfg)
+}
+
+// systemStep moves the cursor to the first workspace of the next or previous machine, wrapping.
+// Landing on the first rather than the same position within it: the machines hold different
+// numbers of workspaces, so there is no same position to keep.
+func (m model) systemStep(delta int) int {
+	systems := wisp.Systems(m.peers)
+	if len(systems) < 2 {
+		return m.wsCursor
+	}
+	// Where each machine starts, and which one the cursor is in.
+	starts := make([]int, 0, len(systems))
+	at, i := 0, 0
+	for s, sys := range systems {
+		starts = append(starts, i)
+		if m.wsCursor >= i && m.wsCursor < i+len(sys.Peers) {
+			at = s
+		}
+		i += len(sys.Peers)
+	}
+	// Positive modulo: Go's % keeps the sign of the dividend, so -1 % n is -1, not n-1.
+	return starts[((at+delta)%len(systems)+len(systems))%len(systems)]
 }
 
 func (m model) peer() *wisp.Peer {

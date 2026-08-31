@@ -15,10 +15,11 @@ wisp turns a unit of work into a running workspace: it finds the item (locally o
 
 ## The model
 
-Four nouns, and everything else follows from them.
+Five nouns, and everything else follows from them.
 
 | | |
 |---|---|
+| **System** | A machine. This one, or one you reach over ssh. It owns its workspaces and answers for them; nothing here keeps a copy of what it holds. |
 | **Workspace** | The container. Every repo checkout, `docs/`, `.worktrees/` and the vault sit side by side inside it. Agents start here, so one cwd sees all of them. You can have several, and not everything you work on belongs in the same one. |
 | **Item** | A folder in the vault, `<repo>/<iid>-<slug>` or `_adhoc/<name>`. The unit of work. Its stable identity is only `<repo>/<iid>`, because slugs drift between what you typed locally and what GitLab derives from the title. |
 | **Worktree** | A cache, deliberately. Branches are the real state. Delete a worktree and reopening the item reprovisions it. |
@@ -26,13 +27,19 @@ Four nouns, and everything else follows from them.
 
 Nothing wisp does destroys work. Killing a session leaves worktrees and branches; deleting a worktree leaves the branch.
 
-## Two rings
+## Three levels
 
-Sessions form a ring you walk with `next` and `prev`. Workspaces form a ring above it, walked with `hop`. `next` never leaves the workspace you are in, so what else is running elsewhere cannot get in the way of flipping between the work in front of you.
+Systems hold workspaces hold sessions, and wisp moves between all three.
+
+| | |
+|---|---|
+| **session** | `next` / `prev`, or the picker's list. Never leaves the workspace, so what is running elsewhere cannot get in the way of flipping between the work in front of you. |
+| **workspace** | `ctrl-w` for the tree, `hop` for the blind step. |
+| **system** | `←` / `→` in that tree, a whole machine at a time. |
 
 Hopping into a workspace lands on the session you were last in there, not on its picker, so a trip out and back is a round trip rather than a reset. The picker is the fallback for a workspace you have not opened anything in yet.
 
-Each workspace has its own picker session, its own vault, its own GitLab group, and its own tmux sessions: two workspaces holding an item with the same slug get two sessions, not one. The picker's header carries the only cross-workspace view, a tally per workspace, because an agent waiting on an answer somewhere else is the one thing worth knowing from inside a list that does not show it.
+Each workspace has its own picker session, its own vault, its own GitLab group, and its own tmux sessions: two workspaces holding an item with the same slug get two sessions, not one. The picker's header carries the level above whatever you are looking at, a tally per machine, because an agent waiting on an answer on another one is the thing worth knowing from a list that shows neither.
 
 ## Usage
 
@@ -55,7 +62,20 @@ wisp -w <ws> <command>     run any of the above against a named workspace
 
 In the picker: type to filter, `enter` opens, `ctrl-n` creates (a name, or a pasted GitLab link), `ctrl-w` opens the workspaces, `ctrl-x` kills the highlighted session, `ctrl-r` refreshes GitLab, `esc` quits and leaves everything running.
 
-`ctrl-w` swaps the list for the workspaces: same glyphs one layer up, `enter` goes there, `ctrl-n` makes a new one (`<name> <path>`, with `-p` to create the directory), `ctrl-x` forgets one, `esc` comes back. Nothing there touches disk except making the vault for a new workspace; forgetting one only edits the config.
+`ctrl-w` swaps the list for the tree above it: machines as headers, their workspaces under them, same glyphs one layer up.
+
+```
+ workspaces                                  enter to go there
+airbook
+▌   ○ near  (here)
+eldo  ?1
+    ● work
+    ✗ ghost
+    ○ side
+gjallar ⚠
+```
+
+`↑` `↓` walk workspaces, `←` `→` jump a whole machine, `enter` goes there, `ctrl-n` makes a new one, `ctrl-x` forgets one, `esc` comes back. Nothing there touches disk except making the vault for a new workspace; forgetting one only edits the config.
 
 `hop` is the same move without the list, for a tmux binding where one key is the whole interface:
 

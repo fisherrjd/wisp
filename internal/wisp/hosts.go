@@ -2,6 +2,7 @@ package wisp
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -64,6 +65,20 @@ func HostName(target string) string {
 		target = target[:i]
 	}
 	return wsToken(target)
+}
+
+// ThisSystem names the machine wisp is running on, for the top level of the picker's tree. Its
+// own hostname rather than "local", so the three levels read the same way whichever machine you
+// are looking at them from.
+func ThisSystem() string {
+	name, err := os.Hostname()
+	if err != nil || name == "" {
+		return "this machine"
+	}
+	if i := strings.IndexByte(name, '.'); i > 0 {
+		name = name[:i]
+	}
+	return name
 }
 
 // HostNames is the configured machines, sorted.
