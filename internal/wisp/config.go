@@ -115,7 +115,15 @@ func Load(name string) (Config, error) {
 
 	// The user config is read first because it holds the workspace set, which the resolution
 	// below needs.
-	_ = c.mergeFile(UserConfigPath())
+	//
+	// A parse error here is reported rather than swallowed, for the same reason the workspace file
+	// below reports one, and with more at stake: this file holds `workspaces:` and `hosts:`, so
+	// falling back to defaults made every workspace and machine vanish at once. `wisp -w demo`
+	// then answered "no workspace named demo; known:" with an empty list, about a file with demo
+	// written plainly in it.
+	if err := c.mergeFile(UserConfigPath()); err != nil && !os.IsNotExist(err) {
+		return c, fmt.Errorf("%s: %w", UserConfigPath(), err)
+	}
 	c.normalizeWorkspaces()
 
 	if name != "" {
@@ -414,6 +422,6 @@ Fix by any one of:
   - register one you already have:  wisp ws new <name> /path/to/workspace
   - set WISP_WORKSPACE=/path/to/workspace
 
-`+"`wisp ws`"+` lists what is configured, in %s.`,
+`+"`wisp ws`"+` lists what is configured, in %s`,
 		MarkerFile, c.Vault, c.Workspace, UserConfigPath())
 }
