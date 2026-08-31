@@ -12,7 +12,7 @@ import (
 
 // Version is wisp's own version. It lives here rather than in main because the two ends of a
 // remote workspace are separate installs that have to be able to say what they are.
-const Version = "0.14.1"
+const Version = "0.15.0"
 
 // WireVersion is the shape of what `wisp board --json` prints. The two ends are separate
 // installs and will drift, so a mismatch refuses by name and number rather than half-parsing a

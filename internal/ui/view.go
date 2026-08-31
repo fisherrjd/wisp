@@ -62,7 +62,7 @@ var (
 	// Workspace mode. ctrl-x is "forget" rather than "kill": it edits the config and leaves
 	// every file and every session alone, and calling both of them kill would be a lie about
 	// one of them.
-	wsKeys     = []string{"enter go", "← → machine", "ctrl-n workspace", "ctrl-a machine", "ctrl-x forget", "esc back"}
+	wsKeys     = []string{"enter go", "←→ machine", "n workspace", "a machine", "x forget", "esc back"}
 	newWSKey   = []string{"enter create", "esc cancel", "-p to create the directory"}
 	newHostKey = []string{"enter add", "esc cancel"}
 )

@@ -368,13 +368,13 @@ func (m model) updateWorkspace(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.status = ""
 		return m, nil
 
-	case "up", "ctrl+k":
+	case "up", "k", "ctrl+k":
 		if m.wsCursor > 0 {
 			m.wsCursor--
 		}
 		return m, nil
 
-	case "down", "ctrl+j":
+	case "down", "j", "ctrl+j":
 		if m.wsCursor < len(rows)-1 {
 			m.wsCursor++
 		}
@@ -382,11 +382,11 @@ func (m model) updateWorkspace(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// A whole machine at a time. Up and down walk one row, which on a machine holding several
 	// workspaces means several presses to get past it; left and right are the level above.
-	case "left":
+	case "left", "h":
 		m.wsCursor = m.systemStep(rows, -1)
 		return m, nil
 
-	case "right":
+	case "right", "l":
 		m.wsCursor = m.systemStep(rows, 1)
 		return m, nil
 
@@ -413,16 +413,19 @@ func (m model) updateWorkspace(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.hop = p.Name
 		return m, tea.Quit
 
+	// Plain letters, because nothing here types: the tree is a list, not a filter box. Chords
+	// would also be a lottery, since wisp lives inside tmux and whichever chord someone has
+	// chosen as their prefix never arrives. ctrl-a is a common one and reaches nothing.
+	//
 	// Two different things, so two keys. A machine is an ssh target and gets you everything on
-	// it; a workspace is a directory on one machine. Telling them apart by a trailing colon on
-	// one shared line was the tree flattened into syntax.
-	case "ctrl+n":
+	// it; a workspace is a directory on one machine.
+	case "n", "ctrl+n":
 		m.mode = modeNewWS
 		m.input = ""
 		m.status = ""
 		return m, nil
 
-	case "ctrl+a":
+	case "a":
 		m.mode = modeNewHost
 		m.input = ""
 		m.status = ""
@@ -431,7 +434,7 @@ func (m model) updateWorkspace(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Forgets, and only that: nothing on disk is touched and any session running there keeps
 	// running. The same key kills a session in the item list, which is a heavier thing, so the
 	// footer says "forget" here rather than "kill".
-	case "ctrl+x":
+	case "x", "ctrl+x":
 		name := m.forgetTarget(rows)
 		if name == "" {
 			return m, nil

@@ -83,16 +83,16 @@ In the picker: type to filter, `enter` opens, `ctrl-n` creates (a name, or a pas
     ⚠ gjallar
 ```
 
-Machines are rows too, because they are things you act on. `↑` `↓` walk one row, `←` `→` jump a whole machine, `esc` comes back.
+Machines are rows too, because they are things you act on. `↑` `↓` (or `j` `k`) walk one row, `←` `→` (or `h` `l`) jump a whole machine, `esc` comes back.
 
 | | on a workspace | on a machine |
 |---|---|---|
 | `enter` | go there | go to its default workspace |
-| `ctrl-n` | make a workspace **on this machine** | same |
-| `ctrl-a` | add a machine | add a machine |
-| `ctrl-x` | forget the workspace | forget the machine and everything it holds |
+| `n` | make a workspace **on this machine** | same |
+| `a` | add a machine | add a machine |
+| `x` | forget the workspace | forget the machine and everything it holds |
 
-`ctrl-n` reads the path on whichever machine the cursor is in, so there is no host prefix to remember and none to typo. The prompt says which.
+Plain letters, not chords: nothing in the tree types, and wisp lives inside tmux, so whichever chord you use as your prefix would never arrive. `n` reads the path on whichever machine the cursor is in, so there is no host prefix to remember and none to typo. The prompt says which.
 
 Nothing there touches disk except making the vault and `.wisp.yaml` for a new workspace; forgetting only edits the config.
 
@@ -161,7 +161,7 @@ Overrides: `WISP_WORKSPACE`, `WISP_PROGRAM`, `WISP_INSTALL`.
 
 **Workspace resolution**, in order: `-w <name>`; `WISP_WORKSPACE`; the nearest ancestor holding a `.wisp.yaml` or a vault directory (so wisp works from inside a repo or a worktree); the default workspace; otherwise an error naming the fixes.
 
-You never have to write either block by hand. `ctrl-w` then `ctrl-n` or `ctrl-a` in the picker does the same thing, and so does the shell:
+You never have to write either block by hand. `ctrl-w` then `n` or `a` in the picker does the same thing, and so does the shell:
 
 ```
 wisp ws new side                 # adopt the current directory
@@ -229,7 +229,7 @@ wisp ws new scratch bigbox:~/scratch     # one workspace it has not registered
 wisp ws new scratch -p bigbox:~/scratch  # and make it there too
 ```
 
-`ctrl-a` and `ctrl-n` are the same two things in the picker. `-p` runs the same command on the far side rather than reaching into its filesystem. The ssh user belongs in the target, `jade@eldo`, so a machine whose account does not match your local one needs nothing in `~/.ssh/config`.
+`a` and `n` in the picker's tree are the same two things. `-p` runs the same command on the far side rather than reaching into its filesystem. The ssh user belongs in the target, `jade@eldo`, so a machine whose account does not match your local one needs nothing in `~/.ssh/config`.
 
 Beyond that wisp does no authentication. If `ssh eldo` works in your shell it works here, and if it does not, that is an ssh config problem with an ssh config fix.
 
