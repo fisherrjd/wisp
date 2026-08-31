@@ -62,8 +62,9 @@ var (
 	// Workspace mode. ctrl-x is "forget" rather than "kill": it edits the config and leaves
 	// every file and every session alone, and calling both of them kill would be a lie about
 	// one of them.
-	wsKeys   = []string{"enter go", "← → machine", "ctrl-n new", "ctrl-x forget", "esc back"}
-	newWSKey = []string{"enter create", "esc cancel", "-p to create the directory"}
+	wsKeys     = []string{"enter go", "← → machine", "ctrl-n workspace", "ctrl-a machine", "ctrl-x forget", "esc back"}
+	newWSKey   = []string{"enter create", "esc cancel", "-p to create the directory"}
+	newHostKey = []string{"enter add", "esc cancel"}
 )
 
 // legendWidth is the legend and key hints laid side by side, used to decide whether the footer
@@ -76,13 +77,15 @@ func (m model) activeKeys() []string {
 		return wsKeys
 	case modeNewWS:
 		return newWSKey
+	case modeNewHost:
+		return newHostKey
 	}
 	return footerKeys
 }
 
 // activeLegend is the glyph key for the list currently on screen.
 func (m model) activeLegend() []legendEntry {
-	if m.mode == modeWorkspace || m.mode == modeNewWS {
+	if m.mode == modeWorkspace || m.mode == modeNewWS || m.mode == modeNewHost {
 		return wsLegend
 	}
 	out := make([]legendEntry, 0, len(footerStates))
@@ -149,7 +152,7 @@ func (m model) View() string {
 
 	rows := m.listRows()
 	left, right := m.renderList(rows), m.renderPreview(rows)
-	if m.mode == modeWorkspace || m.mode == modeNewWS {
+	if m.mode == modeWorkspace || m.mode == modeNewWS || m.mode == modeNewHost {
 		left, right = m.renderWorkspaces(), m.renderWorkspaceDetail(rows)
 	}
 	body := lipgloss.JoinHorizontal(
@@ -162,11 +165,21 @@ func (m model) View() string {
 }
 
 func (m model) renderPrompt() string {
-	if m.mode == modeWorkspace || m.mode == modeNewWS {
+	if m.mode == modeWorkspace || m.mode == modeNewWS || m.mode == modeNewHost {
 		label, hint := " workspaces ", "enter to go there"
 		typed := ""
-		if m.mode == modeNewWS {
-			label, hint = " new workspace ", "name, then a path, host:path, or host:"
+		switch m.mode {
+		case modeNewWS:
+			// Named, so it is obvious which machine the path will be read on. The cursor already
+			// decided; saying so is what stops it being a surprise.
+			where := "here"
+			if sys := m.currentSystem(); sys != "" {
+				where = "on " + sys
+			}
+			label, hint = " new workspace ", "name, then a path "+where
+			typed = " " + m.input + promptStyle.Render("▏")
+		case modeNewHost:
+			label, hint = " add machine ", "an ssh target, like jade@eldo"
 			typed = " " + m.input + promptStyle.Render("▏")
 		}
 		left := newLabel.Render(label) + typed
@@ -302,47 +315,49 @@ func (m model) renderWorkspaces() string {
 	if len(m.peers) == 0 {
 		return hintStyle.Render("  no workspaces")
 	}
-	var b strings.Builder
-	lines := 0
-	i := 0
-	for _, sys := range wisp.Systems(m.peers) {
-		if lines > 0 {
-			b.WriteString("\n")
+	var out []string
+	for i, r := range m.wsRows() {
+		sel := i == m.wsCursor
+		lead := "  "
+		if sel {
+			lead = pointer.String() + " "
 		}
-		b.WriteString(truncate(m.renderSystemHeader(sys), m.listInner()))
-		lines++
-		for _, p := range sys.Peers {
-			glyph, colour := wsGlyph(p)
-			lead, style := "    ", rowStyle
-			if i == m.wsCursor {
-				lead, style = pointer.String()+"   ", rowSelected
-			}
-			// The workspace's own name under its machine. The qualified form is what you type,
-			// not what you read: repeating `eldo/` on every row under a header saying `eldo`
-			// spends the width that the name itself needs.
-			label := p.Workspace
-			if label == "" {
-				label = p.Name
-			}
-			line := lead + lipgloss.NewStyle().Foreground(colour).Render(glyph) + " " + style.Render(label)
-			if p.Current {
-				line += repoStyle.Render("  (here)")
-			}
-			b.WriteString("\n" + truncate(line, m.listInner()))
-			lines++
-			i++
+		if r.Head != nil {
+			out = append(out, truncate(lead+m.renderSystemHeader(*r.Head, sel), m.listInner()))
+			continue
 		}
+		p := *r.Peer
+		glyph, colour := wsGlyph(p)
+		style := rowStyle
+		if sel {
+			style = rowSelected
+		}
+		// The workspace's own name under its machine. The qualified form is what you type, not
+		// what you read: repeating `eldo/` on every row beneath a header saying `eldo` spends
+		// the width the name itself needs.
+		label := p.Workspace
+		if label == "" {
+			label = p.Name
+		}
+		line := lead + "  " + lipgloss.NewStyle().Foreground(colour).Render(glyph) + " " + style.Render(label)
+		if p.Current {
+			line += repoStyle.Render("  (here)")
+		}
+		out = append(out, truncate(line, m.listInner()))
 	}
-	return b.String()
+	return strings.Join(out, "\n")
 }
 
-func (m model) renderSystemHeader(sys wisp.System) string {
+func (m model) renderSystemHeader(sys wisp.System, selected bool) string {
 	name := sys.Name
 	if name == "" {
 		name = wisp.ThisSystem()
 	}
 	style := wsOther
-	if sys.Current {
+	switch {
+	case selected:
+		style = wsHeadSelected
+	case sys.Current:
 		style = wsCurrent
 	}
 	head := style.Render(name)

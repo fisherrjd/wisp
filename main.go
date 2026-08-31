@@ -28,11 +28,14 @@ usage:
   wisp ws                 list workspaces
   wisp ws new [-p] <name> [path]
                           make a directory a workspace and register it;
-                          -p creates the directory too. The path may be
-                          local, host:path, or host: for every workspace
-                          on that machine
-  wisp ws rm <name>       forget a workspace or machine; nothing on disk
-                          is touched
+                          the path may be local or host:path, and -p
+                          creates the directory too
+  wisp ws rm <name>       forget a workspace; nothing on disk is touched
+  wisp host               list the machines wisp can reach
+  wisp host add [name] <ssh target>
+                          register a machine; every workspace it holds
+                          joins the ring
+  wisp host rm <name>     forget a machine and everything it holds
   wisp kill <item>        kill an item's session
   wisp repos              list workspace repos
   wisp version            print the version
@@ -213,6 +216,12 @@ func run(args []string) error {
 		}
 		return nil
 
+	// Machines are their own family of commands, not a spelling of `ws new`. They sit a level
+	// above workspaces and adding one gets you everything on it, which is a different act from
+	// making a directory somewhere.
+	case "host", "hosts":
+		return hostCommand(cfg, args[1:])
+
 	case "repos":
 		repos, err := cfg.Repos()
 		if err != nil {
@@ -311,6 +320,55 @@ func flagInt(args []string, flag string, fallback int) int {
 	return fallback
 }
 
+// hostCommand handles `wisp host`, `wisp host add [name] <target>` and `wisp host rm <name>`.
+func hostCommand(cfg wisp.Config, args []string) error {
+	verb := ""
+	if len(args) > 0 {
+		verb = args[0]
+	}
+	switch verb {
+	case "add":
+		name, target := "", ""
+		switch rest := args[1:]; len(rest) {
+		case 0:
+			return fmt.Errorf("usage: wisp host add [name] <ssh target>")
+		case 1:
+			target = rest[0] // named after the machine
+		default:
+			name, target = rest[0], rest[1]
+		}
+		summary, err := cfg.AddHost(name, target)
+		if err != nil {
+			return err
+		}
+		if name == "" {
+			name = wisp.HostName(target)
+		}
+		fmt.Printf("%s: %s\n\n  wisp ws        its workspaces\n  wisp -w %s%s go to it\n",
+			name, summary, name, strings.Repeat(" ", max(1, 8-len(name))))
+		return nil
+
+	case "rm", "forget":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: wisp host rm <name>")
+		}
+		if err := cfg.Unregister(args[1]); err != nil {
+			return err
+		}
+		fmt.Printf("forgot %s; nothing on disk was touched\n", args[1])
+		return nil
+
+	case "":
+		for _, n := range cfg.HostNames() {
+			fmt.Printf("%-12s %s\n", n, cfg.Hosts[n])
+		}
+		return nil
+
+	default:
+		return fmt.Errorf("unknown host command %q\n\nusage:\n  wisp host\n  wisp host add [name] <ssh target>\n  wisp host rm <name>", verb)
+	}
+}
+
 // newWorkspace handles `wisp ws new [-p] <name> [path]`. The path defaults to the current
 // directory, since the usual moment for this is standing in the tree you want to adopt.
 func newWorkspace(cfg wisp.Config, args []string) error {
@@ -339,14 +397,6 @@ func newWorkspace(cfg wisp.Config, args []string) error {
 	created, err := cfg.CreateWorkspace(name, path, mkdir)
 	if err != nil {
 		return err
-	}
-
-	// A machine, not a workspace: it stands in for everything it holds, so there is nothing here
-	// to name a path for.
-	if loc := wisp.ParseLocation(path); loc.IsRemote() && loc.Path == "" {
-		fmt.Printf("machine %s at %s\n\n  wisp ws        its workspaces\n  wisp -w %s%s go to it\n",
-			name, created, name, strings.Repeat(" ", max(1, 8-len(name))))
-		return nil
 	}
 
 	fmt.Printf("workspace %s at %s\n", name, created)

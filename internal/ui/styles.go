@@ -52,6 +52,9 @@ var (
 	wsCurrent = lipgloss.NewStyle().Foreground(colAcc).Bold(true)
 	wsOther   = lipgloss.NewStyle().Foreground(colFaint)
 	wsMissing = lipgloss.NewStyle().Foreground(colFaint).Italic(true)
+	// A selected machine reads as ink rather than accent, so the cursor and "the machine you
+	// are in" stay two different signals on the same row.
+	wsHeadSelected = lipgloss.NewStyle().Foreground(colInk).Bold(true)
 
 	// Reverse video rather than another hue: the create line is a mode, and it should be
 	// unmistakable without spending a second accent colour on it.

@@ -166,14 +166,17 @@ func Load(name string) (Config, error) {
 	// The workspace set belongs to the user config alone. A workspace naming its neighbours
 	// would let one of them rename or hide another, so whatever the file below says about them
 	// is discarded rather than merged.
-	set, def, name, explicit := c.Workspaces, c.Default, c.Name, c.explicit
+	set, hosts, def, name, explicit := c.Workspaces, c.Hosts, c.Default, c.Name, c.explicit
 
 	// A parse error in the workspace file is worth reporting: it is the file the user just
 	// edited, and silently falling back to defaults would look like wisp ignoring them.
 	if err := c.mergeFile(filepath.Join(c.Workspace, MarkerFile)); err != nil && !os.IsNotExist(err) {
 		return c, fmt.Errorf("%s: %w", MarkerFile, err)
 	}
-	c.Workspaces, c.Default, c.Name, c.explicit = set, def, name, explicit
+	// Hosts is restored along with the rest: a workspace naming its machines would let one of
+	// them add, rename or hide another, which is the same thing the workspace set is protected
+	// from and for the same reason.
+	c.Workspaces, c.Hosts, c.Default, c.Name, c.explicit = set, hosts, def, name, explicit
 
 	if v := os.Getenv("WISP_PROGRAM"); v != "" {
 		c.Program = v

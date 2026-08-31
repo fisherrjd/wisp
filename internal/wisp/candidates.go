@@ -163,6 +163,12 @@ func (c Config) tally(all []Session, hosts map[string]hostProbe, probes map[stri
 			continue
 		}
 		p := Peer{Name: n, Workspace: n, Current: n == c.Name, Ready: c.Ready(), Path: c.Location.String()}
+		// A workspace written down with a path can still be on another machine, and it belongs
+		// under that machine in the tree rather than under this one. Only where it lives decides
+		// that, not how it came to be known.
+		if loc, ok := c.Workspaces[n]; ok && loc.IsRemote() {
+			p.System = HostName(loc.Host)
+		}
 		if !p.Current {
 			// Loaded rather than guessed at: another workspace can name its vault directory
 			// something else in its own .wisp.yaml, and a readiness check against this

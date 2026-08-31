@@ -49,9 +49,11 @@ func (c Config) CreateWorkspace(name, path string, mkdir bool) (string, error) {
 		return "", fmt.Errorf("a workspace needs a name: wisp ws new <name> [path]")
 	}
 
-	// A host with nothing after the colon is the machine itself, not one workspace on it.
+	// A machine is not a workspace with an empty path. They sit at different levels and adding
+	// one does a different thing, so the command says which rather than a trailing colon
+	// deciding it silently.
 	if loc := ParseLocation(path); loc.IsRemote() && loc.Path == "" {
-		return c.AddHost(name, loc.Host)
+		return "", fmt.Errorf("%s is a machine, not a workspace on one\n\n  wisp host add %s %s\n\ngets you every workspace it holds", loc.Host, name, loc.Host)
 	}
 
 	// A path with a host in front of it. Registering it here is always the local half; -p also
@@ -216,6 +218,13 @@ func (c Config) Unregister(name string) error {
 	// rather than only the one wisp itself writes.
 	if !removed {
 		removed = deleteHost(mapValue(root, "hosts"), name, c.Hosts[name])
+	}
+	// An emptied section goes with the last entry. `hosts: {}` left behind reads as a setting
+	// someone chose rather than as the absence of one.
+	for _, section := range []string{"hosts", "workspaces"} {
+		if n := mapValue(root, section); n != nil && len(n.Content) == 0 {
+			deleteMapKey(root, section)
+		}
 	}
 	// Not in the block, so it can only have come from the older single `workspace:` key, which
 	// is folded into the set at load under its directory name.
