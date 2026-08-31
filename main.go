@@ -24,6 +24,8 @@ usage:
   wisp next / wisp prev   cycle to the next or previous item session
   wisp hop [next|prev|<ws>]  move to another workspace
   wisp open <item>        open an item directly
+  wisp new <name|url>     make an item: a name, or a gitlab link to derive
+                          <repo>/<iid>-<slug> from
   wisp ls                 list live sessions, every workspace
   wisp ws                 list workspaces
   wisp ws new [-p] <name> [path]
@@ -136,7 +138,14 @@ func run(args []string) error {
 		if len(args) < 2 {
 			return fmt.Errorf("usage: wisp open <item>")
 		}
-		return cfg.Open(wisp.Item{Name: args[1]}, func(msg string) {
+		// Checked here and not inside Open: the picker only ever hands Open a row it found, so
+		// this is the one caller that can name something that does not exist, and a typo there
+		// used to build a whole session around itself.
+		it := wisp.Item{Name: args[1]}
+		if err := cfg.RequireItem(it); err != nil {
+			return err
+		}
+		return cfg.Open(it, func(msg string) {
 			fmt.Fprintf(os.Stderr, "--- %s\n", msg)
 		})
 

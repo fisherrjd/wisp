@@ -1,9 +1,9 @@
 package wisp
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 )
@@ -41,13 +41,14 @@ func (c Config) Repos() ([]string, error) {
 	return out, nil
 }
 
-var itemDirRe = regexp.MustCompile(`^[0-9]+-`)
-
 // skipDirs are vault subdirectories that are infrastructure rather than work.
 var skipDirs = map[string]bool{".git": true, ".claude": true, ".obsidian": true}
 
-// LocalItems finds vault folders two levels deep: <repo>/<iid>-<slug>, plus anything under
-// _adhoc, which has no iid by definition.
+// LocalItems finds vault folders two levels deep: <repo>/<item>, plus anything under _adhoc.
+//
+// Every subdirectory counts, not only the <iid>-<slug> ones. `wisp new <repo>/<name>` files an
+// item under a repo without a ticket behind it, and requiring a leading number here meant wisp
+// created those, opened them, and then left them out of its own list.
 func (c Config) LocalItems() ([]Item, error) {
 	top, err := os.ReadDir(c.VaultDir())
 	if err != nil {
@@ -66,9 +67,6 @@ func (c Config) LocalItems() ([]Item, error) {
 			if !child.IsDir() || skipDirs[child.Name()] {
 				continue
 			}
-			if parent.Name() != "_adhoc" && !itemDirRe.MatchString(child.Name()) {
-				continue
-			}
 			out = append(out, Item{
 				Name:  parent.Name() + "/" + child.Name(),
 				State: StateFolder,
@@ -81,6 +79,53 @@ func (c Config) LocalItems() ([]Item, error) {
 
 // ItemDir is where an item's notes and manifest live.
 func (c Config) ItemDir(item string) string { return filepath.Join(c.VaultDir(), item) }
+
+// RequireItem refuses a name that points at nothing, before Open builds a session around it.
+//
+// Open tolerates a missing vault folder on purpose: an item picked off GitLab has never had one
+// here. That tolerance is fine for the picker, which only ever offers rows it found, and wrong
+// for the command line, where a typo became a real session named after the typo, holding an agent
+// that was told nothing, which then sat in the list until someone killed it by hand.
+//
+// Three ways to be real, none of them a network call: the folder is there, a session is already
+// running under the name, or its repo half is a directory in this workspace, which is what a
+// GitLab item looks like before it is opened for the first time.
+func (c Config) RequireItem(item Item) error {
+	if c.IsRemote() {
+		// The machine that owns the workspace runs this same check on its own vault, and it is
+		// the only one that can: nothing about the item is knowable from here.
+		return nil
+	}
+	if !c.itemInVault(item.Name) {
+		return fmt.Errorf("%q does not name an item in %s/", item.Name, c.Vault)
+	}
+	if isDir(c.ItemDir(item.Name)) || c.HasSession(item.Name) {
+		return nil
+	}
+	if repo := item.Repo(); repo != "" && isDir(filepath.Join(c.Workspace, repo)) {
+		return nil
+	}
+	return fmt.Errorf(`no item named %q
+
+Nothing in %s/ has that name, no session is running under it, and it does not name
+a repo in this workspace.
+
+Fix by either:
+  - create it:  wisp new %s
+  - pick from what is already there:  wisp`, item.Name, c.Vault, item.Name)
+}
+
+// itemInVault reports whether a name still lands inside the vault once ItemDir joins it on. The
+// name is user input here, and a ".." in it would put both the folder and the session somewhere
+// the vault does not reach.
+func (c Config) itemInVault(name string) bool {
+	if strings.TrimSpace(name) == "" {
+		return false
+	}
+	return strings.HasPrefix(
+		filepath.Clean(c.ItemDir(name)),
+		filepath.Clean(c.VaultDir())+string(filepath.Separator))
+}
 
 // WorktreeFor is the checkout path for one repo of one item. It is a cache: deleting it is
 // safe, and reopening the item recreates it from the branch, which is the durable state.

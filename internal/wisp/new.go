@@ -57,29 +57,47 @@ func (c Config) NewItem(input string) (Item, error) {
 		// Taken as-is so an item can be filed under a repo directly. Each segment is still
 		// slugified, since these become directory names.
 		repo, rest, _ := strings.Cut(input, "/")
-		name = slugifyPath(repo) + "/" + slugifyPath(rest)
+		dir, slug := slugifyPath(repo), slugifyPath(rest)
+		if dir == "" || slug == "" {
+			return Item{}, fmt.Errorf("%q does not name an item; give it a repo and a name, like `wisp/my-thing`", input)
+		}
+		name = dir + "/" + slug
 	default:
-		name = "_adhoc/" + slugifyPath(input)
+		slug := slugifyPath(input)
+		if slug == "" {
+			return Item{}, fmt.Errorf("%q does not name an item", input)
+		}
+		name = "_adhoc/" + slug
 	}
 
 	it := Item{Name: name, State: StateFolder}
-	dir := c.ItemDir(it.Name)
-	if isDir(dir) {
+	if isDir(c.ItemDir(it.Name)) {
 		// Already there: hand it back rather than failing, so ctrl-n on something that exists
 		// just opens it.
 		return it, nil
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := c.makeItemDir(it); err != nil {
 		return Item{}, err
 	}
-	notes := filepath.Join(dir, "notes.md")
-	if !exists(notes) {
-		body := fmt.Sprintf("# %s\n\n", it.Slug())
-		if err := os.WriteFile(notes, []byte(body), 0o644); err != nil {
-			return Item{}, err
-		}
-	}
 	return it, nil
+}
+
+// makeItemDir creates an item's folder and its notes stub.
+//
+// Shared with Open, which needs it for an item picked straight off GitLab: that item has never
+// had a folder here, and the vault is where its notes and its context file go.
+//
+// Safe to call on a folder that already exists, and it never overwrites an existing notes.md.
+func (c Config) makeItemDir(item Item) error {
+	dir := c.ItemDir(item.Name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	notes := filepath.Join(dir, "notes.md")
+	if exists(notes) {
+		return nil
+	}
+	return os.WriteFile(notes, []byte(fmt.Sprintf("# %s\n\n", item.Slug())), 0o644)
 }
 
 // itemFromURL builds <repo>/<iid>-<slug> from a pasted GitLab link.
@@ -145,6 +163,10 @@ func (c Config) cachedTitle(iid string) string {
 
 // slugifyPath makes one path segment safe as a directory name while keeping it readable. Unlike
 // slugify it does not truncate: the user typed this and expects to see it back.
+//
+// Returns "" for anything that does not name a directory of its own. Dots survive slugification
+// because plenty of repos have one in the name, which meant `wisp new ../thing` produced the
+// literal segment ".." and wrote its folder outside the vault entirely.
 func slugifyPath(s string) string {
 	var b strings.Builder
 	lastDash := false
@@ -163,5 +185,11 @@ func slugifyPath(s string) string {
 			}
 		}
 	}
-	return strings.Trim(b.String(), "-")
+	out := strings.Trim(b.String(), "-")
+	// "." and ".." are directions, not names. Everything else made only of dots is no better as a
+	// folder, so the whole family goes rather than the two spellings that happen to traverse.
+	if strings.Trim(out, ".") == "" {
+		return ""
+	}
+	return out
 }
