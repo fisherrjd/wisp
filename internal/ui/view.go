@@ -95,29 +95,58 @@ func (m model) activeLegend() []legendEntry {
 	return out
 }
 
-func (m model) footerStacks() bool {
-	// Measured from the same slices the renderer uses, rather than guessed, so adding a key
-	// cannot silently break the height calculation and overflow the terminal.
-	legend := 0
+// footerLines is the footer's contents, already laid out, one string per line.
+//
+// The renderer and the height calculation both read this rather than each deciding for
+// themselves. They used to share two predicates instead, which held until the key list outgrew a
+// narrow terminal: the line wrapped to a third row the height never counted, and the panes above
+// slid off the top.
+func (m model) footerLines() []string {
+	legend := make([]string, 0, len(m.activeLegend()))
 	for _, e := range m.activeLegend() {
-		legend += 2 + len(e.label) + 3
+		legend = append(legend, lipgloss.NewStyle().Foreground(e.colour).Render(e.glyph)+" "+keyStyle.Render(e.label))
 	}
-	keys := 0
+	keys := make([]string, 0, len(m.activeKeys()))
 	for _, k := range m.activeKeys() {
-		keys += len(k) + 3
+		keys = append(keys, keyStyle.Render(k))
 	}
-	return m.width-legend-keys < 2
+
+	left, right := strings.Join(legend, "   "), strings.Join(keys, "   ")
+	if gap := m.width - lipgloss.Width(left) - lipgloss.Width(right); gap >= 2 {
+		return []string{left + strings.Repeat(" ", gap) + right}
+	}
+	// Stacking when it does not fit, rather than truncating, is the whole reason for leaving
+	// fzf, whose header could only ever truncate. Each half wraps onto as many rows as it needs
+	// and every row is counted.
+	return append(wrapItems(legend, "   ", m.width), wrapItems(keys, "   ", m.width)...)
 }
 
-// footerHeight must agree with renderFooter or the panes will overflow the terminal. Both are
-// driven by the same two predicates, so they cannot drift.
-func (m model) footerHeight() int {
-	h := 1 // the rule above the footer
-	if m.footerStacks() {
-		h += 2
-	} else {
-		h++
+// wrapItems packs items onto as few lines as fit the width, never splitting one.
+func wrapItems(items []string, sep string, width int) []string {
+	var lines []string
+	cur := ""
+	for _, it := range items {
+		next := it
+		if cur != "" {
+			next = cur + sep + it
+		}
+		if cur != "" && lipgloss.Width(next) > width {
+			lines = append(lines, cur)
+			cur = it
+			continue
+		}
+		cur = next
 	}
+	if cur != "" {
+		lines = append(lines, cur)
+	}
+	return lines
+}
+
+// footerHeight must agree with renderFooter or the panes overflow the terminal. Both come from
+// footerLines, so they cannot drift.
+func (m model) footerHeight() int {
+	h := 1 + len(m.footerLines()) // the rule above the footer, then its rows
 	if m.status != "" {
 		h++
 	}
@@ -431,24 +460,7 @@ func (m model) renderPreview(rows int) string {
 }
 
 func (m model) renderFooter() string {
-	legend := []string{}
-	for _, e := range m.activeLegend() {
-		legend = append(legend,
-			lipgloss.NewStyle().Foreground(e.colour).Render(e.glyph)+" "+keyStyle.Render(e.label))
-	}
-
-	left := strings.Join(legend, "   ")
-	right := keyStyle.Render(strings.Join(m.activeKeys(), "   "))
-
-	// Stacking when it does not fit, rather than truncating, is the whole reason for leaving
-	// fzf, whose header could only ever truncate.
-	var bar string
-	if m.footerStacks() {
-		bar = left + "\n" + right
-	} else {
-		gap := m.width - lipgloss.Width(left) - lipgloss.Width(right)
-		bar = left + strings.Repeat(" ", gap) + right
-	}
+	bar := strings.Join(m.footerLines(), "\n")
 
 	// The status line sits above the legend rather than replacing it. A missing gitlab config
 	// persists for the whole session, and swapping out the legend for it would trade one piece
