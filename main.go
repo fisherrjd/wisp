@@ -326,6 +326,24 @@ func newWorkspace(cfg wisp.Config, args []string) error {
 		return err
 	}
 	fmt.Printf("workspace %s at %s\n", name, created)
+
+	// A remote one was registered, not built: the vault and the config over there are the far
+	// side's, and this end never made them. Saying "edit its .wisp.yaml" would be pointing at a
+	// file that does not exist.
+	if loc := wisp.ParseLocation(created); loc.IsRemote() {
+		fmt.Printf(`
+registered, not created: the workspace itself belongs to %s.
+
+Set it up there, if it is not already:
+  ssh %s 'wisp ws new %s %s'
+
+Both ends need wisp %s or newer. Then:
+  wisp ws        check that it answers
+  wisp -w %s     go there
+`, loc.Host, loc.Host, name, loc.Path, wisp.Version, name)
+		return nil
+	}
+
 	// Said once, here, rather than left to be discovered. The upward search stops at the
 	// nearest workspace, so anything below this point now resolves here and the outer one
 	// becomes unreachable from inside it.
