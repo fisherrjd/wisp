@@ -167,3 +167,24 @@ func TestSanitizeLine(t *testing.T) {
 		t.Errorf("control characters survived: %q", got)
 	}
 }
+
+// ctrl-t is the only way back from a mistaken ctrl-d, so it has to be on the footer. It shipped
+// missing from it, discoverable only from the status line ctrl-d prints once.
+func TestFooterOffersTheWayBackFromDone(t *testing.T) {
+	hidden := strings.Join(itemKeys(false), "  ")
+	shown := strings.Join(itemKeys(true), "  ")
+	if !strings.Contains(hidden, "ctrl-t") || !strings.Contains(shown, "ctrl-t") {
+		t.Fatalf("ctrl-t missing from the footer:\n  %s\n  %s", hidden, shown)
+	}
+	// Worded for what the next press does, not for the state the list is in.
+	if !strings.Contains(hidden, "show") || !strings.Contains(shown, "hide") {
+		t.Errorf("ctrl-t does not follow the toggle:\n  hidden: %s\n  shown:  %s", hidden, shown)
+	}
+	// And every other key survived being moved out of the package-level slice.
+	for _, want := range []string{"enter open", "ctrl-n new", "ctrl-d done", "ctrl-w workspaces",
+		"ctrl-x kill", "ctrl-r refresh", "esc quit"} {
+		if !strings.Contains(hidden, want) {
+			t.Errorf("footer lost %q: %s", want, hidden)
+		}
+	}
+}

@@ -55,7 +55,6 @@ func wsGlyph(p wisp.Peer) (string, lipgloss.AdaptiveColor) {
 
 var (
 	footerStates = []wisp.State{wisp.StateLive, wisp.StateNeedsInput, wisp.StateFolder, wisp.StateRemote}
-	footerKeys   = []string{"enter open", "ctrl-n new", "ctrl-d done", "ctrl-w workspaces", "ctrl-x kill", "ctrl-r refresh", "esc quit"}
 	// The create line has its own keys, since most of the list bindings do not apply while a
 	// name is being typed.
 	newKeys = []string{"enter create", "esc cancel"}
@@ -80,7 +79,22 @@ func (m model) activeKeys() []string {
 	case modeNewHost:
 		return newHostKey
 	}
-	return footerKeys
+	return itemKeys(m.showDone)
+}
+
+// itemKeys is the item list's hints, worded for what the next press will do rather than for the
+// state the list is in.
+//
+// ctrl-t sits next to ctrl-d because they are the two halves of one idea: one hides a finished
+// item and the other is the way back. It was missing from the footer entirely, which left the
+// only route back from a mistaken ctrl-d undiscoverable without editing the note by hand.
+func itemKeys(showDone bool) []string {
+	closed := "ctrl-t show closed"
+	if showDone {
+		closed = "ctrl-t hide closed"
+	}
+	return []string{"enter open", "ctrl-n new", "ctrl-d done", closed,
+		"ctrl-w workspaces", "ctrl-x kill", "ctrl-r refresh", "esc quit"}
 }
 
 // activeLegend is the glyph key for the list currently on screen.
