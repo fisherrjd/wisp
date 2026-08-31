@@ -27,9 +27,11 @@ usage:
   wisp new <name|url>     make an item: a name, or a gitlab link to derive
                           <repo>/<iid>-<slug> from
   wisp ls                 list live sessions, every workspace
-  wisp done <item>        mark an item closed out; it leaves the picker but
-                          nothing on disk is removed. --undo brings it back,
-                          --list shows what has been closed out
+  wisp done <item> [-m <line>]
+                          close an item out: it leaves the picker and the line
+                          is written into its notes.md. Refused with neither
+                          when the note is still empty; --anyway closes it bare.
+                          --undo reopens, --list shows what has been closed out
   wisp ws                 list workspaces
   wisp ws new [-p] <name> [path]
                           make a directory a workspace and register it;
@@ -271,16 +273,36 @@ func run(args []string) error {
 			return nil
 		}
 		if len(args) < 2 {
-			return fmt.Errorf("usage: wisp done <item> [--undo] | wisp done --list")
+			return fmt.Errorf("usage: wisp done <item> [-m <line>] [--undo] | wisp done --list")
 		}
-		undo := hasFlag(args, "--undo")
-		if err := cfg.SetDone(args[1], !undo); err != nil {
+		item := args[1]
+		if hasFlag(args, "--undo") {
+			if err := cfg.SetDone(item, false); err != nil {
+				return err
+			}
+			fmt.Printf("reopened %s\n", item)
+			return nil
+		}
+		// Refused only when there is nothing written down at all. An item you have already
+		// taken notes on closes with no ceremony; the friction lands exactly where the record
+		// would otherwise be lost, which is the case that produced a vault full of notes
+		// holding one line of frontmatter and nothing else.
+		note := flagStr(args, "-m", "")
+		if note == "" && !hasFlag(args, "--anyway") && cfg.NoteIsEmpty(item) {
+			return fmt.Errorf("nothing is written down about %s\n\n"+
+				"A closed-out item is one you stop seeing, so the note is the only thing left\n"+
+				"of it. Say what happened:\n"+
+				"  wisp done %s -m 'what it turned out to be'\n\n"+
+				"Or close it out bare, for work there is nothing to say about:\n"+
+				"  wisp done %s --anyway", item, item, item)
+		}
+		if err := cfg.CloseOut(item, true, note); err != nil {
 			return err
 		}
-		if undo {
-			fmt.Printf("reopened %s\n", args[1])
+		if note != "" {
+			fmt.Printf("closed out %s, and wrote it up in %s\n", item, cfg.NotesPath(item))
 		} else {
-			fmt.Printf("closed out %s; it is out of the picker, nothing on disk was touched\n", args[1])
+			fmt.Printf("closed out %s; it is out of the picker, nothing on disk was touched\n", item)
 		}
 		return nil
 
@@ -349,6 +371,16 @@ func hasFlag(args []string, flag string) bool {
 		}
 	}
 	return false
+}
+
+// flagStr is the string half of flagInt: `-m <line>`, with the value as the next argument.
+func flagStr(args []string, flag, fallback string) string {
+	for i, a := range args {
+		if a == flag && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	return fallback
 }
 
 func flagInt(args []string, flag string, fallback int) int {

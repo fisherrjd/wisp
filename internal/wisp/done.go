@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -60,7 +62,16 @@ func doneIn(raw []byte) bool {
 
 // SetDone marks an item closed out, or reopens it. Nothing on disk is removed either way: the
 // note is the writing, and a close that destroys it is one nobody would trust enough to use.
-func (c Config) SetDone(item string, done bool) error {
+func (c Config) SetDone(item string, done bool) error { return c.CloseOut(item, done, "") }
+
+// CloseOut sets the flag and, given one, writes the line saying what finished.
+//
+// The two happen together because separately they did not happen at all. The flag was one
+// keystroke and the write-up was a trip to an editor, so the items that got closed out and the
+// items that got written up turned out to be disjoint sets: every item carrying the flag had a
+// note holding nothing but the flag, while the one item with a real closing note was never
+// marked. Whichever half you reach for now does the other.
+func (c Config) CloseOut(item string, done bool, note string) error {
 	path := c.NotesPath(item)
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -69,7 +80,11 @@ func (c Config) SetDone(item string, done bool) error {
 		}
 		return err
 	}
-	next, err := setDoneIn(raw, done)
+	next := raw
+	if strings.TrimSpace(note) != "" {
+		next = appendClosingNote(next, note, time.Now().Format("2006-01-02"))
+	}
+	next, err = setDoneIn(next, done)
 	if err != nil {
 		return fmt.Errorf("%s: %w", path, err)
 	}
@@ -83,6 +98,63 @@ func (c Config) SetDone(item string, done bool) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+// NoteIsEmpty reports whether an item's note says nothing yet.
+//
+// It is what decides whether closing out asks for a line first. A missing note counts as empty,
+// which is the useful answer: there is nothing written down either way.
+func (c Config) NoteIsEmpty(item string) bool {
+	raw, err := os.ReadFile(c.NotesPath(item))
+	if err != nil {
+		return true
+	}
+	return !hasBody(raw)
+}
+
+// hasBody reports whether anything below the frontmatter was written by a person.
+//
+// The stub wisp creates with the folder is a single heading naming the item, so that one line
+// does not count. Everything else does, including a heading someone added themselves: the test
+// is "has anyone said anything here", not "is this a closing note".
+func hasBody(raw []byte) bool {
+	_, body, _ := splitFrontmatter(raw)
+	stub := true
+	for _, line := range bytes.Split(body, []byte("\n")) {
+		t := bytes.TrimSpace(line)
+		if len(t) == 0 {
+			continue
+		}
+		if stub && bytes.HasPrefix(t, []byte("# ")) {
+			stub = false
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// appendClosingNote puts the line at the end of the body, under a dated heading.
+//
+// Dated because a note accumulates: an item worked over three weeks and closed out twice should
+// read as two entries rather than as one paragraph that grew. The frontmatter is split off and
+// put back untouched, so this composes with setDoneIn rather than fighting it.
+func appendClosingNote(raw []byte, note, on string) []byte {
+	fm, body, found := splitFrontmatter(raw)
+	var b bytes.Buffer
+	if found {
+		b.WriteString("---\n")
+		b.Write(fm)
+		b.WriteString("\n---\n")
+	}
+	if trimmed := bytes.TrimRight(body, " \t\n"); len(trimmed) > 0 {
+		b.Write(trimmed)
+		b.WriteString("\n")
+	}
+	b.WriteString("\n## Closed out " + on + "\n\n")
+	b.WriteString(strings.TrimSpace(note))
+	b.WriteString("\n")
+	return b.Bytes()
 }
 
 // setDoneIn rewrites a note's frontmatter to carry the flag, leaving the rest of the file alone.

@@ -26,6 +26,7 @@ The picker has five, and each one owns every key while it is open. For the lines
 | **workspaces** | the machine and workspace tree | `ctrl-w` | `esc`, `ctrl-w` |
 | **new workspace** | a create line over the tree | `n` in the tree | `esc` |
 | **add machine** | a create line over the tree | `a` in the tree | `esc` |
+| **closing out** | a line over the list | `ctrl-d` on an item with an empty note | `esc` |
 
 `ctrl-c` quits from the item list and **cancels the mode** everywhere else. In the create lines it is the same as `esc`.
 
@@ -56,7 +57,19 @@ The filter is fuzzy and matches the item **name** only, not its GitLab title. Ma
 
 `ctrl-x` stops what is running and leaves the item. `ctrl-d` ends the work and leaves the list. `ctrl-x` already owns "stop the thing that is running", and this is the other half, "I am finished with this piece of work", which usually happens when nothing is running at all.
 
-`ctrl-d` writes `done: true` into the item's `notes.md` frontmatter, so nothing on disk is removed and whatever writes your closing notes can set it in the same pass. `ctrl-t` brings the closed-out ones back into view, marked `✓`, and `ctrl-d` on one reopens it. A hidden thing needs a way back into view, or `ctrl-d` is a one-way door and an item marked finished by mistake is only recoverable by editing its note by hand.
+`ctrl-d` writes `done: true` into the item's `notes.md` frontmatter. `ctrl-t` brings the closed-out ones back into view, marked `✓`, and `ctrl-d` on one reopens it. A hidden thing needs a way back into view, or `ctrl-d` is a one-way door and an item marked finished by mistake is only recoverable by editing its note by hand.
+
+On an item whose note is still empty, `ctrl-d` opens a line first:
+
+```
+ closing out   it was a caching bug in the router▏          one line on repo/1042-retry-backoff
+──────────────────────────────────────────────────────────────────────
+enter close it out   ctrl-d close it bare   esc cancel
+```
+
+`enter` writes the line under a dated heading and sets the flag in one pass. `ctrl-d` again closes it bare, for work there is nothing to say about. `esc` cancels and changes nothing.
+
+The ask exists because the flag was one keystroke and the write-up was a trip to an editor, so the items that got closed out and the items that got written up turned out to be disjoint sets. An item you have already taken notes on closes immediately, with no line and no ceremony: the friction lands exactly where the record would otherwise be lost.
 
 An item with a live session keeps its row either way, and keeps its `●`. Something is on the machine holding an agent, and hiding it would leave nothing pointing at the session.
 

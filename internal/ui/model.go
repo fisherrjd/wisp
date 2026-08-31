@@ -62,6 +62,7 @@ const (
 	modeWorkspace             // the list is the machine and workspace tree, not items
 	modeNewWS                 // typing names a new workspace
 	modeNewHost               // typing names a machine to reach
+	modeClose                 // typing says what finished, on the way to closing an item out
 )
 
 type model struct {
@@ -75,6 +76,9 @@ type model struct {
 	filtered []wisp.Item
 	cursor   int
 	offset   int
+	// closing is the item modeClose is about. Held rather than re-read from the cursor on
+	// enter, because the list reloads underneath this line and the cursor can land elsewhere.
+	closing string
 	// showDone reveals the closed-out items, which the list leaves out by default. A hidden
 	// thing needs a way back into view or ctrl-d is a one-way door, and an item marked finished
 	// by mistake would only be recoverable by editing its note by hand.
@@ -191,6 +195,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateNewWS(msg)
 		case modeNewHost:
 			return m.updateNewHost(msg)
+		case modeClose:
+			return m.updateClose(msg)
 		}
 		switch msg.String() {
 		case "ctrl+c", "esc":
@@ -245,19 +251,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// nothing is running at all.
 		case "ctrl+d":
 			if it := m.current(); it != nil {
-				done := !it.Done
-				if err := m.cfg.SetDone(it.Name, done); err != nil {
-					m.status = err.Error()
+				if it.Done {
+					if err := m.cfg.SetDone(it.Name, false); err != nil {
+						m.status = err.Error()
+						return m, nil
+					}
+					m.status = "reopened " + it.Name
+					// Local only. Being finished with something is a fact about this vault, and
+					// re-querying gitlab here would stall the list to learn nothing.
+					return m, loadLocal(m.cfg)
+				}
+				// Ask for a line only when the note is still empty. An item you have already
+				// written something about closes with no ceremony; the ask lands exactly where
+				// the record would otherwise be lost.
+				if m.cfg.NoteIsEmpty(it.Name) {
+					m.mode, m.closing, m.input, m.status = modeClose, it.Name, "", ""
 					return m, nil
 				}
-				if done {
-					m.status = "closed out " + it.Name + "; ctrl-t shows it again"
-				} else {
-					m.status = "reopened " + it.Name
-				}
-				// Local only. Being finished with something is a fact about this vault, and
-				// re-querying gitlab here would stall the list to learn nothing.
-				return m, loadLocal(m.cfg)
+				return m.closeOut(it.Name, "")
 			}
 
 		case "ctrl+t":
@@ -360,6 +371,65 @@ func (m model) updateNew(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+}
+
+// updateClose handles the line that says what finished.
+//
+// It exists because the flag and the write-up were two separate actions and only one of them was
+// a keystroke, so the items that got closed out and the items that got written up were disjoint
+// sets. Asking here makes the cheap action the complete one.
+func (m model) updateClose(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "ctrl+c":
+		m.mode, m.closing, m.input, m.status = modeFilter, "", "", ""
+		return m, nil
+
+	case "enter":
+		if strings.TrimSpace(m.input) == "" {
+			// Not a dead end, just not the default. Some work genuinely has nothing to say
+			// about it, and the way past is on the footer.
+			m.status = "give it a line, or ctrl-d to close it out with nothing"
+			return m, nil
+		}
+		return m.closeOut(m.closing, m.input)
+
+	case "ctrl+d":
+		return m.closeOut(m.closing, "")
+
+	case "backspace":
+		if m.input != "" {
+			r := []rune(m.input)
+			m.input = string(r[:len(r)-1])
+		}
+		return m, nil
+
+	case "ctrl+u":
+		m.input = ""
+		return m, nil
+
+	default:
+		switch msg.Type {
+		case tea.KeyRunes:
+			m.input += string(msg.Runes)
+		case tea.KeySpace:
+			m.input += " "
+		}
+		return m, nil
+	}
+}
+
+// closeOut writes the flag, and the line when there is one, then returns to the list.
+func (m model) closeOut(item, note string) (tea.Model, tea.Cmd) {
+	if err := m.cfg.CloseOut(item, true, note); err != nil {
+		m.status = firstLine(err.Error())
+		return m, nil
+	}
+	m.mode, m.closing, m.input = modeFilter, "", ""
+	m.status = "closed out " + item + "; ctrl-t shows it again"
+	if strings.TrimSpace(note) != "" {
+		m.status = "closed out " + item + ", and wrote it up"
+	}
+	return m, loadLocal(m.cfg)
 }
 
 func (m *model) move(delta int) {

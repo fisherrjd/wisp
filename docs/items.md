@@ -85,7 +85,9 @@ Reading it fails open: a missing, unreadable or malformed note is not done. Bein
 
 Writing it never deletes. The note is the writing, and a close that destroys it is one nobody would trust enough to use. The frontmatter is edited as a YAML node rather than parsed into a one-field struct and re-emitted, or a round trip would silently take your tags and aliases with it.
 
-Set it with `ctrl-d` in the picker, `wisp done <item>` from the shell, or by hand in your editor. All three are the same one line.
+Set it with `ctrl-d` in the picker, `wisp done <item> -m '<line>'` from the shell, or by hand in your editor.
+
+Closing out also writes the line saying what finished, under a dated heading, because separately the two did not happen. The flag was one keystroke and the write-up was a trip to an editor, and the result was a vault where every item carrying the flag had a note holding nothing but the flag. An item whose note is still empty is asked for a line before it closes; one you have already written something about closes immediately.
 
 ---
 

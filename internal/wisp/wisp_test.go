@@ -623,3 +623,103 @@ func TestItemDoneRoundTripsThroughTheVault(t *testing.T) {
 		t.Error("an item with no notes.md reads as done")
 	}
 }
+
+// The gap this closes: the flag was one keystroke and the write-up was a trip to an editor, so
+// every item carrying the flag had a note holding nothing but the flag.
+func TestNoteIsEmptySeesPastTheStub(t *testing.T) {
+	dir := t.TempDir()
+	c := Config{Workspace: dir, Vault: "working_items", Name: "t"}
+	if err := c.makeItemDir(Item{Name: "repo/1-thing"}); err != nil {
+		t.Fatal(err)
+	}
+	// makeItemDir writes "# <slug>\n\n" and nothing else. That is wisp's writing, not yours.
+	if !c.NoteIsEmpty("repo/1-thing") {
+		t.Error("a fresh item reads as written up")
+	}
+	if !c.NoteIsEmpty("repo/never-made") {
+		t.Error("a missing note reads as written up")
+	}
+	for name, raw := range map[string]string{
+		"stub":             "# thing\n\n",
+		"stub with matter": "---\ndone: true\n---\n\n# thing\n\n",
+		"blank":            "",
+		"matter only":      "---\ntags:\n    - x\n---\n",
+	} {
+		if hasBody([]byte(raw)) {
+			t.Errorf("%s: reads as written up:\n%s", name, raw)
+		}
+	}
+	for name, raw := range map[string]string{
+		"prose":          "# thing\n\nit turned out to be a caching bug.\n",
+		"second heading": "# thing\n\n## what happened\n",
+		"no stub at all": "some loose prose\n",
+		"under matter":   "---\ndone: true\n---\n\n# thing\n\nfixed it.\n",
+	} {
+		if !hasBody([]byte(raw)) {
+			t.Errorf("%s: reads as empty:\n%s", name, raw)
+		}
+	}
+}
+
+// Closing out with a line has to set the flag and write the note in one pass, and must not
+// disturb frontmatter anyone else put there.
+func TestCloseOutWritesTheLineAndTheFlag(t *testing.T) {
+	dir := t.TempDir()
+	c := Config{Workspace: dir, Vault: "working_items", Name: "t"}
+	if err := c.makeItemDir(Item{Name: "repo/1-thing"}); err != nil {
+		t.Fatal(err)
+	}
+	note := c.NotesPath("repo/1-thing")
+	if err := os.WriteFile(note, []byte("---\ntags:\n    - review\n---\n\n# 1-thing\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.CloseOut("repo/1-thing", true, "  it was a caching bug in the router.  "); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(note)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(raw)
+	if !c.ItemDone("repo/1-thing") {
+		t.Errorf("flag not set:\n%s", got)
+	}
+	if !strings.Contains(got, "it was a caching bug in the router.") {
+		t.Errorf("line not written:\n%s", got)
+	}
+	if !strings.Contains(got, "## Closed out ") {
+		t.Errorf("no dated heading:\n%s", got)
+	}
+	for _, want := range []string{"tags:", "review", "# 1-thing"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("lost %q:\n%s", want, got)
+		}
+	}
+	// And the item now reads as written up, so a second close does not ask again.
+	if c.NoteIsEmpty("repo/1-thing") {
+		t.Errorf("still reads as empty after being written up:\n%s", got)
+	}
+}
+
+// Closing out bare stays possible: some work has nothing to say about it, and refusing outright
+// would only teach people to stop closing things.
+func TestCloseOutBareLeavesTheNoteAlone(t *testing.T) {
+	dir := t.TempDir()
+	c := Config{Workspace: dir, Vault: "working_items", Name: "t"}
+	if err := c.makeItemDir(Item{Name: "_adhoc/thing"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.CloseOut("_adhoc/thing", true, ""); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(c.NotesPath("_adhoc/thing"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.ItemDone("_adhoc/thing") {
+		t.Errorf("flag not set:\n%s", raw)
+	}
+	if strings.Contains(string(raw), "Closed out") {
+		t.Errorf("bare close invented a heading:\n%s", raw)
+	}
+}

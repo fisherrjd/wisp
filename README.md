@@ -52,7 +52,9 @@ wisp open <item>           open an item directly
 wisp next / wisp prev      cycle to the next or previous item session
 wisp hop [next|prev|<ws>]  move to another workspace
 wisp new <name|url>        make an item: a name, or a gitlab link
-wisp done <item>           mark an item closed out; --undo reopens it,
+wisp done <item> [-m <line>]
+                           close it out, writing the line into its notes;
+                           --anyway closes it bare, --undo reopens it,
                            --list shows what has been closed out
 wisp kill <item>           kill an item's session
 wisp ls                    list live sessions, every workspace
@@ -76,7 +78,9 @@ wisp -w <ws> <command>     run a command against a named workspace
 
 Type to filter, `enter` opens, `ctrl-n` creates (a name, or a pasted GitLab link), `ctrl-d` closes an item out, `ctrl-t` shows the closed-out ones again, `ctrl-w` opens the tree of machines and workspaces, `ctrl-x` kills the highlighted session, `ctrl-r` refreshes GitLab, `esc` quits and leaves everything running. Cursor keys are `↑` `↓` or `ctrl-k` `ctrl-j`; `ctrl-u` clears the line.
 
-`ctrl-d` and `ctrl-x` are the two ways of being finished, and they are not the same one. `ctrl-x` stops what is running and leaves the item; `ctrl-d` ends the work and leaves the list. It writes `done: true` into the item's `notes.md` frontmatter, so nothing on disk is removed and whatever writes your closing notes can set it in the same pass. An item with a live session keeps its row either way: something is still on the machine, and hiding it would leave an agent with nothing pointing at it.
+`ctrl-d` and `ctrl-x` are the two ways of being finished, and they are not the same one. `ctrl-x` stops what is running and leaves the item; `ctrl-d` ends the work and leaves the list, writing `done: true` into the item's `notes.md`. An item with a live session keeps its row either way: something is still on the machine, and hiding it would leave an agent with nothing pointing at it.
+
+Closing out also asks what happened, when nothing has been written down yet. The flag used to be one keystroke and the write-up a trip to an editor, so the items that got closed out and the items that got written up were disjoint sets. Now `ctrl-d` on an item with an empty note opens a line, `enter` writes it under a dated heading and sets the flag together, and `ctrl-d` again closes it bare. An item you have already taken notes on closes with no ceremony.
 
 A pasted GitLab link does not have to be assigned to you. Being the assignee is what fills the `+` section of the list, not what decides whether you can open something: reviewing a colleague's merge request is a link away.
 

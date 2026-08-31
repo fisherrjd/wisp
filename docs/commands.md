@@ -132,18 +132,38 @@ unreadable gitlab response: <err>
 <host>: could not read the created item back
 ```
 
-### `wisp done <item> [--undo]`, `wisp done --list`
+### `wisp done <item> [-m <line>] [--undo]`, `wisp done --list`
 
-Mark an item closed out. It leaves the picker; nothing on disk is removed.
+Close an item out. It leaves the picker; nothing on disk is removed.
 
-The flag is one line of YAML frontmatter in the item's `notes.md`, so whatever writes your closing notes can end the work and clear the row in the same action. `--undo` reverses it. `--list` prints the names of everything closed out, one per line.
+Two things happen together: `done: true` goes into the item's `notes.md` frontmatter, and `-m` writes a line into the body under a dated heading.
+
+They happen together because separately they did not happen at all. The flag was one keystroke and the write-up was a trip to an editor, so the items that got closed out and the items that got written up turned out to be **disjoint sets**: every item carrying the flag had a note holding nothing but the flag, while the one item with a real closing note was never marked.
+
+So closing out an item whose note is still empty is refused, and the message says both ways forward:
+
+```
+nothing is written down about repo/1042-retry-backoff
+
+A closed-out item is one you stop seeing, so the note is the only thing left
+of it. Say what happened:
+  wisp done repo/1042-retry-backoff -m 'what it turned out to be'
+
+Or close it out bare, for work there is nothing to say about:
+  wisp done repo/1042-retry-backoff --anyway
+```
+
+An item you have already taken notes on closes with no ceremony. The friction lands exactly where the record would otherwise be lost, and never anywhere else. The stub `# <slug>` heading wisp writes with the folder does not count as having said anything.
+
+`--undo` reverses the flag and leaves whatever was written. `--list` prints the names of everything closed out, one per line.
 
 The note is edited as a YAML node rather than parsed into a struct and re-emitted, so tags, aliases and anything else your editor keeps in that frontmatter survive untouched. The write goes through a temp file in the same directory and a rename: this is the one file in an item nobody else can reconstruct.
 
 An item with a live session keeps its row regardless. Something is running under that name, and hiding it would leave an agent on the machine with nothing pointing at it.
 
 ```
-usage: wisp done <item> [--undo] | wisp done --list
+usage: wisp done <item> [-m <line>] [--undo] | wisp done --list
+nothing is written down about <item>
 <item> has no notes.md to mark
 <path>: frontmatter is not a mapping
 ```

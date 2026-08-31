@@ -64,6 +64,9 @@ var (
 	wsKeys     = []string{"enter go", "←→ machine", "n workspace", "a machine", "x forget", "esc back"}
 	newWSKey   = []string{"enter create", "esc cancel", "-p to create the directory"}
 	newHostKey = []string{"enter add", "esc cancel"}
+	// The closing line. ctrl-d is on it because it is the key that opened it, and pressing it
+	// again is the least surprising way to say "there is nothing to write".
+	closeKeys = []string{"enter close it out", "ctrl-d close it bare", "esc cancel"}
 )
 
 // legendWidth is the legend and key hints laid side by side, used to decide whether the footer
@@ -78,6 +81,8 @@ func (m model) activeKeys() []string {
 		return newWSKey
 	case modeNewHost:
 		return newHostKey
+	case modeClose:
+		return closeKeys
 	}
 	return itemKeys(m.showDone)
 }
@@ -232,6 +237,17 @@ func (m model) renderPrompt() string {
 		}
 		left := newLabel.Render(label) + typed
 		right := countStyle.Render(hint)
+		gap := m.width - lipgloss.Width(left) - lipgloss.Width(right)
+		if gap < 1 {
+			gap = 1
+		}
+		return left + strings.Repeat(" ", gap) + right
+	}
+	if m.mode == modeClose {
+		// Named, because the line is about one item and the list behind it is not scrolled to
+		// make that obvious.
+		left := newLabel.Render(" closing out ") + " " + m.input + promptStyle.Render("▏")
+		right := countStyle.Render(truncate("one line on "+m.closing, max(12, m.width/3)))
 		gap := m.width - lipgloss.Width(left) - lipgloss.Width(right)
 		if gap < 1 {
 			gap = 1
