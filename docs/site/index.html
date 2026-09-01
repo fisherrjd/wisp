@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-preset="dusk" data-theme="dark">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -7,25 +7,14 @@
 <meta name="description" content="wisp turns a unit of work into a running tmux session: finds the item, reprovisions its git worktrees, writes the agent's context, and drops you in.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='26'%3E%F0%9F%8C%BF%3C/text%3E%3C/svg%3E">
 <style>
-  /* ── Theme tokens, lifted from app-template (evergreen / dusk / earthy / grapebox).
-     HSL triplets, --radius 0.5rem, dark-first. Two axes kept apart on purpose:
-     data-preset carries the palette, data-theme carries light/dark, because the
-     viewer's own theme toggle owns data-theme. ─────────────────────────────── */
+  /* ── Theme tokens: dusk, after app-template. HSL triplets, --radius 0.5rem.
+     One palette, two halves. The page follows the system by default; the
+     switch in the header stamps data-theme on the root and overrides it. ─── */
 
   :root { --radius: 0.5rem; }
 
-  /* evergreen */
-  [data-preset="evergreen"] {
-    --background: 45 14% 93%;  --foreground: 165 18% 14%;
-    --card: 45 20% 96%;        --card-foreground: 165 18% 14%;
-    --primary: 152 42% 25%;    --primary-foreground: 45 30% 97%;
-    --secondary: 42 22% 85%;   --secondary-foreground: 35 22% 24%;
-    --muted: 45 12% 88%;       --muted-foreground: 160 10% 38%;
-    --accent: 140 14% 84%;     --accent-foreground: 160 22% 18%;
-    --destructive: 8 62% 44%;  --border: 45 12% 79%;  --ring: 152 42% 32%;
-  }
-  /* dusk — the default */
-  :root, [data-preset="dusk"] {
+  /* dusk, light half */
+  :root {
     --background: 33 60% 95%;  --foreground: 248 19% 26%;
     --card: 32 65% 98%;        --card-foreground: 248 19% 26%;
     --primary: 343 50% 45%;    --primary-foreground: 33 60% 97%;
@@ -33,44 +22,16 @@
     --muted: 30 30% 90%;       --muted-foreground: 249 10% 45%;
     --accent: 197 40% 84%;     --accent-foreground: 197 50% 20%;
     --destructive: 358 65% 48%; --border: 30 25% 80%; --ring: 343 50% 50%;
-  }
-  [data-preset="earthy"] {
-    --background: 40 30% 96%;  --foreground: 28 22% 16%;
-    --card: 42 33% 98%;        --card-foreground: 28 22% 16%;
-    --primary: 152 38% 22%;    --primary-foreground: 42 33% 97%;
-    --secondary: 34 26% 89%;   --secondary-foreground: 28 28% 22%;
-    --muted: 36 22% 91%;       --muted-foreground: 28 14% 42%;
-    --accent: 32 30% 86%;      --accent-foreground: 28 30% 22%;
-    --destructive: 14 58% 46%; --border: 34 20% 82%; --ring: 152 40% 30%;
-  }
-  [data-preset="grapebox"] {
-    --background: 48 50% 95%;  --foreground: 270 25% 22%;
-    --card: 46 60% 97%;        --card-foreground: 270 25% 22%;
-    --primary: 270 30% 32%;    --primary-foreground: 48 50% 96%;
-    --secondary: 270 25% 90%;  --secondary-foreground: 270 25% 25%;
-    --muted: 48 30% 90%;       --muted-foreground: 270 10% 40%;
-    --accent: 270 30% 88%;     --accent-foreground: 270 30% 22%;
-    --destructive: 2 65% 45%;  --border: 270 15% 80%; --ring: 270 30% 40%;
-  }
 
-  /* wisp's own glyph colours (internal/ui/styles.go), light half.
-     Semantic, and deliberately separate from the accent. */
-  :root {
+    /* wisp's own glyph colours (internal/ui/styles.go), light half.
+       Semantic, and deliberately separate from the accent. */
     --g-live: #2F7D52; --g-attn: #91650E; --g-folder: #7C7891;
     --g-remote: #41648F; --g-faint: #86829B;
   }
 
+  /* dusk, dark half — by system preference… */
   @media (prefers-color-scheme: dark) {
-    [data-preset="evergreen"] {
-      --background: 165 12% 7%;  --foreground: 140 10% 87%;
-      --card: 163 11% 10%;       --card-foreground: 140 10% 87%;
-      --primary: 152 42% 42%;    --primary-foreground: 150 25% 97%;
-      --secondary: 160 9% 15%;   --secondary-foreground: 140 10% 87%;
-      --muted: 160 8% 14%;       --muted-foreground: 140 7% 58%;
-      --accent: 45 12% 17%;      --accent-foreground: 42 32% 84%;
-      --destructive: 8 56% 50%;  --border: 160 8% 19%; --ring: 152 42% 48%;
-    }
-    :root, [data-preset="dusk"] {
+    :root {
       --background: 249 20% 10%; --foreground: 245 28% 88%;
       --card: 248 18% 13%;       --card-foreground: 245 28% 88%;
       --primary: 343 60% 68%;    --primary-foreground: 249 25% 12%;
@@ -78,46 +39,14 @@
       --muted: 248 14% 15%;      --muted-foreground: 247 12% 60%;
       --accent: 197 35% 20%;     --accent-foreground: 189 40% 82%;
       --destructive: 358 65% 60%; --border: 248 14% 20%; --ring: 343 60% 68%;
-    }
-    [data-preset="earthy"] {
-      --background: 37 25% 6%;   --foreground: 41 45% 84%;
-      --card: 37 27% 10%;        --card-foreground: 41 45% 84%;
-      --primary: 41 89% 63%;     --primary-foreground: 28 30% 12%;
-      --secondary: 37 27% 13%;   --secondary-foreground: 41 45% 84%;
-      --muted: 37 20% 14%;       --muted-foreground: 44 23% 54%;
-      --accent: 37 27% 16%;      --accent-foreground: 41 45% 84%;
-      --destructive: 11 72% 60%; --border: 37 30% 22%; --ring: 41 89% 63%;
-    }
-    [data-preset="grapebox"] {
-      --background: 270 25% 22%; --foreground: 48 87% 88%;
-      --card: 270 24% 26%;       --card-foreground: 48 87% 88%;
-      --primary: 270 45% 71%;    --primary-foreground: 270 28% 15%;
-      --secondary: 270 23% 31%;  --secondary-foreground: 48 87% 88%;
-      --muted: 270 20% 28%;      --muted-foreground: 270 25% 65%;
-      --accent: 270 23% 31%;     --accent-foreground: 48 87% 88%;
-      --destructive: 6 78% 57%;  --border: 270 23% 36%; --ring: 42 95% 58%;
-    }
-    :root {
+
       --g-live: #62BE8A; --g-attn: #DCA845; --g-folder: #8A86A0;
       --g-remote: #7FA3D6; --g-faint: #736F87;
     }
   }
 
-  /* The viewer's toggle stamps data-theme on the root; it must win both ways. */
+  /* …and by the switch, which must win in both directions. */
   :root[data-theme="dark"] {
-    --g-live: #62BE8A; --g-attn: #DCA845; --g-folder: #8A86A0;
-    --g-remote: #7FA3D6; --g-faint: #736F87;
-  }
-  :root[data-theme="dark"][data-preset="evergreen"] {
-    --background: 165 12% 7%;  --foreground: 140 10% 87%;
-    --card: 163 11% 10%;       --card-foreground: 140 10% 87%;
-    --primary: 152 42% 42%;    --primary-foreground: 150 25% 97%;
-    --secondary: 160 9% 15%;   --secondary-foreground: 140 10% 87%;
-    --muted: 160 8% 14%;       --muted-foreground: 140 7% 58%;
-    --accent: 45 12% 17%;      --accent-foreground: 42 32% 84%;
-    --destructive: 8 56% 50%;  --border: 160 8% 19%; --ring: 152 42% 48%;
-  }
-  :root[data-theme="dark"], :root[data-theme="dark"][data-preset="dusk"] {
     --background: 249 20% 10%; --foreground: 245 28% 88%;
     --card: 248 18% 13%;       --card-foreground: 245 28% 88%;
     --primary: 343 60% 68%;    --primary-foreground: 249 25% 12%;
@@ -125,39 +54,11 @@
     --muted: 248 14% 15%;      --muted-foreground: 247 12% 60%;
     --accent: 197 35% 20%;     --accent-foreground: 189 40% 82%;
     --destructive: 358 65% 60%; --border: 248 14% 20%; --ring: 343 60% 68%;
-  }
-  :root[data-theme="dark"][data-preset="earthy"] {
-    --background: 37 25% 6%;   --foreground: 41 45% 84%;
-    --card: 37 27% 10%;        --card-foreground: 41 45% 84%;
-    --primary: 41 89% 63%;     --primary-foreground: 28 30% 12%;
-    --secondary: 37 27% 13%;   --secondary-foreground: 41 45% 84%;
-    --muted: 37 20% 14%;       --muted-foreground: 44 23% 54%;
-    --accent: 37 27% 16%;      --accent-foreground: 41 45% 84%;
-    --destructive: 11 72% 60%; --border: 37 30% 22%; --ring: 41 89% 63%;
-  }
-  :root[data-theme="dark"][data-preset="grapebox"] {
-    --background: 270 25% 22%; --foreground: 48 87% 88%;
-    --card: 270 24% 26%;       --card-foreground: 48 87% 88%;
-    --primary: 270 45% 71%;    --primary-foreground: 270 28% 15%;
-    --secondary: 270 23% 31%;  --secondary-foreground: 48 87% 88%;
-    --muted: 270 20% 28%;      --muted-foreground: 270 25% 65%;
-    --accent: 270 23% 31%;     --accent-foreground: 48 87% 88%;
-    --destructive: 6 78% 57%;  --border: 270 23% 36%; --ring: 42 95% 58%;
+
+    --g-live: #62BE8A; --g-attn: #DCA845; --g-folder: #8A86A0;
+    --g-remote: #7FA3D6; --g-faint: #736F87;
   }
   :root[data-theme="light"] {
-    --g-live: #2F7D52; --g-attn: #91650E; --g-folder: #7C7891;
-    --g-remote: #41648F; --g-faint: #86829B;
-  }
-  :root[data-theme="light"][data-preset="evergreen"] {
-    --background: 45 14% 93%;  --foreground: 165 18% 14%;
-    --card: 45 20% 96%;        --card-foreground: 165 18% 14%;
-    --primary: 152 42% 25%;    --primary-foreground: 45 30% 97%;
-    --secondary: 42 22% 85%;   --secondary-foreground: 35 22% 24%;
-    --muted: 45 12% 88%;       --muted-foreground: 160 10% 38%;
-    --accent: 140 14% 84%;     --accent-foreground: 160 22% 18%;
-    --destructive: 8 62% 44%;  --border: 45 12% 79%;  --ring: 152 42% 32%;
-  }
-  :root[data-theme="light"], :root[data-theme="light"][data-preset="dusk"] {
     --background: 33 60% 95%;  --foreground: 248 19% 26%;
     --card: 32 65% 98%;        --card-foreground: 248 19% 26%;
     --primary: 343 50% 45%;    --primary-foreground: 33 60% 97%;
@@ -165,24 +66,9 @@
     --muted: 30 30% 90%;       --muted-foreground: 249 10% 45%;
     --accent: 197 40% 84%;     --accent-foreground: 197 50% 20%;
     --destructive: 358 65% 48%; --border: 30 25% 80%; --ring: 343 50% 50%;
-  }
-  :root[data-theme="light"][data-preset="earthy"] {
-    --background: 40 30% 96%;  --foreground: 28 22% 16%;
-    --card: 42 33% 98%;        --card-foreground: 28 22% 16%;
-    --primary: 152 38% 22%;    --primary-foreground: 42 33% 97%;
-    --secondary: 34 26% 89%;   --secondary-foreground: 28 28% 22%;
-    --muted: 36 22% 91%;       --muted-foreground: 28 14% 42%;
-    --accent: 32 30% 86%;      --accent-foreground: 28 30% 22%;
-    --destructive: 14 58% 46%; --border: 34 20% 82%; --ring: 152 40% 30%;
-  }
-  :root[data-theme="light"][data-preset="grapebox"] {
-    --background: 48 50% 95%;  --foreground: 270 25% 22%;
-    --card: 46 60% 97%;        --card-foreground: 270 25% 22%;
-    --primary: 270 30% 32%;    --primary-foreground: 48 50% 96%;
-    --secondary: 270 25% 90%;  --secondary-foreground: 270 25% 25%;
-    --muted: 48 30% 90%;       --muted-foreground: 270 10% 40%;
-    --accent: 270 30% 88%;     --accent-foreground: 270 30% 22%;
-    --destructive: 2 65% 45%;  --border: 270 15% 80%; --ring: 270 30% 40%;
+
+    --g-live: #2F7D52; --g-attn: #91650E; --g-folder: #7C7891;
+    --g-remote: #41648F; --g-faint: #86829B;
   }
 
   /* ── Base ─────────────────────────────────────────────────────────────── */
@@ -247,19 +133,25 @@
     border-radius: 999px; background: hsl(var(--muted)); color: hsl(var(--muted-foreground));
     border: 1px solid hsl(var(--border));
   }
-  .swatches { display: flex; gap: 0.35rem; align-items: center; }
-  .sw {
-    width: 1.1rem; height: 1.1rem; border-radius: 999px; padding: 0; cursor: pointer;
-    border: 1px solid hsl(var(--border)); transition: transform 120ms ease, box-shadow 120ms ease;
-  }
-  .sw:hover { transform: scale(1.15); }
-  .sw[aria-pressed="true"] { box-shadow: 0 0 0 2px hsl(var(--ring)); }
+  /* One control: a knob that slides between the two halves. */
   .modebtn {
-    font: inherit; font-size: 0.78rem; cursor: pointer;
-    padding: 0.25rem 0.6rem; border-radius: var(--r-sm);
-    background: hsl(var(--secondary)); color: hsl(var(--secondary-foreground));
-    border: 1px solid hsl(var(--border));
+    position: relative; flex: none; cursor: pointer; padding: 0;
+    width: 3.25rem; height: 1.65rem; border-radius: 999px;
+    background: hsl(var(--secondary)); border: 1px solid hsl(var(--border));
+    transition: background-color 200ms ease;
   }
+  .modebtn:focus-visible { outline: 2px solid hsl(var(--ring)); outline-offset: 2px; }
+  .modebtn .knob {
+    position: absolute; top: 0.15rem; left: 0.15rem;
+    width: 1.25rem; height: 1.25rem; border-radius: 999px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 0.72rem; line-height: 1;
+    background: hsl(var(--card)); color: hsl(var(--foreground));
+    box-shadow: 0 1px 3px hsl(0 0% 0% / 0.28);
+    transition: transform 200ms cubic-bezier(0.34, 1.3, 0.64, 1);
+  }
+  /* Dark is the right-hand end of the track. */
+  :root[data-theme="dark"] .modebtn .knob { transform: translateX(1.5rem); }
 
   /* ── Hero ─────────────────────────────────────────────────────────────── */
 
@@ -405,15 +297,14 @@
   }
 </style>
 <script>
+  // Stamped before first paint so the page never flashes the wrong half.
   (function () {
-    var root = document.documentElement, preset, mode;
-    try {
-      preset = localStorage.getItem('wisp.docs.preset');
-      mode = localStorage.getItem('wisp.docs.mode');
-    } catch (e) {}
-    root.setAttribute('data-preset',
-      ['evergreen', 'dusk', 'earthy', 'grapebox'].indexOf(preset) > -1 ? preset : 'dusk');
-    root.setAttribute('data-theme', mode === 'light' ? 'light' : 'dark');
+    var mode;
+    try { mode = localStorage.getItem('wisp.docs.mode'); } catch (e) {}
+    if (mode !== 'light' && mode !== 'dark') {
+      mode = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+    }
+    document.documentElement.setAttribute('data-theme', mode);
   })();
 </script>
 </head>
@@ -425,17 +316,10 @@
       <b>wisp</b>
       <span class="ver">0.17.0 · wire 1</span>
     </div>
-    <div class="swatches" role="group" aria-label="Colour theme">
-      <button class="sw" data-set="dusk" title="Dusk" aria-pressed="true"
-              style="background:hsl(343 60% 68%)"></button>
-      <button class="sw" data-set="evergreen" title="Evergreen" aria-pressed="false"
-              style="background:hsl(152 42% 42%)"></button>
-      <button class="sw" data-set="earthy" title="Earthy" aria-pressed="false"
-              style="background:hsl(41 89% 63%)"></button>
-      <button class="sw" data-set="grapebox" title="Grapebox" aria-pressed="false"
-              style="background:hsl(270 45% 71%)"></button>
-    </div>
-    <button class="modebtn" id="mode">light / dark</button>
+    <button class="modebtn" id="mode" type="button" role="switch"
+            aria-checked="true" aria-label="Dark mode" title="Light / dark">
+      <span class="knob" aria-hidden="true">☾</span>
+    </button>
   </div>
 
   <div class="hero rise">
@@ -937,8 +821,8 @@ go install github.com/fisherrjd/wisp@latest</code></pre>
 
       <footer>
         wisp 0.17.0 · wire 1 · MIT. Dusk, after
-        <span class="mono">fisherrjd/app-template</span>; three other palettes and a light mode
-        are in the header. Glyph colours are wisp's own.
+        <span class="mono">fisherrjd/app-template</span>; the switch in the header moves between
+        its light and dark halves. Glyph colours are wisp's own.
       </footer>
 
     </main>
@@ -949,24 +833,20 @@ go install github.com/fisherrjd/wisp@latest</code></pre>
   (function () {
     var root = document.documentElement;
 
-    // Preset lives on data-preset so the viewer's own light/dark toggle keeps data-theme.
-    var swatches = Array.prototype.slice.call(document.querySelectorAll('.sw'));
-    function setPreset(id) {
-      root.setAttribute('data-preset', id);
-      swatches.forEach(function (b) {
-        b.setAttribute('aria-pressed', String(b.dataset.set === id));
-      });
-      try { localStorage.setItem('wisp.docs.preset', id); } catch (e) {}
-    }
-    swatches.forEach(function (b) {
-      b.addEventListener('click', function () { setPreset(b.dataset.set); });
-    });
-    // Already stamped before paint; this only syncs the pressed state of the swatches.
-    setPreset(root.getAttribute('data-preset') || 'dusk');
-
-    document.getElementById('mode').addEventListener('click', function () {
-      var next = root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+    // The switch slides in CSS off data-theme; this only keeps the label,
+    // the glyph and the stored choice in step with it.
+    var mode = document.getElementById('mode'), knob = mode.querySelector('.knob');
+    function paint(next) {
       root.setAttribute('data-theme', next);
+      mode.setAttribute('aria-checked', String(next === 'dark'));
+      mode.setAttribute('aria-label', next === 'dark' ? 'Dark mode' : 'Light mode');
+      knob.textContent = next === 'dark' ? '☾' : '☀';
+    }
+    paint(root.getAttribute('data-theme') === 'light' ? 'light' : 'dark');
+
+    mode.addEventListener('click', function () {
+      var next = root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      paint(next);
       try { localStorage.setItem('wisp.docs.mode', next); } catch (e) {}
     });
 
