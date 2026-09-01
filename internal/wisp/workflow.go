@@ -273,14 +273,63 @@ func parseWorkflow(dir string, raw []byte) (Workflow, error) {
 	return w, nil
 }
 
-// WorkflowSum hashes a bundle's manifest, for the accept-once record. The manifest is what names
-// every script, so a change to it is the change worth re-asking about.
+// WorkflowSum hashes everything in a bundle: the manifest and every file beside it.
+//
+// The manifest alone was not enough, and the gap was visible in the prompt. `wisp workflow
+// accept` prints the manifest and every script it names, then asked you to agree to it; recording
+// only the manifest meant a later change to one of those scripts left the bundle accepted, and
+// the next close-out or briefing ran code nobody had read. The prompt and the record now describe
+// the same bytes.
+//
+// This is a directory walk on a path the picker can reach, which is affordable because a bundle
+// is a handful of small files and because it only ever runs for a workspace-supplied one, which
+// is the only kind that is gated at all.
 func WorkflowSum(dir string) (string, error) {
-	raw, err := os.ReadFile(filepath.Join(dir, WorkflowFile))
+	sum, _, err := hashBundle(dir)
+	return sum, err
+}
+
+// hashBundle returns the tree hash and the manifest's bytes, so a caller that needs both reads
+// the directory once.
+func hashBundle(dir string) (string, []byte, error) {
+	var manifest []byte
+	var paths []string
+	err := filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() {
+			paths = append(paths, p)
+		}
+		return nil
+	})
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
-	return sumOf(raw), nil
+	sort.Strings(paths)
+
+	h := sha256.New()
+	for _, p := range paths {
+		body, err := os.ReadFile(p)
+		if err != nil {
+			return "", nil, err
+		}
+		rel, relErr := filepath.Rel(dir, p)
+		if relErr != nil {
+			rel = filepath.Base(p)
+		}
+		if rel == WorkflowFile {
+			manifest = body
+		}
+		// The path and the length go in as well as the content, so renaming a script or moving
+		// bytes between two of them changes the hash.
+		fmt.Fprintf(h, "%s\x00%d\x00", rel, len(body))
+		h.Write(body)
+	}
+	if manifest == nil {
+		return "", nil, fmt.Errorf("%s has no %s", shortPath(dir), WorkflowFile)
+	}
+	return hex.EncodeToString(h.Sum(nil)), manifest, nil
 }
 
 func sumOf(raw []byte) string {
@@ -425,6 +474,87 @@ func readOverlayFrontmatter(path string) (workflowOverlay, bool) {
 	return o, true
 }
 
+// executableKeys names the keys in an overlay that cause wisp to run something someone else
+// wrote: a command line, a hook script, or a layout window with a command in it.
+//
+// The distinction is the whole of the trust boundary. `branch:`, `worktree:` and
+// `status.needs_input` are strings wisp interprets itself and can be honoured from any file;
+// these are not.
+func executableKeys(w Workflow) []string {
+	var keys []string
+	if w.Program != "" {
+		keys = append(keys, "program")
+	}
+	for _, h := range []struct {
+		name, val string
+	}{{"source", w.Hooks.Source}, {"context", w.Hooks.Context}, {"close", w.Hooks.Close}, {"provision", w.Hooks.Provision}} {
+		if h.val != "" {
+			keys = append(keys, h.name)
+		}
+	}
+	for _, win := range w.Layout {
+		if win.Run != "" {
+			keys = append(keys, "layout")
+			break
+		}
+	}
+	return keys
+}
+
+// stripExecutable removes the keys executableKeys names, leaving everything a file may say
+// without being trusted.
+func stripExecutable(w Workflow) Workflow {
+	w.Program, w.Hooks = "", Hooks{}
+	var kept []Window
+	for _, win := range w.Layout {
+		if win.Run == "" {
+			kept = append(kept, win)
+		}
+	}
+	// A layout that was only windows with commands in them is dropped entirely rather than
+	// half-applied: half a layout is a session missing the window the agent runs in.
+	if len(kept) == len(w.Layout) {
+		w.Layout = kept
+	} else {
+		w.Layout = nil
+	}
+	return w
+}
+
+// WorkspaceConfigAccepted reports whether this workspace's own .wisp.yaml has been read and
+// allowed to run things, as it currently stands.
+//
+// The file is gated for the same reason a workspace-supplied bundle is, and it is the sharper
+// case: a bundle has to be named before it does anything, and this file can set `provision:`,
+// `program:` or a `layout[].run` on its own. An attacker was never going to write
+// `workflow: ./ship` when the same repo could simply set the keys directly.
+func (c Config) WorkspaceConfigAccepted() (bool, bool, error) {
+	raw, err := os.ReadFile(filepath.Join(c.Workspace, MarkerFile))
+	if err != nil {
+		return false, false, err
+	}
+	var ov workflowOverlay
+	if yaml.Unmarshal(raw, &ov) != nil {
+		return false, false, nil
+	}
+	folded, _ := ov.workflow()
+	if len(executableKeys(folded)) == 0 {
+		// Nothing in it runs anything, so there is nothing to accept.
+		return true, false, nil
+	}
+	return c.Accepted[c.acceptKey(MarkerFile)] == sumOf(raw), true, nil
+}
+
+// itemManifestAccepted reports whether an item's orchestration.md has been read and allowed to
+// run the programs it names, as it currently stands.
+func (c Config) itemManifestAccepted(item Item) (bool, error) {
+	raw, err := os.ReadFile(filepath.Join(c.ItemDir(item.Name), "orchestration.md"))
+	if err != nil {
+		return false, err
+	}
+	return c.Accepted[c.acceptKey(item.Name)] == sumOf(raw), nil
+}
+
 // WorkflowFor resolves the workflow in effect, per key, across every layer.
 //
 //	1  built-in                       always complete, so every key has an answer
@@ -481,14 +611,25 @@ func (c Config) WorkflowFor(item Item, oneShot string) Workflow {
 		w.applyBundle(bundle, addr)
 	}
 
-	for _, layer := range []struct {
-		src string
-		ov  workflowOverlay
-	}{{shortPath(UserConfigPath()), user}, {MarkerFile, space}} {
-		folded, notes := layer.ov.workflow()
-		w.Notes = append(w.Notes, notes...)
-		w.overlay(layer.src, folded, c.Workspace)
+	// The user config is yours by definition and is honoured whole.
+	userFolded, userNotes := user.workflow()
+	w.Notes = append(w.Notes, userNotes...)
+	w.overlay(shortPath(UserConfigPath()), userFolded, c.Workspace)
+
+	// The workspace file is not. It travels with the repo, so anything in it that runs a program
+	// waits for the same acceptance a workspace-supplied bundle does. Everything else in the file
+	// applies either way: the gate is on execution, not on configuration.
+	spaceFolded, spaceNotes := space.workflow()
+	w.Notes = append(w.Notes, spaceNotes...)
+	if keys := executableKeys(spaceFolded); len(keys) > 0 {
+		if ok, _, err := c.WorkspaceConfigAccepted(); err != nil || !ok {
+			spaceFolded = stripExecutable(spaceFolded)
+			w.Notes = append(w.Notes, fmt.Sprintf(
+				"%s sets %s, which wisp would run; it has not been accepted, so run `wisp workflow accept %s` after reading it",
+				MarkerFile, strings.Join(keys, ", "), MarkerFile))
+		}
 	}
+	w.overlay(MarkerFile, spaceFolded, c.Workspace)
 
 	// The item may not decide where items come from. Not a policy call: source runs before the
 	// item exists, so an item having an opinion about it is a bootstrapping impossibility.
@@ -504,6 +645,22 @@ func (c Config) WorkflowFor(item Item, oneShot string) Workflow {
 	if iw.Status.NeedsInput != "" {
 		w.Notes = append(w.Notes, "an item cannot set `status.needs_input`: the pane scan asks the workspace once, not each item")
 		iw.Status.NeedsInput = ""
+	}
+	// And an item does not get to start a process on the strength of its own frontmatter alone.
+	//
+	// The vault is yours, but the agent writes into it, and an agent that has read something
+	// hostile in a repo could put `program:` in an item's manifest and change what runs the next
+	// time it is opened. That is a short path from "an agent read a file" to "an agent chose the
+	// command", and it is the one this tool can least afford to leave open. Most items set none
+	// of these, so the question is only ever asked about an item that wants something unusual,
+	// which is exactly when it is worth asking.
+	if keys := executableKeys(iw); len(keys) > 0 {
+		if ok, err := c.itemManifestAccepted(item); err != nil || !ok {
+			iw = stripExecutable(iw)
+			w.Notes = append(w.Notes, fmt.Sprintf(
+				"orchestration.md sets %s, which wisp would run; it has not been accepted, so run `wisp workflow accept %s` after reading it",
+				strings.Join(keys, ", "), item.Name))
+		}
 	}
 	w.overlay("orchestration.md", iw, c.Workspace)
 
@@ -540,14 +697,13 @@ func (c Config) loadBundle(addr string) (Workflow, error) {
 		}
 		return Workflow{}, fmt.Errorf("no workflow %q at %s; using the built-in", addr, shortPath(dir))
 	}
-	// Read once. The accept check hashes this file and the resolution parses it, and reading it
-	// twice was a quarter of the cost of resolving a workspace bundle, on a path the picker walks
-	// per keystroke.
-	raw, err := os.ReadFile(filepath.Join(dir, WorkflowFile))
+	// One walk, used for both the gate and the parse: the accept check hashes the whole bundle
+	// and the resolution needs the manifest out of it.
+	sum, raw, err := hashBundle(dir)
 	if err != nil {
 		return Workflow{}, fmt.Errorf("workflow %q: %v; using the built-in", addr, err)
 	}
-	if IsWorkspaceWorkflow(addr) && c.Accepted[c.acceptKey(addr)] != sumOf(raw) {
+	if IsWorkspaceWorkflow(addr) && c.Accepted[c.acceptKey(addr)] != sum {
 		return Workflow{}, fmt.Errorf("workflow %q is supplied by this workspace and has not been accepted; run `wisp workflow accept %s` after reading it", addr, addr)
 	}
 	bundle, err := parseWorkflow(dir, raw)

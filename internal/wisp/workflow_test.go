@@ -78,6 +78,33 @@ func (f *wfFixture) accept(addr string) {
 	f.c.Accepted[f.c.acceptKey(addr)] = sum
 }
 
+// trustSpaceConfig accepts the workspace file as it currently stands.
+//
+// Needed by every test whose subject is a hook rather than the gate: a .wisp.yaml that names a
+// program or a script is checked-in code and does not run until somebody says so, which is the
+// point, and is noise in a test about what a close hook does once it runs.
+func (f *wfFixture) trustSpaceConfig() { trustSpaceConfigIn(f.t, f.c) }
+
+func trustSpaceConfigIn(t *testing.T, c Config) {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(c.Workspace, MarkerFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Accepted[c.acceptKey(MarkerFile)] = sumOf(raw)
+}
+
+// trustItem accepts an item's manifest as it currently stands, for tests whose subject is what
+// an item may override rather than whether it had to ask first.
+func (f *wfFixture) trustItem(name string) {
+	f.t.Helper()
+	raw, err := os.ReadFile(filepath.Join(f.c.ItemDir(name), "orchestration.md"))
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	f.c.Accepted[f.c.acceptKey(name)] = sumOf(raw)
+}
+
 func hasNote(w Workflow, substr string) bool {
 	for _, n := range w.Notes {
 		if strings.Contains(n, substr) {
@@ -472,6 +499,9 @@ func TestOneShotWorkflowBeatsWrittenDownKeys(t *testing.T) {
 func TestItemMayNotSetSource(t *testing.T) {
 	f := newWorkflowFixture(t)
 	f.itemFile(testItem.Name, "---\nsource: bin/mine.sh\ncontext: bin/context.sh\nprogram: aider\n---\n\n# notes\n")
+	// Accepted, because this test is about which keys an item may set, not about whether it had
+	// to be read first. The gate itself is TestItemManifestCannotRunAnythingUnaccepted.
+	f.trustItem(testItem.Name)
 
 	w := f.c.WorkflowFor(testItem, "")
 
@@ -506,6 +536,7 @@ func TestSourceIsHonouredEverywhereButTheItem(t *testing.T) {
 	}
 
 	f.spaceConfig("source: bin/space.sh\n")
+	f.trustSpaceConfig()
 	w := f.c.WorkflowFor(testItem, "")
 	if want := filepath.Join(f.c.Workspace, "bin/space.sh"); w.Hooks.Source != want {
 		t.Errorf("source = %q, want %q from the workspace file", w.Hooks.Source, want)

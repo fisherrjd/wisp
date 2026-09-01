@@ -323,26 +323,52 @@ It is the manifest that is hashed rather than the whole directory. The manifest 
 
 **That is a real gap, not a technicality.** Accepting `./ship` shows you `bin/close.sh` and then records a hash of `workflow.yaml` alone. A later commit that rewrites `bin/close.sh` without touching the manifest is a script you have not read, running with the acceptance you gave to a different one. What is bought with that is a workflow you can iterate on without a prompt per save; what is paid is that the trust boundary is drawn around the list of scripts rather than around their contents. If that trade is wrong for a workspace, do not accept its workflow; the built-in is complete and costs a plainer session.
 
-### What the gate does not cover, said plainly
+### What the gate covers
 
-**The accept gate is on `workflow: ./name` and on nothing else in the same file.** A checked-in `.wisp.yaml` that skips the bundle entirely and writes the keys out directly is not gated at all:
+Three files can make wisp start a process, and all three are files that can arrive with a
+repository or be written by something other than you. None of them runs anything until it
+has been read and accepted.
 
-```yaml
-# <workspace>/.wisp.yaml, checked in, and nothing asks about any of this
-program: ./scripts/agent.sh
-context: .wisp/context.sh
-close: .wisp/close.sh
-provision: .wisp/worktree.sh
-layout:
-    - window: agent
-      run: "./scripts/whatever.sh"
-```
+| file | how it runs something | accept with |
+|---|---|---|
+| `<workspace>/.wisp/workflows/<name>/` | a bundle named by `workflow: ./<name>` | `wisp workflow accept ./<name>` |
+| `<workspace>/.wisp.yaml` | `program:`, `source:`, `context:`, `close:`, `provision:`, or a `layout[].run` | `wisp workflow accept .wisp.yaml` |
+| `<item>/orchestration.md` | the same keys, in its frontmatter | `wisp workflow accept <item>` |
 
-Every one of those is a command out of the repo, resolved against the workspace root and run, with no prompt and no hash. So the honest description of the feature today is narrow: it stops a workspace **bundle** from running unread, and it does not make `git clone && wisp open` safe. That was already true of `provision:` before any of this existed, which is why the answer was trust-on-first-use for the new surface rather than a refusal for the old one, but a gate that covers one spelling of a thing and not the other is worth knowing about before it is relied on. `wisp workflow` is the command that shows every one of those keys and the file that set it, and reading it is the check that actually covers them.
+The gate is on **execution, not on configuration**. `branch:`, `worktree:` and
+`status.needs_input` are strings wisp interprets itself, and they apply from any of these
+files immediately. Only the keys that name something to run wait for an answer.
 
-Only a `./` address needs accepting. Your own bundles are yours, and the built-in is the binary.
+Until you answer, wisp falls back to the built-in for those keys and says so. The session
+still opens, the list still paints, and nothing is blocked: the note tells you what would
+have run and the one command that allows it.
 
----
+### Why the item manifest is in that list
+
+The vault is yours, so gating a file in it looks over-careful until you remember who else
+writes there. The agent works in the item folder. An agent that has read something hostile
+in a repository could put `program:` into an item's `orchestration.md`, and the next open
+would run whatever it chose. That is a short path from "an agent read a file" to "an agent
+picked the command", and it is the one an agent orchestrator can least afford to leave open.
+
+Most items set none of these keys, so the question is only ever asked about an item that
+wants something unusual, which is exactly when it is worth asking.
+
+### What acceptance covers
+
+The whole of what was shown to you. For a bundle that is every file in the directory, not
+just `workflow.yaml`: the prompt prints the manifest and each script it names, so recording
+only the manifest would have left a `git pull` that rewrote one script still accepted. For
+the other two it is the file itself.
+
+Any change puts it back to unaccepted. That is the point: accepting once is not a standing
+permission for whatever the file becomes later.
+
+### What it deliberately does not cover
+
+Your own workflows, under `~/.config/wisp/workflows/`, and your own user config. Those are
+yours by definition. Prompting about a directory you wrote yourself trains people to say yes
+without reading, which costs more than it buys.
 
 ## When a workflow is broken
 
@@ -663,7 +689,7 @@ The acceptance test for the whole thing was that with no config at all, naming t
 Five, and none of them is a rough edge waiting on a rename. Each is a trade somebody made and could unmake.
 
 - **Acceptance hashes `workflow.yaml` and nothing else.** A script the manifest names can be rewritten afterwards without wisp asking again: you are shown `bin/close.sh` and what gets recorded is a hash of the file that named it. See [Accepting a workspace's workflow](#accepting-a-workspaces-workflow) for what that buys and what it costs.
-- **The accept gate covers `workflow: ./name` and not the same file's other keys.** A checked-in `.wisp.yaml` that writes `program:`, `context:`, `close:`, `provision:` or a `layout[].run` directly runs unprompted, and `provision:` has always done so. [What the gate does not cover](#what-the-gate-does-not-cover-said-plainly) is the whole of it, written out. This is the honest limit of the feature today: it stops a workspace *bundle* from running unread, not a workspace.
+- **Acceptance is per file, not per machine.** Each workspace accepts its own `.wisp.yaml`, its own bundles and its own items separately, and the record lives in your user config so a workspace can never accept itself. There is no way to say yes once for everything, which is deliberate.
 - **`gitlab.*` is still a set of top-level config keys, not a bundled source.** The built-in GitLab source is the fallback when no `source` hook is set, and it is configured where it always was, in `gitlab:` in either config file. A `source` hook shipped with a bundle carries its own configuration however it likes; the built-in one does not, so the one tracker wisp knows about is still spelled differently from every other. Its cache TTL is the one piece that has moved out: `cache_ttl_min` is a top-level, source-neutral key, and `gitlab.cache_ttl_min` is read as the older spelling of the same thing.
 - **A hook gets 60 seconds and 8 MB, and neither number is yours to set.** `source:`, `context:` and `close:` are killed at a minute and reported as `gave up after 1m0s`; more than 8 MB on stdout ends the run rather than truncating it. The bound is generous because a `close` hook may be posting to a tracker, and it exists at all because these run where nothing can cancel them: a `source` hook that hangs takes the picker's refresh with it. `provision:` is outside both, deliberately, since it runs in a window of its own where a slow nix build is the normal case. [Hooks](hooks.md) has the detail, including where the deadline does not hold.
 - **A remote workspace refuses `wisp workflow` entirely.** Not a gap: the files are on the other machine, and the command says which `ssh` line answers.

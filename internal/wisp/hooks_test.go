@@ -220,6 +220,7 @@ func TestCloseHookCanRefuse(t *testing.T) {
 		[]byte("close: "+hook+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	trustSpaceConfigIn(t, c)
 
 	err := c.CloseOut(item, true, "done with it")
 	if err == nil {
@@ -248,6 +249,7 @@ func TestCloseHookRunsBeforeTheFlag(t *testing.T) {
 		[]byte("close: "+hook+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	trustSpaceConfigIn(t, c)
 
 	if err := c.CloseOut(item, true, "turned out to be a config typo"); err != nil {
 		t.Fatal(err)
@@ -279,6 +281,7 @@ func TestCloseHookDoesNotRunOnReopen(t *testing.T) {
 		[]byte("close: "+hook+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	trustSpaceConfigIn(t, c)
 	if err := c.SetDone(item, false); err != nil {
 		t.Fatalf("a refusing close hook must not block reopening: %v", err)
 	}
@@ -449,6 +452,7 @@ func TestABrokenSourceKeepsTheStaleRows(t *testing.T) {
 		[]byte("source: "+good+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	trustSpaceConfigIn(t, c)
 	if items, err := c.RemoteItems(); err != nil || len(items) != 1 {
 		t.Fatalf("warming the cache: %d items, err %v", len(items), err)
 	}

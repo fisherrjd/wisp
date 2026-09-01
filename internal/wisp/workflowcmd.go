@@ -33,6 +33,10 @@ const workflowUsage = `usage:
                               open its workflow.yaml in $EDITOR
   wisp workflow accept ./<name> [-y]
                               read a workflow this workspace ships, and allow it to run
+  wisp workflow accept .wisp.yaml [-y]
+                              same, for the workspace config's own program and hooks
+  wisp workflow accept <item> [-y]
+                              same, for an item whose orchestration.md runs something
   wisp workflow push <name> <host>
                               copy one of yours to another machine
   wisp workflow list --host <host>
@@ -663,6 +667,119 @@ func (c Config) workflowEdit(addr string) error {
 	return nil
 }
 
+// acceptWorkspaceConfig records that this workspace's own .wisp.yaml has been read and may run
+// the programs it names.
+//
+// The same decision as accepting a bundle, about the same kind of file: one that arrives with a
+// repo and can start a process. It is the sharper of the two, because a bundle has to be named
+// before it does anything and this file can set `provision:` or a `layout[].run` on its own.
+func (c Config) acceptWorkspaceConfig(yes bool) error {
+	path := filepath.Join(c.Workspace, MarkerFile)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("%v\n\nthis workspace has no %s, so there is nothing in it to accept", err, MarkerFile)
+	}
+	var ov workflowOverlay
+	if err := yaml.Unmarshal(raw, &ov); err != nil {
+		return fmt.Errorf("%s: %v\n\nwisp cannot tell you what this would run, so it will not record that you agreed to it", shortPath(path), err)
+	}
+	folded, _ := ov.workflow()
+	keys := executableKeys(folded)
+	if len(keys) == 0 {
+		fmt.Printf("%s runs nothing, so there is nothing to accept\n\nit sets no program, no hooks and no layout command, and every other key in it\nalready applies.\n", MarkerFile)
+		return nil
+	}
+	if c.Accepted[c.acceptKey(MarkerFile)] == sumOf(raw) {
+		fmt.Printf("%s is already accepted, exactly as it stands now\n", MarkerFile)
+		return nil
+	}
+
+	fmt.Printf("--- %s\n%s\n", shortPath(path), strings.TrimRight(string(raw), "\n"))
+	fmt.Printf("\nthis would let %s run: %s\n", MarkerFile, strings.Join(keys, ", "))
+	// The scripts it names, in full, for the same reason a bundle's are shown: the decision is
+	// about what runs, and the file only says where to look.
+	for _, hook := range []struct{ key, val string }{
+		{"source", folded.Hooks.Source}, {"context", folded.Hooks.Context},
+		{"close", folded.Hooks.Close}, {"provision", folded.Hooks.Provision},
+	} {
+		if hook.val == "" {
+			continue
+		}
+		script := hook.val
+		if !filepath.IsAbs(script) {
+			script = filepath.Join(c.Workspace, script)
+		}
+		body, err := os.ReadFile(script)
+		if err != nil {
+			fmt.Printf("\n--- %s (%s hook): not there yet\n", shortPath(script), hook.key)
+			continue
+		}
+		fmt.Printf("\n--- %s (%s hook)\n%s\n", shortPath(script), hook.key, strings.TrimRight(string(body), "\n"))
+	}
+
+	if !yes {
+		st, err := os.Stdin.Stat()
+		if err != nil || st.Mode()&os.ModeCharDevice == 0 {
+			return fmt.Errorf("this needs an answer and there is no terminal to ask on\n\nread the above and say so outright:\n  wisp workflow accept %s -y", MarkerFile)
+		}
+		fmt.Printf("\nlet this run in %s? [y/N] ", c.Name)
+		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+		if a := strings.ToLower(strings.TrimSpace(line)); a != "y" && a != "yes" {
+			return fmt.Errorf("not accepted, and nothing was written\n\nuntil then wisp uses the built-in for those keys, and the session still opens")
+		}
+	}
+	if err := c.writeInto("accepted", c.acceptKey(MarkerFile), sumOf(raw)); err != nil {
+		return err
+	}
+	fmt.Printf("\naccepted %s in %s, recorded in %s\n\nediting it puts it back to unaccepted, which is the point.\n",
+		MarkerFile, c.Name, shortPath(UserConfigPath()))
+	return nil
+}
+
+// acceptItemManifest records that an item's own orchestration.md has been read and may run the
+// programs it names.
+func (c Config) acceptItemManifest(name string, yes bool) error {
+	path := filepath.Join(c.ItemDir(name), "orchestration.md")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("%v\n\nthat item has no orchestration.md, so there is nothing in it to accept", err)
+	}
+	var ov workflowOverlay
+	if err := yaml.Unmarshal(raw, &ov); err != nil {
+		return fmt.Errorf("%s: %v\n\nwisp cannot tell you what this would run, so it will not record that you agreed to it", shortPath(path), err)
+	}
+	folded, _ := ov.workflow()
+	keys := executableKeys(folded)
+	if len(keys) == 0 {
+		fmt.Printf("%s runs nothing, so there is nothing to accept\n", name)
+		return nil
+	}
+	if c.Accepted[c.acceptKey(name)] == sumOf(raw) {
+		fmt.Printf("%s is already accepted, exactly as it stands now\n", name)
+		return nil
+	}
+
+	fmt.Printf("--- %s\n%s\n", shortPath(path), strings.TrimRight(string(raw), "\n"))
+	fmt.Printf("\nthis would let %s run: %s\n", name, strings.Join(keys, ", "))
+	if !yes {
+		st, err := os.Stdin.Stat()
+		if err != nil || st.Mode()&os.ModeCharDevice == 0 {
+			return fmt.Errorf("this needs an answer and there is no terminal to ask on\n\nread the above and say so outright:\n  wisp workflow accept %s -y", name)
+		}
+		fmt.Printf("\nlet this run for %s? [y/N] ", name)
+		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+		if a := strings.ToLower(strings.TrimSpace(line)); a != "y" && a != "yes" {
+			return fmt.Errorf("not accepted, and nothing was written\n\nuntil then the item opens with the workspace's workflow, which is the normal one")
+		}
+	}
+	if err := c.writeInto("accepted", c.acceptKey(name), sumOf(raw)); err != nil {
+		return err
+	}
+	fmt.Printf("\naccepted %s, recorded in %s\n\nediting its orchestration.md puts it back to unaccepted.\n",
+		name, shortPath(UserConfigPath()))
+	return nil
+}
+
 // workflowAccept records that a workflow this workspace ships has been read and may run.
 //
 // The printing above the prompt is not decoration. This is the only security decision wisp has,
@@ -670,6 +787,14 @@ func (c Config) workflowEdit(addr string) error {
 // manifest names the scripts, so the manifest and those scripts are what goes on screen.
 func (c Config) workflowAccept(addr string, yes bool) error {
 	addr = strings.TrimSpace(addr)
+	if addr == MarkerFile || addr == "./"+MarkerFile {
+		return c.acceptWorkspaceConfig(yes)
+	}
+	// An item name is the third thing that can be accepted, and it looks like neither of the
+	// others: two levels, and it exists in the vault.
+	if strings.Contains(addr, "/") && !IsWorkspaceWorkflow(addr) && isDir(c.ItemDir(addr)) {
+		return c.acceptItemManifest(addr, yes)
+	}
 	if !IsWorkspaceWorkflow(addr) {
 		if isDir(filepath.Join(c.WorkspaceWorkflowsDir(), addr)) {
 			return fmt.Errorf("%q names one of yours; this workspace ships one by that name too\n\nthe workspace's one is the one that needs accepting:\n  wisp workflow accept ./%s", addr, addr)

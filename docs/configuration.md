@@ -113,7 +113,7 @@ accepted:
 
 The key is the workspace path and the address together, because the same relative address in two workspaces is two different directories. The value is a SHA-256 of that workflow's `workflow.yaml`, re-checked on every load, so editing the manifest puts it back to unaccepted.
 
-Two things it does not cover, both worth knowing before this is treated as a guard on a checked-out repo. It does not cover the scripts the manifest names, only the manifest that names them. And it is a gate on `workflow: ./name` alone: a checked-in `.wisp.yaml` that writes `program:`, `context:`, `close:`, `provision:` or a `layout[].run` directly is not gated at all, and never has been. [Workflows](workflows.md#what-the-gate-does-not-cover-said-plainly) says what that buys and what it costs.
+It covers three files, and all three are files that can arrive with a repository or be written by something other than you: a workspace bundle, the workspace's own `.wisp.yaml`, and an item's `orchestration.md`. For a bundle it hashes every file in the directory, not just the manifest that names them. The gate is on execution rather than configuration, so `branch:` and `worktree:` apply from any of them at once and only the keys naming something to run wait for an answer. [Workflows](workflows.md#what-the-gate-covers) is the whole of it.
 
 ### Location shapes
 
