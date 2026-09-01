@@ -1,0 +1,46 @@
+/* Dusk — muted rose on cool violet-slate dark, with a pine undertone.
+   Light mode is warm dawn paper. Rosé-Pine-adjacent. */
+
+[data-theme='dusk'] {
+  --background: 33 60% 95%;          /* dawn paper */
+  --foreground: 248 19% 26%;
+  --card: 32 65% 98%;
+  --card-foreground: 248 19% 26%;
+  --popover: 32 65% 98%;
+  --popover-foreground: 248 19% 26%;
+  --primary: 343 50% 45%;            /* rose */
+  --primary-foreground: 33 60% 97%;
+  --secondary: 25 35% 88%;
+  --secondary-foreground: 248 19% 30%;
+  --muted: 30 30% 90%;
+  --muted-foreground: 249 10% 45%;
+  --accent: 197 40% 84%;             /* pine mist */
+  --accent-foreground: 197 50% 20%;
+  --destructive: 358 65% 48%;
+  --destructive-foreground: 33 60% 97%;
+  --border: 30 25% 80%;
+  --input: 30 25% 80%;
+  --ring: 343 50% 50%;
+}
+
+[data-theme='dusk'].dark {
+  --background: 249 20% 10%;         /* violet slate */
+  --foreground: 245 28% 88%;
+  --card: 248 18% 13%;
+  --card-foreground: 245 28% 88%;
+  --popover: 248 18% 13%;
+  --popover-foreground: 245 28% 88%;
+  --primary: 343 60% 68%;            /* rose */
+  --primary-foreground: 249 25% 12%;
+  --secondary: 248 15% 17%;
+  --secondary-foreground: 245 28% 88%;
+  --muted: 248 14% 15%;
+  --muted-foreground: 247 12% 60%;
+  --accent: 197 35% 20%;             /* pine */
+  --accent-foreground: 189 40% 82%;
+  --destructive: 358 65% 60%;
+  --destructive-foreground: 33 60% 97%;
+  --border: 248 14% 20%;
+  --input: 248 14% 20%;
+  --ring: 343 60% 68%;
+}
