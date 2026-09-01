@@ -329,6 +329,10 @@
       the git worktrees it needs, writes a context file for the agent, and drops you into a
       tmux session named after it. <strong>Nothing it does destroys work.</strong>
     </p>
+    <p class="lede">
+      <strong>And it has no concept of a supported agent.</strong> The command in the session is
+      a command line you write, so there is no adapter layer and no list yours has to be on.
+    </p>
 
     <div class="term">
       <div class="term-bar">
@@ -710,6 +714,22 @@ gitlab:
   username: you
   repo_pattern: '/subgroup/([^/]+)/-/'
   cache_ttl_min: 15</code></pre>
+
+        <h3>program: is the whole of wisp's agent support</h3>
+        <p><code>program:</code> is handed to tmux as a shell command line with the context file
+        appended as one shell-quoted argument. Flags, environment prefixes and wrapper scripts are
+        all already expressible in it, which is why there is no adapter layer here and no list of
+        agents yours has to be on.</p>
+
+        <pre class="block"><code>program: claude
+program: codex
+program: aider --model sonnet
+program: .claude/scripts/agent-wrapper.sh</code></pre>
+
+        <p>The one contract is that the prompt arrives as an argument. An agent that reads its
+        prompt from stdin instead needs a wrapper script that does the reading: the cost of having
+        no adapters, and a file you write once. <code>WISP_PROGRAM</code> overrides it for a single
+        session, so trying a different agent on one item touches neither config file.</p>
 
         <div class="note">
           The user config, and <strong>only</strong> the user config, owns

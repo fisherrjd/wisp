@@ -78,6 +78,8 @@ An `_adhoc` item gets exactly one window. No repo can be inferred and the sessio
 
 The window set is derived from the manifest, not configured. `program:` is the only part of the layout you can change.
 
+It is also the only part that needs to be. wisp never wraps the agent: `program:` goes to tmux as a shell command line and the process owns the pane from there, which is why `tmux attach` reaches it with wisp entirely out of the loop, and why wisp has no concept of a supported agent to add yours to. See [configuration.md](configuration.md) for what can go in the value.
+
 ---
 
 ## The context file

@@ -4,6 +4,8 @@ One work item, one tmux session.
 
 wisp turns a unit of work into a running workspace: it finds the item (locally or on GitLab), reprovisions any git worktrees it needs, writes a context file for the agent, and drops you into a tmux session named after it.
 
+**wisp has no concept of a supported agent.** `program:` is a command line, run by tmux with the context appended as one argument, so there is no adapter layer and nothing to add your agent to. Anything that takes a prompt as an argument already works; anything that does not is a wrapper script away.
+
 ```
 › ledger                                  airbook ●3 · eldo ?1      2/8
 ▌ ? ledger-service/318-double-entry-audit  │  Edit file src/reconcile.ts
@@ -161,6 +163,17 @@ gitlab:
   repo_pattern: '/subgroup/([^/]+)/-/'
   cache_ttl_min: 15
 ```
+
+`program:` is the whole of wisp's agent support. It is passed to tmux as a shell command line with the context file appended as one shell-quoted argument, so flags, environment prefixes and wrapper scripts all belong in it, and there is no list of agents wisp knows about because there is nothing for such a list to gate. Two workspaces can run two different agents; the environment override changes one session without touching either file.
+
+```yaml
+program: claude
+program: codex
+program: aider --model sonnet
+program: my-agent-wrapper.sh
+```
+
+The one contract is the argument: an agent that only reads its prompt from stdin or from an interactive prompt needs a wrapper that does the reading. That is the trade for not having adapters.
 
 The user config, and only the user config, owns `workspaces:`, `hosts:` and `default:`. A workspace does not get to name its neighbours or its machines.
 
