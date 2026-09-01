@@ -145,9 +145,9 @@ func (c Config) WorktreeFor(w Workflow, repo string, item Item) string {
 	// not: `repo` is whatever an item's orchestration.md says, so even the built-in
 	// `{repo}--{slug}` puts the checkout outside the root for `repo: ../../evil`. The guard has
 	// to be on the name that comes out.
-	name := safeWorktreeName(w.WorktreeName(item, repo))
+	name := safeSegment(w.WorktreeName(item, repo))
 	if name == "" {
-		name = safeWorktreeName(repo + "--" + item.Slug())
+		name = safeSegment(repo + "--" + item.Slug())
 	}
 	if name == "" {
 		// Both the template and the fallback produced something unusable. A hash of the two is
@@ -158,17 +158,21 @@ func (c Config) WorktreeFor(w Workflow, repo string, item Item) string {
 	return filepath.Join(c.WorktreeRoot(), name)
 }
 
-// safeWorktreeName returns the name if it is a single directory inside the worktree root, or ""
-// if it is anything else. One place, so the template and the fallback are held to one rule.
-func safeWorktreeName(name string) string {
+// safeSegment returns the name if it is one ordinary directory name, or "" if it is anything
+// that could reach outside the directory it is about to be joined onto.
+//
+// One predicate, because there are two places where a string somebody else wrote becomes a path:
+// a workflow address out of a checked-in .wisp.yaml, and a worktree name out of an item's
+// orchestration.md. They had a copy each, differing only in whether they trimmed first, and that
+// exact asymmetry is what let a leading space walk past the workflow trust gate once already.
+func safeSegment(name string) string {
 	name = strings.TrimSpace(name)
-	if name == "" || name == "." || name == ".." {
+	switch {
+	case name == "", name == ".", name == "..":
 		return ""
-	}
-	if strings.ContainsRune(name, filepath.Separator) || strings.Contains(name, "/") {
+	case strings.ContainsRune(name, filepath.Separator), strings.Contains(name, "/"):
 		return ""
-	}
-	if name != filepath.Clean(name) {
+	case name != filepath.Clean(name):
 		return ""
 	}
 	return name

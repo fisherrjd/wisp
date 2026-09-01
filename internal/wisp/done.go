@@ -83,7 +83,7 @@ func (c Config) CloseOut(item string, done bool, note string) error {
 	// Already closed out is nothing to do, and it is answered before the hook rather than after
 	// the write: a hook that harvests an item, or refuses until it has, must not be asked twice
 	// about work that finished the first time.
-	if done && c.ItemDone(item) {
+	if done && doneIn(raw) {
 		return nil
 	}
 	// The hook runs first, and it may refuse. The other order would leave an item marked
@@ -93,7 +93,7 @@ func (c Config) CloseOut(item string, done bool, note string) error {
 	// that would make a mistake permanent.
 	if done {
 		if w := c.WorkflowFor(Item{Name: item}, ""); w.Hooks.Close != "" {
-			if _, err := c.runHookArgs(w.Hooks.Close, closeArgs(item, note)...); err != nil {
+			if _, err := c.runHook(w.Hooks.Close, nil, closeArgs(item, note)...); err != nil {
 				return fmt.Errorf("close-out refused: %w", err)
 			}
 		}

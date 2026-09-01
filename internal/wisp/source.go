@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 )
 
 // Where work comes from used to be one GraphQL query against one GitLab group. That made wisp a
@@ -35,17 +34,16 @@ type sourceRow struct {
 	Title string `json:"title"`
 }
 
-// SourceCachePath is the source hook's cache: separate from the GitLab one, and keyed on the
+// sourceCachePathFor is the source hook's cache: separate from the GitLab one, and keyed on the
 // hook as well as the workspace.
 //
 // Both halves of that matter. Separate, so switching a workspace between the two does not serve
 // one's rows out of the other's warm cache. Keyed on the hook, because on the workspace alone
 // changing `source:` served the previous hook's rows until the TTL ran out, which is the same
 // "an empty source and a broken one look identical" problem wearing different clothes.
-func (c Config) SourceCachePath() string {
-	return c.sourceCachePathFor(c.WorkflowFor(Item{}, "").Hooks.Source)
-}
-
+//
+// It takes the hook rather than resolving one, so no caller pays a five-layer resolution to find
+// out where a file is.
 func (c Config) sourceCachePathFor(hook string) string {
 	sum := sha256.Sum256([]byte(c.Workspace + "\x00" + hook))
 	return filepath.Join(os.TempDir(), fmt.Sprintf("wisp-source-%s.jsonl", hex.EncodeToString(sum[:])[:12]))
@@ -119,23 +117,7 @@ func (c Config) validSourceName(name string) bool {
 }
 
 func (c Config) cachedSource(w Workflow) ([]byte, error) {
-	path := c.sourceCachePathFor(w.Hooks.Source)
-	fresh := false
-	if fi, err := os.Stat(path); err == nil {
-		fresh = time.Since(fi.ModTime()) < time.Duration(c.GitLab.CacheTTLMin)*time.Minute
-	}
-	if fresh {
-		return os.ReadFile(path)
-	}
-	refreshErr := c.refreshSource(w)
-	raw, readErr := os.ReadFile(path)
-	if readErr != nil {
-		return nil, refreshErr
-	}
-	// Stale rows and the reason, not one or the other. Serving the stale list silently is the
-	// failure this whole source is meant to avoid: a broken source and a quiet one look the same,
-	// and the quiet one is the answer nobody can debug.
-	return raw, refreshErr
+	return c.cached(c.sourceCachePathFor(w.Hooks.Source), func() error { return c.refreshSource(w) })
 }
 
 func (c Config) refreshSource(w Workflow) error {
@@ -146,12 +128,7 @@ func (c Config) refreshSource(w Workflow) error {
 		// is what cost a real debugging session the last time this was silent.
 		return fmt.Errorf("source: %w", err)
 	}
-	path := c.sourceCachePathFor(w.Hooks.Source)
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, out, 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return writeCache(c.sourceCachePathFor(w.Hooks.Source), out)
 }
 
 // ResolveURL turns a pasted link into an item name, through the workflow's source hook.
@@ -164,7 +141,7 @@ func (c Config) ResolveURL(url string) (Item, error) {
 	if w.Hooks.Source == "" {
 		return Item{}, ErrNoURLSource
 	}
-	out, err := c.runHookArgs(w.Hooks.Source, "--url", url)
+	out, err := c.runHook(w.Hooks.Source, nil, "--url", url)
 	if err != nil {
 		// A non-zero exit here is the source saying it does not recognise this link, which is a
 		// normal state rather than a failure: not every tracker can resolve every URL. Said in

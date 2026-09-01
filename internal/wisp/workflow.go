@@ -1,10 +1,12 @@
 package wisp
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -28,6 +30,10 @@ import (
 
 // WorkflowFile is the manifest inside a bundle directory.
 const WorkflowFile = "workflow.yaml"
+
+// oneShotSource is what the provenance column calls the command line, and the one place that
+// spelling is written down.
+const oneShotSource = "--workflow"
 
 // Hooks are the programs a workflow hands wisp. Paths are resolved to absolute at load, against
 // whichever layer supplied them: a bundle's paths are relative to the bundle, a config file's
@@ -86,9 +92,16 @@ type Workflow struct {
 	// "why did my session open like that" is otherwise unanswerable without reading Go.
 	From map[string]string `yaml:"-"`
 	// Addr is the address that selected the bundle, Dir is where it was found. Both empty for
-	// the built-in.
+	// the built-in, and Dir is also empty when a bundle was named but would not load, which is
+	// what makes "compiled into wisp" the honest thing to print.
 	Addr string `yaml:"-"`
 	Dir  string `yaml:"-"`
+	// OneShot records that the address came from a --workflow on the command line.
+	//
+	// A field rather than a test against From["workflow"], which is a label written for a person
+	// to read: keying the provision window's behaviour off that string meant rewording a table
+	// heading would silently stop the background half inheriting the flag.
+	OneShot bool `yaml:"-"`
 	// Notes are non-fatal problems: a bundle that would not load, a key that was ignored. They
 	// are surfaced rather than raised, because an unusable workflow must still open a session.
 	Notes []string `yaml:"-"`
@@ -108,13 +121,47 @@ func builtinWorkflow() Workflow {
 		Layout: []Window{
 			{Window: "agent", Cwd: "workspace", Run: "{program} {prompt}", Focus: true},
 			{Window: "{repo}", For: "each-worktree", Cwd: "worktree"},
-			{Window: "provision", When: "provisioning", Cwd: "workspace", Run: "{wisp} provision {flags} {item}"},
+			{Window: "provision", When: "provisioning", Cwd: "workspace", Run: "{wisp} provision {item}"},
 		},
 		Status: Status{NeedsInput: needsInputMarker},
 	}
 }
 
-// BuiltinWorkflow is the built-in, for `wisp workflow show default` and for `init` to copy.
+// builtinResolved is the built-in as a resolution starts: every key attributed to it, and its
+// provisioning script made absolute against this workspace.
+//
+// Shared with resolveAddr rather than written twice. The key list here is the one that decides
+// what the provenance column can say, and a second copy of it meant a new built-in key printed
+// its source as blank in whichever command the author forgot.
+func (c Config) builtinResolved() Workflow {
+	w := builtinWorkflow()
+	w.From = map[string]string{}
+	for _, k := range []string{"program", "branch", "worktree", "provision", "needs_input", "layout"} {
+		w.From[k] = "built-in"
+	}
+	// The built-in's provisioning script is workspace-relative, as it has always been.
+	if w.Hooks.Provision != "" && !filepath.IsAbs(w.Hooks.Provision) {
+		w.Hooks.Provision = filepath.Join(c.Workspace, w.Hooks.Provision)
+	}
+	return w
+}
+
+// applyBundle folds a loaded bundle over a resolution, taking its identity with it. Shared for
+// the same reason builtinResolved is: two copies of "the name and description come from the
+// bundle, if it set them" is one copy too many.
+func (w *Workflow) applyBundle(bundle Workflow, src string) {
+	w.Dir = bundle.Dir
+	w.overlay(src, bundle, bundle.Dir)
+	if bundle.Name != "" {
+		w.Name = bundle.Name
+	}
+	if bundle.Description != "" {
+		w.Description = bundle.Description
+	}
+}
+
+// BuiltinWorkflow is the floor every resolution falls back to, exported for callers outside this
+// package that need to say what wisp does with no configuration at all.
 func BuiltinWorkflow() Workflow { return builtinWorkflow() }
 
 // UserWorkflowsDir is where your own bundles live: beside the user config, one directory each.
@@ -170,15 +217,7 @@ func (c Config) WorkflowDir(addr string) (string, error) {
 // safeWorkflowName keeps an address to one path segment. A workflow address reaches the
 // filesystem and can arrive from a checked-in file, so "../.." must not be a way to name a
 // directory outside the two places workflows are allowed to live.
-func safeWorkflowName(name string) bool {
-	if name == "" || name != filepath.Clean(name) {
-		return false
-	}
-	if strings.ContainsRune(name, filepath.Separator) || strings.Contains(name, "/") {
-		return false
-	}
-	return name != "." && name != ".."
-}
+func safeWorkflowName(name string) bool { return safeSegment(name) != "" }
 
 // IsWorkspaceWorkflow reports whether an address points into the workspace, which is the case
 // that needs accepting before anything of it runs.
@@ -198,13 +237,32 @@ func normalizeAddr(addr string) string { return strings.TrimSpace(addr) }
 // LoadWorkflowFile reads one bundle's manifest. Everything it does not set stays zero, so the
 // caller can tell "said nothing" from "said this".
 func LoadWorkflowFile(dir string) (Workflow, error) {
-	var w Workflow
 	raw, err := os.ReadFile(filepath.Join(dir, WorkflowFile))
 	if err != nil {
-		return w, err
+		return Workflow{}, err
 	}
-	if err := yaml.Unmarshal(raw, &w); err != nil {
-		return w, fmt.Errorf("%s: %w", filepath.Join(dir, WorkflowFile), err)
+	return parseWorkflow(dir, raw)
+}
+
+// parseWorkflow is LoadWorkflowFile with the bytes already in hand, so a caller that needed to
+// hash the manifest does not read it a second time to find out what it says.
+func parseWorkflow(dir string, raw []byte) (Workflow, error) {
+	var w Workflow
+	path := filepath.Join(dir, WorkflowFile)
+	// KnownFields, so a misspelled or misplaced key is said rather than ignored. A workflow that
+	// quietly does nothing is the worst thing this file can be: you edit it, nothing changes, and
+	// there is no signal anywhere that you wrote `progam:`.
+	dec := yaml.NewDecoder(bytes.NewReader(raw))
+	dec.KnownFields(true)
+	if err := dec.Decode(&w); err != nil && !errors.Is(err, io.EOF) {
+		// Retried permissively: an unknown key should be a note, not a workflow that will not
+		// load at all, and the strict pass cannot tell the two apart on its own.
+		var relaxed Workflow
+		if yaml.Unmarshal(raw, &relaxed) != nil {
+			return w, fmt.Errorf("%s: %w", path, err)
+		}
+		relaxed.Dir, relaxed.Notes = dir, []string{fmt.Sprintf("%s: %v", shortPath(path), err)}
+		return relaxed, nil
 	}
 	w.Dir = dir
 	return w, nil
@@ -217,8 +275,12 @@ func WorkflowSum(dir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return sumOf(raw), nil
+}
+
+func sumOf(raw []byte) string {
 	sum := sha256.Sum256(raw)
-	return hex.EncodeToString(sum[:]), nil
+	return hex.EncodeToString(sum[:])
 }
 
 // acceptKey namespaces an accepted workflow by the workspace that supplied it. The same relative
@@ -301,24 +363,30 @@ type workflowOverlay struct {
 	Provision string `yaml:"provision"`
 }
 
-func (o workflowOverlay) workflow() Workflow {
+// workflow folds the two accepted spellings into one shape, and says when a file used both.
+//
+// Every other conflict in resolution produces a note; this was the one silent precedence rule
+// left, and "the nested one wins" is not something anyone would guess from a file that sets both.
+func (o workflowOverlay) workflow() (Workflow, []string) {
 	w := Workflow{
 		Program: o.Program, Branch: o.Branch, Worktree: o.Worktree,
 		Hooks: o.Hooks, Layout: o.Layout, Status: o.Status,
 	}
-	if w.Hooks.Source == "" {
-		w.Hooks.Source = o.Source
+	var notes []string
+	fold := func(name string, flat string, nested *string) {
+		switch {
+		case flat == "":
+		case *nested == "":
+			*nested = flat
+		default:
+			notes = append(notes, fmt.Sprintf("%s is set both as `%s:` and under `hooks:`; the one under hooks wins", name, name))
+		}
 	}
-	if w.Hooks.Context == "" {
-		w.Hooks.Context = o.Context
-	}
-	if w.Hooks.Close == "" {
-		w.Hooks.Close = o.Close
-	}
-	if w.Hooks.Provision == "" {
-		w.Hooks.Provision = o.Provision
-	}
-	return w
+	fold("source", o.Source, &w.Hooks.Source)
+	fold("context", o.Context, &w.Hooks.Context)
+	fold("close", o.Close, &w.Hooks.Close)
+	fold("provision", o.Provision, &w.Hooks.Provision)
+	return w, notes
 }
 
 // readOverlayFile pulls the workflow keys out of a YAML config file. Absent file, absent keys.
@@ -365,15 +433,7 @@ func readOverlayFrontmatter(path string) (workflowOverlay, bool) {
 // where items come from: `source` decides that, and an item cannot have an opinion about it,
 // since it does not exist until source has run.
 func (c Config) WorkflowFor(item Item, oneShot string) Workflow {
-	w := builtinWorkflow()
-	w.From = map[string]string{}
-	for _, k := range []string{"program", "branch", "worktree", "provision", "needs_input", "layout"} {
-		w.From[k] = "built-in"
-	}
-	// The built-in's provisioning script is workspace-relative, as it has always been.
-	if w.Hooks.Provision != "" && !filepath.IsAbs(w.Hooks.Provision) {
-		w.Hooks.Provision = filepath.Join(c.Workspace, w.Hooks.Provision)
-	}
+	w := c.builtinResolved()
 
 	user, _ := readOverlayFile(UserConfigPath())
 	space, _ := readOverlayFile(filepath.Join(c.Workspace, MarkerFile))
@@ -390,7 +450,7 @@ func (c Config) WorkflowFor(item Item, oneShot string) Workflow {
 		{user.Workflow, shortPath(UserConfigPath())},
 		{space.Workflow, MarkerFile},
 		{itemOv.Workflow, "orchestration.md"},
-		{oneShot, "--workflow"},
+		{oneShot, oneShotSource},
 	} {
 		if v := normalizeAddr(cand.v); v != "" {
 			addr, addrFrom = v, cand.src
@@ -398,38 +458,38 @@ func (c Config) WorkflowFor(item Item, oneShot string) Workflow {
 	}
 
 	var bundle Workflow
-	var bundleDir string
 	loaded := false
 	if addr != "" {
-		w.Addr, w.From["workflow"] = addr, addrFrom
-		b, dir, err := c.loadBundle(addr)
+		w.Addr, w.From["workflow"], w.OneShot = addr, addrFrom, addrFrom == oneShotSource
+		b, err := c.loadBundle(addr)
 		if err != nil {
-			if err.Error() != "" {
+			if !errors.Is(err, errSilentBuiltin) {
 				w.Notes = append(w.Notes, err.Error())
 			}
 		} else {
-			bundle, bundleDir, loaded = b, dir, true
-			w.Dir = dir
-			if bundle.Name != "" {
-				w.Name = bundle.Name
-			}
-			if bundle.Description != "" {
-				w.Description = bundle.Description
-			}
+			bundle, loaded = b, true
+			w.Notes = append(w.Notes, b.Notes...)
 		}
 	}
 	// A bundle named by a config file is layer 2, under the keys that file sets beside it: that
 	// is what makes "mostly this workflow, but this one key differently" work.
-	if loaded && addrFrom != "--workflow" {
-		w.overlay(addr, bundle, bundleDir)
+	if loaded && !w.OneShot {
+		w.applyBundle(bundle, addr)
 	}
 
-	w.overlay(shortPath(UserConfigPath()), user.workflow(), c.Workspace)
-	w.overlay(MarkerFile, space.workflow(), c.Workspace)
+	for _, layer := range []struct {
+		src string
+		ov  workflowOverlay
+	}{{shortPath(UserConfigPath()), user}, {MarkerFile, space}} {
+		folded, notes := layer.ov.workflow()
+		w.Notes = append(w.Notes, notes...)
+		w.overlay(layer.src, folded, c.Workspace)
+	}
 
 	// The item may not decide where items come from. Not a policy call: source runs before the
 	// item exists, so an item having an opinion about it is a bootstrapping impossibility.
-	iw := itemOv.workflow()
+	iw, itemNotes := itemOv.workflow()
+	w.Notes = append(w.Notes, itemNotes...)
 	if iw.Hooks.Source != "" {
 		w.Notes = append(w.Notes, "an item cannot set `source`: it decides which items exist, and this one does not yet")
 		iw.Hooks.Source = ""
@@ -447,8 +507,8 @@ func (c Config) WorkflowFor(item Item, oneShot string) Workflow {
 	// instruction rather than a default. `wisp open x --workflow review` that still ran the
 	// program from .wisp.yaml would be doing most of what you asked and none of what you meant,
 	// and there would be nothing on screen saying which half it kept.
-	if loaded && addrFrom == "--workflow" {
-		w.overlay("--workflow "+addr, bundle, bundleDir)
+	if loaded && w.OneShot {
+		w.applyBundle(bundle, oneShotSource+" "+addr)
 	}
 
 	// WISP_PROGRAM has always been the last word on the agent command, and stays so.
@@ -463,38 +523,40 @@ func (c Config) WorkflowFor(item Item, oneShot string) Workflow {
 // loadBundle reads the bundle an address names, refusing a workspace one that has not been
 // accepted. Every failure here is a note rather than an error: a workflow that will not load
 // costs you its keys, not your session.
-func (c Config) loadBundle(addr string) (Workflow, string, error) {
+func (c Config) loadBundle(addr string) (Workflow, error) {
 	dir, err := c.WorkflowDir(addr)
 	if err != nil {
-		return Workflow{}, "", fmt.Errorf("workflow %q: %v; using the built-in", addr, err)
+		return Workflow{}, fmt.Errorf("workflow %q: %v; using the built-in", addr, err)
 	}
 	if !isDir(dir) {
 		// A bare `default` with no directory of yours by that name is simply the built-in, which
 		// is not a problem worth annotating.
 		if addr == "default" {
-			return Workflow{}, "", errSilentBuiltin
+			return Workflow{}, errSilentBuiltin
 		}
-		return Workflow{}, "", fmt.Errorf("no workflow %q at %s; using the built-in", addr, shortPath(dir))
+		return Workflow{}, fmt.Errorf("no workflow %q at %s; using the built-in", addr, shortPath(dir))
 	}
-	if IsWorkspaceWorkflow(addr) {
-		ok, err := c.WorkflowAccepted(addr)
-		if err != nil {
-			return Workflow{}, "", fmt.Errorf("workflow %q: %v; using the built-in", addr, err)
-		}
-		if !ok {
-			return Workflow{}, "", fmt.Errorf("workflow %q is supplied by this workspace and has not been accepted; run `wisp workflow accept %s` after reading it", addr, addr)
-		}
-	}
-	bundle, err := LoadWorkflowFile(dir)
+	// Read once. The accept check hashes this file and the resolution parses it, and reading it
+	// twice was a quarter of the cost of resolving a workspace bundle, on a path the picker walks
+	// per keystroke.
+	raw, err := os.ReadFile(filepath.Join(dir, WorkflowFile))
 	if err != nil {
-		return Workflow{}, "", fmt.Errorf("workflow %q: %v; using the built-in", addr, err)
+		return Workflow{}, fmt.Errorf("workflow %q: %v; using the built-in", addr, err)
 	}
-	return bundle, dir, nil
+	if IsWorkspaceWorkflow(addr) && c.Accepted[c.acceptKey(addr)] != sumOf(raw) {
+		return Workflow{}, fmt.Errorf("workflow %q is supplied by this workspace and has not been accepted; run `wisp workflow accept %s` after reading it", addr, addr)
+	}
+	bundle, err := parseWorkflow(dir, raw)
+	if err != nil {
+		return Workflow{}, fmt.Errorf("workflow %q: %v; using the built-in", addr, err)
+	}
+	return bundle, nil
 }
 
 // errSilentBuiltin marks the one "failure" nobody needs told about: naming `default` when you
-// have not made one of your own.
-var errSilentBuiltin = errors.New("")
+// have not made one of your own. Matched with errors.Is rather than by an empty message, so the
+// check says what it means and no future error can fall into it by accident.
+var errSilentBuiltin = errors.New("the built-in workflow")
 
 // validate reports what wisp will ignore, so a typo is visible rather than merely ineffective.
 func (w *Workflow) validate() []string {

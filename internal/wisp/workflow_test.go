@@ -938,7 +938,7 @@ func TestBuiltinWorkflowReproducesTodaysBehaviour(t *testing.T) {
 	for i, want := range []Window{
 		{Window: "agent", Cwd: "workspace", Run: "{program} {prompt}", Focus: true},
 		{Window: "{repo}", For: "each-worktree", Cwd: "worktree"},
-		{Window: "provision", When: "provisioning", Cwd: "workspace", Run: "{wisp} provision {flags} {item}"},
+		{Window: "provision", When: "provisioning", Cwd: "workspace", Run: "{wisp} provision {item}"},
 	} {
 		if w.Layout[i] != want {
 			t.Errorf("layout[%d] = %+v, want %+v", i, w.Layout[i], want)

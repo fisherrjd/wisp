@@ -14,14 +14,20 @@ import (
 
 // newWorkflowConfig gives a workspace and a user config directory that are both temporary, so
 // nothing here can reach the real ~/.config/wisp.
+//
+// It goes through the shared fixture rather than rolling its own. Three files had three of these
+// and they disagreed about what isolation meant: this one did not neutralise WISP_PROGRAM, which
+// is the last word on `program:` above every layer, so a developer with it exported ran a
+// different suite here than in the other two files and than CI did.
 func newWorkflowConfig(t *testing.T) Config {
 	t.Helper()
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	ws := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(ws, "working_items"), 0o755); err != nil {
+	c := newWorkflowFixture(t).c
+	c.Location = Location{Path: c.Workspace}
+	c.Name = "t"
+	if err := os.MkdirAll(c.VaultDir(), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	return Config{Workspace: ws, Vault: "working_items", Name: "t", Location: Location{Path: ws}}
+	return c
 }
 
 // init has to be safe to mistype: it is the one command that writes a file into a directory the

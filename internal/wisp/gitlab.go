@@ -188,23 +188,41 @@ func (c Config) gitlabMissing() []string {
 // than the configured TTL. A refresh failure falls back to a stale cache rather than emptying
 // the picker.
 func (c Config) cachedResponse() ([]byte, error) {
-	path := c.CachePath()
-	fresh := false
+	return c.cached(c.CachePath(), c.refreshCache)
+}
+
+// cached is the one read-or-refresh policy both sources share.
+//
+// Three things it decides, and they are the same three whichever source is behind it. A file
+// younger than the TTL is used as is. A refresh failure with a usable file returns the stale rows
+// *and* the reason, because serving an old list silently is how a broken source comes to look
+// exactly like a quiet one, which is the failure that cost a real debugging session. A refresh
+// failure with nothing to fall back on is the error alone.
+//
+// Written once because it was written twice: the source cache and the GitLab cache drifted apart
+// on exactly this policy, and fixing one of them meant fixing the other afterwards.
+func (c Config) cached(path string, refresh func() error) ([]byte, error) {
 	if fi, err := os.Stat(path); err == nil {
-		age := time.Since(fi.ModTime())
-		fresh = age < time.Duration(c.GitLab.CacheTTLMin)*time.Minute
+		if time.Since(fi.ModTime()) < c.cacheTTL() {
+			return os.ReadFile(path)
+		}
 	}
-	if fresh {
-		return os.ReadFile(path)
-	}
-	refreshErr := c.refreshCache()
+	refreshErr := refresh()
 	raw, readErr := os.ReadFile(path)
 	if readErr != nil {
 		return nil, refreshErr
 	}
-	// The stale rows and the reason they are stale. Silently serving an old list is how a broken
-	// query looks exactly like a quiet one.
 	return raw, refreshErr
+}
+
+// writeCache replaces a cache file in one step, so a failed or partial write never leaves a
+// corrupt one behind.
+func writeCache(path string, body []byte) error {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, body, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 // RefreshCache drops the cache so the next read re-queries. Bound to ctrl-r in the picker.
@@ -212,17 +230,16 @@ func (c Config) cachedResponse() ([]byte, error) {
 // Both caches, and then whichever source is actually configured. ctrl-r has to mean the same
 // thing whatever the workspace's source is, which is the reason caching stayed wisp's job rather
 // than moving into each hook.
-// Refreshed first, and the old file dropped only if that worked. Deleting up front meant a
-// ctrl-r against a source that had since broken emptied the list outright, which is exactly the
-// state every other path here goes out of its way to avoid.
+// RefreshCache re-asks whichever source this workspace has, for ctrl-r in the picker.
+//
+// It refreshes rather than deleting. Dropping the cache first meant a ctrl-r against a source
+// that had since broken emptied the list outright, which is exactly the state every other path
+// here goes out of its way to avoid: a broken source has to annotate the rows, not remove them.
 func (c Config) RefreshCache() error {
 	if w := c.WorkflowFor(Item{}, ""); w.Hooks.Source != "" {
 		return c.refreshSource(w)
 	}
-	if err := c.refreshCache(); err != nil {
-		return err
-	}
-	return nil
+	return c.refreshCache()
 }
 
 func (c Config) refreshCache() error {
@@ -234,12 +251,7 @@ func (c Config) refreshCache() error {
 	if err != nil {
 		return fmt.Errorf("glab query failed: %w", err)
 	}
-	// Write via a temp file so a failed or partial write never leaves a corrupt cache.
-	tmp := c.CachePath() + ".tmp"
-	if err := os.WriteFile(tmp, out, 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, c.CachePath())
+	return writeCache(c.CachePath(), out)
 }
 
 // slugify derives a folder-style slug from a work item title: lowercase, non-alphanumerics to

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os/exec"
 	"strings"
 	"sync"
@@ -128,11 +129,16 @@ func (l Location) run(args ...string) ([]byte, error) { return l.exec(l.command(
 // runBare executes a wisp command on the far side that is not scoped to a workspace.
 func (l Location) runBare(args ...string) ([]byte, error) { return l.exec(bareCommand(args...)) }
 
-func (l Location) exec(line string) ([]byte, error) {
+func (l Location) exec(line string) ([]byte, error) { return l.execIn(line, nil) }
+
+// execIn is exec with something to feed the far side's stdin, which is how a workflow bundle is
+// pushed: one tar over the connection rather than a round trip per file.
+func (l Location) execIn(line string, stdin io.Reader) ([]byte, error) {
 	if !l.IsRemote() {
 		return nil, fmt.Errorf("not a remote workspace")
 	}
 	cmd := exec.Command("ssh", append(l.sshArgs(false), line)...)
+	cmd.Stdin = stdin
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()

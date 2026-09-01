@@ -12,21 +12,20 @@ import (
 // wrong, because that is the part with a promise attached: a broken workflow costs you a key,
 // never a session, and a hook that refuses has to actually refuse.
 
-// hookWorkspace is a workspace with a vault, one item, and no config anywhere. The XDG redirect
-// matters: without it these read whichever workflows the developer running the tests has.
+// hookWorkspace is the shared fixture plus one item with a note in it, which is what every test
+// here needs and nothing else does.
 func hookWorkspace(t *testing.T, item string) Config {
 	t.Helper()
-	root := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "xdg"))
-	t.Setenv("WISP_PROGRAM", "")
-	dir := filepath.Join(root, "working_items", item)
+	c := newWorkflowFixture(t).c
+	c.Name = "test"
+	dir := c.ItemDir(item)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "notes.md"), []byte("# thing\n\nsomething written down\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	return Config{Workspace: root, Name: "test", Vault: "working_items", Worktrees: ".worktrees"}
+	return c
 }
 
 // script writes an executable and returns its path.
@@ -394,9 +393,11 @@ func TestHooksAreBounded(t *testing.T) {
 	}
 }
 
-// A one-shot is written nowhere, so the provisioning half only learns about it by being told on
-// the way past. Without that the two halves build worktrees in different places.
-func TestOneShotIsHandedToTheProvisionWindow(t *testing.T) {
+// A one-shot is written to no file, so the provisioning half, which is a separate process, can
+// only learn about it from the session. Carried as a tmux session option rather than a template
+// token: a hand-written layout would not know to include the token, and the two halves would then
+// build worktrees in different places without saying so.
+func TestOneShotIsRecordedOnTheResolution(t *testing.T) {
 	c := hookWorkspace(t, "repo/1-thing")
 	item := Item{Name: "repo/1-thing"}
 	dir := filepath.Join(t.TempDir(), "xdg", "wisp", "workflows", "review")
@@ -409,21 +410,18 @@ func TestOneShotIsHandedToTheProvisionWindow(t *testing.T) {
 	}
 
 	w := c.WorkflowFor(item, "review")
-	var provision string
-	for _, p := range c.expandLayout(w, item, []Entry{{Repo: "repo"}}, "") {
-		if p.name == "provision" {
-			provision = p.run
-		}
+	if !w.OneShot || w.Addr != "review" {
+		t.Errorf("a --workflow resolution is not marked as one-shot: OneShot=%v Addr=%q", w.OneShot, w.Addr)
 	}
-	if !strings.Contains(provision, "--workflow 'review'") {
-		t.Errorf("the provision window does not carry the one-shot:\n%s", provision)
+	// And nothing leaks into the command line, which is what the session option replaced.
+	for _, p := range c.expandLayout(w, item, []Entry{{Repo: "repo"}}, "") {
+		if strings.Contains(p.run, "--workflow") {
+			t.Errorf("window %q still templates the flag: %s", p.name, p.run)
+		}
 	}
 
-	// And a configured workflow adds nothing, because there is nothing to hand on.
-	plain := c.WorkflowFor(item, "")
-	for _, p := range c.expandLayout(plain, item, []Entry{{Repo: "repo"}}, "") {
-		if p.name == "provision" && strings.Contains(p.run, "--workflow") {
-			t.Errorf("a configured workflow should not be repeated as a flag: %s", p.run)
-		}
+	// A workflow named in a config file is not a one-shot and has nothing to hand on.
+	if plain := c.WorkflowFor(item, ""); plain.OneShot {
+		t.Error("a configured workflow is marked as a one-shot")
 	}
 }

@@ -18,6 +18,13 @@ const SessionPrefix = "wisp_"
 const (
 	ItemOption = "@wisp_item"
 	WSOption   = "@wisp_ws"
+	// WorkflowOption carries a one-shot --workflow for the life of the session.
+	//
+	// A one-shot is written to no file, which is the point of it, but the background provisioning
+	// half is a separate process that would otherwise re-resolve from the written-down layers and
+	// build the worktree somewhere the session is not looking. The tmux server is where session
+	// state already lives, and dying with it is correct here: the flag's lifetime is the session's.
+	WorkflowOption = "@wisp_workflow"
 )
 
 // lastOption prefixes a server-level option per workspace, holding the session you were last in
@@ -133,6 +140,19 @@ func resolveStates(sessions []Session, marker string) {
 		}(i)
 	}
 	wg.Wait()
+}
+
+// SessionWorkflow is the one-shot workflow a session was opened with, or "" for the common case
+// of one that came from a config file.
+func (c Config) SessionWorkflow(session string) string {
+	if session == "" {
+		return ""
+	}
+	out, err := tmux("show-option", "-qv", "-t", session, WorkflowOption)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
 }
 
 // FindSession is the live session for an item, matched on identity rather than on the session

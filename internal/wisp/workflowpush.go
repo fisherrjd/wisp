@@ -62,16 +62,11 @@ func (c Config) PushWorkflow(addr, host string) (string, error) {
 	if err := tar.Run(); err != nil {
 		return "", fmt.Errorf("packing %s: %v", shortPath(dir), lastLine(tarErr.String()))
 	}
-
-	ssh := exec.Command("ssh", append(loc.sshArgs(false), line)...)
-	ssh.Stdin = &archive
-	var stderr bytes.Buffer
-	ssh.Stderr = &stderr
-	if err := ssh.Run(); err != nil {
-		return "", loc.diagnose(err, stderr.String())
+	if _, err := loc.execIn(line, &archive); err != nil {
+		return "", err
 	}
 	return fmt.Sprintf("%s to %s:~/.config/wisp/workflows/%s  (%d files, %s)",
-		addr, host, addr, len(files), humanBytes(size)), nil
+		addr, host, addr, files, humanBytes(size)), nil
 }
 
 // hostLocation resolves a configured machine name to its ssh target, falling back to the
@@ -143,26 +138,21 @@ func (c Config) HostWorkflows(host string) ([]HostWorkflow, error) {
 
 // bundleContents is what a bundle holds, for the line printed after a push. Counting beats
 // listing here: a push that says "4 files" is checkable, and one that says nothing is not.
-func bundleContents(dir string) ([]string, int64) {
-	// Walked, not listed. tar ships the whole tree, and a bundle keeping its scripts in bin/,
-	// which is what the generated template suggests, reported "1 files" after moving four.
-	var files []string
-	var size int64
-	_ = filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+//
+// Walked, not listed. tar ships the whole tree, and a bundle keeping its scripts in bin/, which
+// is what the generated template suggests, reported "1 files" after moving four.
+func bundleContents(dir string) (int, int64) {
+	files, size := 0, int64(0)
+	_ = filepath.WalkDir(dir, func(_ string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return nil
 		}
-		rel, relErr := filepath.Rel(dir, p)
-		if relErr != nil {
-			rel = d.Name()
-		}
-		files = append(files, rel)
+		files++
 		if fi, err := d.Info(); err == nil {
 			size += fi.Size()
 		}
 		return nil
 	})
-	sort.Strings(files)
 	return files, size
 }
 

@@ -3,6 +3,7 @@ package wisp
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -207,42 +208,41 @@ func (c Config) printHostWorkflows(host string) error {
 	return nil
 }
 
-// workflowKeys is the order the table prints in: the agent first, then where the work lands, then
-// the layout, then the programs wisp hands off to. Deliberately not sorted, because `program`
-// first is worth more than alphabetical.
-var workflowKeys = []string{
-	"program", "branch", "worktree", "layout",
-	"source", "context", "close", "provision", "needs_input",
+// workflowKeys is what the table prints and how each value is read, in one list.
+//
+// One list rather than a name list beside a switch. They were two, in different orders with
+// nothing holding them together, so a key added to one and not the other either printed as "-"
+// forever or never printed at all, and neither failed a test or a compile.
+//
+// Deliberately not sorted: the agent first, then where the work lands, then the layout, then the
+// programs wisp hands off to. `program` first is worth more than alphabetical.
+var workflowKeys = []struct {
+	key string
+	get func(Workflow) string
+}{
+	{"program", func(w Workflow) string { return w.Program }},
+	{"branch", func(w Workflow) string { return w.Branch }},
+	{"worktree", func(w Workflow) string { return w.Worktree }},
+	{"layout", func(w Workflow) string { return layoutSummary(w.Layout) }},
+	{"source", func(w Workflow) string { return shortPath(w.Hooks.Source) }},
+	{"context", func(w Workflow) string { return shortPath(w.Hooks.Context) }},
+	{"close", func(w Workflow) string { return shortPath(w.Hooks.Close) }},
+	{"provision", func(w Workflow) string { return shortPath(w.Hooks.Provision) }},
+	{"needs_input", func(w Workflow) string { return w.Status.NeedsInput }},
 }
 
 // value renders one key for the table. A key nothing sets prints as "-" rather than as an empty
 // column, so "wisp runs no close hook" is visibly an answer.
 func (w Workflow) value(key string) string {
-	v := ""
-	switch key {
-	case "program":
-		v = w.Program
-	case "branch":
-		v = w.Branch
-	case "worktree":
-		v = w.Worktree
-	case "layout":
-		v = layoutSummary(w.Layout)
-	case "source":
-		v = shortPath(w.Hooks.Source)
-	case "context":
-		v = shortPath(w.Hooks.Context)
-	case "close":
-		v = shortPath(w.Hooks.Close)
-	case "provision":
-		v = shortPath(w.Hooks.Provision)
-	case "needs_input":
-		v = w.Status.NeedsInput
+	for _, k := range workflowKeys {
+		if k.key == key {
+			if v := k.get(w); v != "" {
+				return v
+			}
+			return "-"
+		}
 	}
-	if v == "" {
-		return "-"
-	}
-	return v
+	return "-"
 }
 
 func layoutSummary(wins []Window) string {
@@ -287,18 +287,23 @@ func (c Config) printWorkflow(w Workflow, item string) {
 	// side for all nine rows, and that column is why anyone ran this.
 	const widest = 44
 	wide := len("value")
-	for _, k := range workflowKeys {
-		if n := len(w.value(k)); n > wide && n <= widest {
+	// Rendered once and measured, rather than computed again for the print pass: shortPath and
+	// layoutSummary are not free, and the two passes would have to agree exactly for the columns
+	// to line up.
+	vals := make([]string, len(workflowKeys))
+	for i, k := range workflowKeys {
+		vals[i] = w.value(k.key)
+		if n := len(vals[i]); n > wide && n <= widest {
 			wide = n
 		}
 	}
 	fmt.Printf("  %-11s %-*s %s\n", "key", wide, "value", "from")
-	for _, k := range workflowKeys {
-		from := w.From[k]
+	for i, k := range workflowKeys {
+		from := w.From[k.key]
 		if from == "" {
 			from = "-"
 		}
-		fmt.Printf("  %-11s %-*s %s\n", k, wide, w.value(k), from)
+		fmt.Printf("  %-11s %-*s %s\n", k.key, wide, vals[i], from)
 	}
 
 	// The layout summary above names the windows and stops there, which is enough to see that the
@@ -349,34 +354,20 @@ func (c Config) printWorkflow(w Workflow, item string) {
 // "what does this bundle actually set" unanswerable, which is the question you have when you are
 // choosing between two of them or reading someone else's.
 func (c Config) resolveAddr(addr string) Workflow {
-	w := builtinWorkflow()
-	w.From = map[string]string{}
-	for _, k := range []string{"program", "branch", "worktree", "provision", "needs_input", "layout"} {
-		w.From[k] = "built-in"
-	}
-	if w.Hooks.Provision != "" && !filepath.IsAbs(w.Hooks.Provision) {
-		w.Hooks.Provision = filepath.Join(c.Workspace, w.Hooks.Provision)
-	}
+	w := c.builtinResolved()
 	if addr == "" {
 		return w
 	}
 	w.Addr, w.From["workflow"] = addr, "the command line"
 
-	bundle, dir, err := c.loadBundle(addr)
+	bundle, err := c.loadBundle(addr)
 	if err != nil {
-		if err.Error() != "" {
+		if !errors.Is(err, errSilentBuiltin) {
 			w.Notes = append(w.Notes, err.Error())
 		}
 		return w
 	}
-	w.Dir = dir
-	w.overlay(addr, bundle, dir)
-	if bundle.Name != "" {
-		w.Name = bundle.Name
-	}
-	if bundle.Description != "" {
-		w.Description = bundle.Description
-	}
+	w.applyBundle(bundle, addr)
 	w.Notes = append(w.Notes, w.validate()...)
 	return w
 }
