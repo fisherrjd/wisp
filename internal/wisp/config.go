@@ -88,7 +88,11 @@ type Config struct {
 	// CacheTTLMin is how long any remote source's answer is reused. Named without a tracker in
 	// it, because it now times whichever source a workspace has; `gitlab.cache_ttl_min` is still
 	// read as the older spelling of the same thing.
-	CacheTTLMin int `yaml:"cache_ttl_min"`
+	//
+	// A pointer so that absent and zero are different answers. Zero is a documented, useful
+	// value meaning "ask on every load", and treating it as unset would make the new spelling
+	// unable to express something the older one always could.
+	CacheTTLMin *int `yaml:"cache_ttl_min"`
 
 	Install   bool   `yaml:"install"`
 	Vault     string `yaml:"vault"`
@@ -389,9 +393,9 @@ func (c *Config) mergeFile(path string) error {
 // cacheTTL is how long a remote source's answer stays good, taking the neutral key when it is
 // set and the older gitlab-scoped one otherwise.
 func (c Config) cacheTTL() time.Duration {
-	mins := c.CacheTTLMin
-	if mins == 0 {
-		mins = c.GitLab.CacheTTLMin
+	mins := c.GitLab.CacheTTLMin
+	if c.CacheTTLMin != nil {
+		mins = *c.CacheTTLMin
 	}
 	return time.Duration(mins) * time.Minute
 }

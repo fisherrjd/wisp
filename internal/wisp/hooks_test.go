@@ -400,18 +400,27 @@ func TestHooksAreBounded(t *testing.T) {
 func TestOneShotIsRecordedOnTheResolution(t *testing.T) {
 	c := hookWorkspace(t, "repo/1-thing")
 	item := Item{Name: "repo/1-thing"}
-	dir := filepath.Join(t.TempDir(), "xdg", "wisp", "workflows", "review")
+	// Written where the resolver will actually look. An earlier version of this built its own
+	// t.TempDir and reset XDG_CONFIG_HOME to it, so the bundle sat somewhere nothing consulted
+	// and the test passed without ever loading it.
+	dir, err := c.WorkflowDir("review")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("XDG_CONFIG_HOME", filepath.Dir(filepath.Dir(dir)))
-	if err := os.WriteFile(filepath.Join(dir, WorkflowFile), []byte("name: review\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, WorkflowFile), []byte("name: review\nprogram: aider\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	w := c.WorkflowFor(item, "review")
 	if !w.OneShot || w.Addr != "review" {
 		t.Errorf("a --workflow resolution is not marked as one-shot: OneShot=%v Addr=%q", w.OneShot, w.Addr)
+	}
+	// Proof the bundle was found rather than merely named.
+	if w.Program != "aider" {
+		t.Errorf("the one-shot bundle was not loaded: program = %q", w.Program)
 	}
 	// And nothing leaks into the command line, which is what the session option replaced.
 	for _, p := range c.expandLayout(w, item, []Entry{{Repo: "repo"}}, "") {

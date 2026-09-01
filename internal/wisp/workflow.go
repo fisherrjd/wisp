@@ -151,6 +151,11 @@ func (c Config) builtinResolved() Workflow {
 // bundle, if it set them" is one copy too many.
 func (w *Workflow) applyBundle(bundle Workflow, src string) {
 	w.Dir = bundle.Dir
+	// Its notes come with it. Loading a bundle is the only thing that can produce an
+	// unknown-key note, and appending them at one of the two call sites meant `wisp open`
+	// reported a typo while `wisp workflow show`, the command whose whole job is explaining a
+	// bundle, stayed silent about the same file.
+	w.Notes = append(w.Notes, bundle.Notes...)
 	w.overlay(src, bundle, bundle.Dir)
 	if bundle.Name != "" {
 		w.Name = bundle.Name
@@ -468,7 +473,6 @@ func (c Config) WorkflowFor(item Item, oneShot string) Workflow {
 			}
 		} else {
 			bundle, loaded = b, true
-			w.Notes = append(w.Notes, b.Notes...)
 		}
 	}
 	// A bundle named by a config file is layer 2, under the keys that file sets beside it: that

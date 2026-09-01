@@ -649,8 +649,15 @@ func (c Config) workflowEdit(addr string) error {
 		return fmt.Errorf("%s: %v\n\nset EDITOR to something that is installed, or edit %s directly", editor, err, shortPath(path))
 	}
 
-	if _, err := LoadWorkflowFile(dir); err != nil {
+	edited, err := LoadWorkflowFile(dir)
+	if err != nil {
 		return fmt.Errorf("%v\n\nwisp falls back to the built-in for every key it cannot read there, so this\nis worth fixing now:\n  wisp workflow edit %s", err, addr)
+	}
+	// Straight after the editor exits is when a typo is cheapest to fix, and the note naming it
+	// is already in hand: an unknown key parses fine and then quietly does nothing, which is the
+	// worst thing this file can be.
+	for _, note := range edited.Notes {
+		fmt.Fprintf(os.Stderr, "wisp: %s\n", note)
 	}
 	fmt.Printf("%s\n\n  wisp workflow show %s   what it sets now\n", shortPath(path), addr)
 	return nil

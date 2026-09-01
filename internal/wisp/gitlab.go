@@ -225,12 +225,10 @@ func writeCache(path string, body []byte) error {
 	return os.Rename(tmp, path)
 }
 
-// RefreshCache drops the cache so the next read re-queries. Bound to ctrl-r in the picker.
-//
-// Both caches, and then whichever source is actually configured. ctrl-r has to mean the same
-// thing whatever the workspace's source is, which is the reason caching stayed wisp's job rather
-// than moving into each hook.
 // RefreshCache re-asks whichever source this workspace has, for ctrl-r in the picker.
+//
+// ctrl-r has to mean the same thing whatever the workspace's source is, which is the reason
+// caching stayed wisp's job rather than moving into each hook.
 //
 // It refreshes rather than deleting. Dropping the cache first meant a ctrl-r against a source
 // that had since broken emptied the list outright, which is exactly the state every other path

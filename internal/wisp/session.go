@@ -143,14 +143,6 @@ func (c Config) runContextHook(w Workflow, item Item, entries []Entry) ([]byte, 
 	return body, nil
 }
 
-// runHook is the one place a workflow's script is executed.
-//
-// cwd is the workspace root and WISP_WORKSPACE is set, because that is the contract and because
-// wisp's own cwd is wherever it was invoked from. stderr is captured rather than inherited so a
-// failure can be reported as one line beside whatever wisp was doing, which is the difference
-// between an annotated list and a mysteriously empty one. lastLine, shared with the ssh
-// diagnosis in remote.go, is what a failing script gets to say: one line, because it goes
-// somewhere with room for one.
 // hookTimeout bounds a hook. Generous, because a close hook may be posting to a tracker, and
 // bounded at all because these run where nothing can cancel them: a source hook that hangs takes
 // the picker's remote section with it, and a context hook that hangs takes an open.
@@ -161,6 +153,14 @@ const hookTimeout = 60 * time.Second
 // into memory and then written to disk.
 const maxHookOutput = 8 << 20
 
+// runHook is the one place a workflow's script is executed.
+//
+// cwd is the workspace root and WISP_WORKSPACE is set, because that is the contract and because
+// wisp's own cwd is wherever it was invoked from. stderr is captured rather than inherited so a
+// failure can be reported as one line beside whatever wisp was doing, which is the difference
+// between an annotated list and a mysteriously empty one. lastLine, shared with the ssh
+// diagnosis in remote.go, is what a failing script gets to say: one line, because it goes
+// somewhere with room for one.
 func (c Config) runHook(script string, stdin []byte, args ...string) ([]byte, error) {
 	if script == "" {
 		return nil, errors.New("no hook")
