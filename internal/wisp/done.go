@@ -80,6 +80,12 @@ func (c Config) CloseOut(item string, done bool, note string) error {
 		}
 		return err
 	}
+	// Already closed out is nothing to do, and it is answered before the hook rather than after
+	// the write: a hook that harvests an item, or refuses until it has, must not be asked twice
+	// about work that finished the first time.
+	if done && c.ItemDone(item) {
+		return nil
+	}
 	// The hook runs first, and it may refuse. The other order would leave an item marked
 	// finished whose harvest failed, which is the exact state the flag is supposed to rule out.
 	//

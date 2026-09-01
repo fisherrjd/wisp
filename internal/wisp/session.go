@@ -472,8 +472,10 @@ func shellVars(vars map[string]string) map[string]string {
 // can produce anything, including nothing, and a window with no name is not creatable.
 func windowName(s string) string {
 	s = strings.TrimSpace(s)
-	if len(s) > 12 {
-		s = s[:12]
+	// By runes, not bytes. A template can expand to anything a repo is called, and cutting a
+	// multibyte name at byte twelve lands mid-character and hands tmux a broken sequence.
+	if r := []rune(s); len(r) > 12 {
+		s = string(r[:12])
 	}
 	if s == "" {
 		s = "window"
