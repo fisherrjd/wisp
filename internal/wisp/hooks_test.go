@@ -82,6 +82,38 @@ func TestBuiltinLayoutMatchesTheOldBehaviour(t *testing.T) {
 	}
 }
 
+// A run line is handed to /bin/sh, and the values substituted into it are data. An item name can
+// come from a source hook, which is a program somebody else wrote, so a name holding a semicolon
+// must not become a command wisp runs for you.
+func TestRunLinesQuoteWhatTheySubstitute(t *testing.T) {
+	c := hookWorkspace(t, "repo/1-thing")
+	item := Item{Name: "repo/1-thing; touch /tmp/wisp-pwned"}
+	w := c.WorkflowFor(Item{}, "")
+
+	entries := []Entry{{Repo: "repo", Branch: "b"}}
+	panes := c.expandLayout(w, item, entries, "")
+	var provision string
+	for _, p := range panes {
+		if p.name == "provision" {
+			provision = p.run
+		}
+	}
+	if provision == "" {
+		t.Fatal("no provision window to check")
+	}
+	// The whole item name inside one set of single quotes, so the shell sees one argument.
+	if !strings.Contains(provision, "'repo/1-thing; touch /tmp/wisp-pwned'") {
+		t.Errorf("the item name reached the shell unquoted:\n%s", provision)
+	}
+	// The program is the one value left unquoted, because it has always been a command line
+	// rather than a path: `claude --permission-mode auto` has to keep working.
+	w.Program = "claude --permission-mode auto"
+	panes = c.expandLayout(w, item, entries, "")
+	if !strings.HasPrefix(panes[0].run, "claude --permission-mode auto ") {
+		t.Errorf("the program was quoted, which would look for a binary with spaces in its name: %q", panes[0].run)
+	}
+}
+
 // A window name is a tmux window name, whatever the template says. An expanded template can
 // produce anything, and a window with no name is not creatable at all.
 func TestWindowName(t *testing.T) {

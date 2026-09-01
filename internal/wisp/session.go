@@ -375,10 +375,7 @@ type pane struct {
 // one window per worktree that exists, and `when: provisioning` appears only while one does not.
 // That is the whole control flow, deliberately: anything wanting more should be a script.
 func (c Config) expandLayout(w Workflow, item Item, entries []Entry, ctx string) []pane {
-	prompt := ""
-	if p := c.startupPrompt(item, ctx); p != "" {
-		prompt = shellQuote(p)
-	}
+	prompt := c.startupPrompt(item, ctx)
 	self, _ := os.Executable()
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -399,7 +396,7 @@ func (c Config) expandLayout(w Workflow, item Item, entries []Entry, ctx string)
 		"workspace": c.Workspace,
 		"program":   w.Program,
 		"prompt":    prompt,
-		"wisp":      shellQuote(self),
+		"wisp":      self,
 	}
 	dirFor := func(kind, worktree string) string {
 		switch kind {
@@ -433,7 +430,7 @@ func (c Config) expandLayout(w Workflow, item Item, entries []Entry, ctx string)
 				out = append(out, pane{
 					name:  windowName(Expand(win.Window, vars)),
 					dir:   dirFor(win.Cwd, wt),
-					run:   Expand(win.Run, vars),
+					run:   Expand(win.Run, shellVars(vars)),
 					focus: win.Focus,
 				})
 			}
@@ -442,9 +439,31 @@ func (c Config) expandLayout(w Workflow, item Item, entries []Entry, ctx string)
 		out = append(out, pane{
 			name:  windowName(Expand(win.Window, base)),
 			dir:   dirFor(win.Cwd, ""),
-			run:   Expand(win.Run, base),
+			run:   Expand(win.Run, shellVars(base)),
 			focus: win.Focus,
 		})
+	}
+	return out
+}
+
+// shellVars is the substitution set for `run:`, which is handed to /bin/sh.
+//
+// Every value is quoted except the program, because a run line is a shell command and these are
+// data going into it. It matters more than it looks: an item name can come from a source hook,
+// which is a program somebody else wrote, and before this every one of these was substituted
+// raw, so a name holding a semicolon was a command wisp would run for you.
+//
+// `program` stays unquoted on purpose. It has always been a command line rather than a path, so
+// `claude --permission-mode auto` has to keep working, and quoting it would look for a binary
+// with a space in its name.
+func shellVars(vars map[string]string) map[string]string {
+	out := make(map[string]string, len(vars))
+	for k, v := range vars {
+		if k == "program" {
+			out[k] = v
+			continue
+		}
+		out[k] = shellQuote(v)
 	}
 	return out
 }
