@@ -80,6 +80,18 @@ func (c Config) CloseOut(item string, done bool, note string) error {
 		}
 		return err
 	}
+	// The hook runs first, and it may refuse. The other order would leave an item marked
+	// finished whose harvest failed, which is the exact state the flag is supposed to rule out.
+	//
+	// Only on the way out. Reopening an item is undoing a decision, and a hook that could block
+	// that would make a mistake permanent.
+	if done {
+		if w := c.WorkflowFor(Item{Name: item}, ""); w.Hooks.Close != "" {
+			if _, err := c.runHookArgs(w.Hooks.Close, closeArgs(item, note)...); err != nil {
+				return fmt.Errorf("close-out refused: %w", err)
+			}
+		}
+	}
 	next := raw
 	if strings.TrimSpace(note) != "" {
 		next = appendClosingNote(next, note, time.Now().Format("2006-01-02"))
@@ -98,6 +110,17 @@ func (c Config) CloseOut(item string, done bool, note string) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+// closeArgs is the close hook's argv: the item, and the closing line when there is one.
+//
+// The line is omitted rather than passed empty, so `$2` being set is how a script tells "closed
+// with a write-up" from "closed bare", which is a distinction wisp itself already makes.
+func closeArgs(item, note string) []string {
+	if strings.TrimSpace(note) == "" {
+		return []string{item}
+	}
+	return []string{item, note}
 }
 
 // NoteIsEmpty reports whether an item's note says nothing yet.

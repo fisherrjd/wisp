@@ -1,6 +1,8 @@
 # Hooks
 
-Status: **designed, not built.** Nothing below exists yet. This is the shape the work should take and the reasoning that picked it, written down before any of it is code so the argument can be argued with rather than reverse-engineered from a diff.
+Status: **the shape is built, the three hooks are not.** A hook is now a key in a workflow bundle rather than a loose key in one file, and wisp resolves `source:`, `context:` and `close:` to an absolute path across every layer. It does not yet run any of them. [Workflows](workflows.md) is the reference for the bundle, the addressing and the precedence; this page stays because it holds the reasoning that picked the hook shape, and that reasoning is still what the contracts below are for.
+
+Two of its decisions were changed on purpose. Both are marked where they are made, and [What changed, and why](#what-changed-and-why) at the end says what the alternative cost.
 
 ---
 
@@ -36,6 +38,8 @@ That argument generalises. wisp knows about items, sessions, worktrees and a pic
 So: a small set of named hooks, each a script path in `.wisp.yaml`, each with a fixed argument list and a documented stdout. No plugin loader, no Go interface to implement, no DSL in the config. A hook is a program, and a program is something anyone can write in bash in ten minutes and test by running it.
 
 Hooks live in `<workspace>/.wisp.yaml` rather than the user config, for the same reason the GitLab keys do: the workspace is the unit that owns a vault, a tracker and a set of conventions, and its config should travel with it.
+
+> **Changed.** That is right for the tracker and wrong for everything else. A hook may now be set in a bundle, in either config file, or in an item, and it resolves per key across all of them. See [What changed, and why](#what-changed-and-why).
 
 ---
 
@@ -166,6 +170,8 @@ Both are identity rather than preference. A hook that could change them would be
 
 The session layout is a third candidate I would leave alone for now, but for a weaker reason: it is a list in config rather than a script, so it does not fit the shape above, and until the three hooks here are real it is not clear whether it wants to be a hook at all.
 
+> **Changed.** The weak reason was the right observation and the wrong conclusion. Layout is not hook-shaped, and it did not need to be: it is declarative, so it landed as a `layout:` key in the bundle rather than as a fourth script. See [What changed, and why](#what-changed-and-why).
+
 ---
 
 ## Remote workspaces
@@ -193,6 +199,29 @@ It is the one that changes who can use wisp. It is self-contained: one function 
 - **`source:`** if the failure path empties the list instead of annotating it. The whole value of the GitLab source's current design is that a broken query and an empty one look different.
 - **`context:`** if a broken hook stops a session opening. Falling back is not a compromise, it is the requirement.
 - **`close:`** if the refusal is silent, or if the flag gets written before the hook runs.
+
+---
+
+## What changed, and why
+
+Four decisions on this page were kept without change, and they are the load-bearing ones:
+
+- **Name a contract, shell out, stay out of it.** A hook is a program, not a Go plugin, not a shared object, not a DSL in YAML.
+- **Identity is not configurable.** `Item.Key()` and the four-word slug cut stay compiled in.
+- **Failure is a state, not an exception.** A broken source annotates the list and never empties it; a broken context hook falls back to the built-in briefing rather than refusing to open a session. That discipline generalised: a workflow that will not load now costs you its keys rather than your session.
+- **Remote workspaces need no design.** Hooks run on the machine that owns the workspace, because that machine runs its own load and answers `board --json` for itself.
+
+Two were changed.
+
+**Scope: hooks are no longer workspace-only.** The argument above is right about the tracker and wrong about the rest. How you like your session laid out and what you like your agent told are properties of *you*, and a design where the answer lives only in a checked-in per-workspace file gets that backwards: it makes the thing that should follow you between workspaces the one thing that cannot. The cost of keeping it would have been a per-workspace file edit for every workspace you open, forever, to say the same thing each time. So `source:`, `context:`, `close:` and `provision:` are now keys of a workflow bundle, resolvable from the bundle, either config file, or an item, per key. The workspace file still wins over the user file, which is the ordering this page's argument actually wanted.
+
+One piece of the original scope survives intact and is now a rule rather than a habit: **`source` is workspace-only**, and an item that sets it is refused. Not because a workspace owns the tracker, but because an item cannot have an opinion about where items come from: it does not exist until `source` has run.
+
+**Session layout: deferred as "not hook-shaped", now built as a key.** The observation was correct and the conclusion was not. Layout is a list in config rather than a script, so it does not fit the hook shape, but that is an argument for it not being a hook, not an argument for leaving it compiled in. It is also the single most visible "that is not how I work" surface wisp has, the fix is declarative, and it needs no new execution contract, which makes it the *cheapest* of the lot rather than the one to do last. Waiting for the three hooks here to be real would have cost the highest-payoff change the longest wait, for no information it would have produced.
+
+A third thing moved but is not a reversal: `status.needs_input`, the pane string that decides the `?` state. It was not on this page at all, and it belongs in the same bundle for the same reason. Matching a literal line out of Claude Code's permission dialog means anyone driving aider, codex or a bare shell has a state that can never fire.
+
+The order of work above was also superseded. It is ordered by "who can use wisp at all", which puts `source:` first; [Workflows](workflows.md) is ordered by "whose workflow is it", which puts the bundle and resolution first so no hook has to be retrofitted onto them afterwards. Both are defensible and the second one shipped.
 
 ---
 

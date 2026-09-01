@@ -134,8 +134,18 @@ func (c Config) itemInVault(name string) bool {
 
 // WorktreeFor is the checkout path for one repo of one item. It is a cache: deleting it is
 // safe, and reopening the item recreates it from the branch, which is the durable state.
-func (c Config) WorktreeFor(repo string, item Item) string {
-	return filepath.Join(c.WorktreeRoot(), repo+"--"+item.Slug())
+//
+// The directory name comes from the workflow's `worktree:` template, which is why the workflow
+// is a parameter rather than something resolved in here: the caller almost always has one
+// already, and resolving it per repo would read the same three files in a loop.
+func (c Config) WorktreeFor(w Workflow, repo string, item Item) string {
+	name := w.WorktreeName(item, repo)
+	// A template that expanded to nothing, or to something with a separator in it, would put the
+	// checkout somewhere `worktrees:` does not reach. Fall back rather than write outside it.
+	if name == "" || strings.ContainsRune(name, filepath.Separator) || name == "." || name == ".." {
+		name = repo + "--" + item.Slug()
+	}
+	return filepath.Join(c.WorktreeRoot(), name)
 }
 
 func exists(path string) bool {

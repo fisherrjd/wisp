@@ -25,7 +25,7 @@ func Run(cfg wisp.Config) error {
 	}
 	switch {
 	case fm.chosen != nil:
-		return cfg.Open(*fm.chosen, func(msg string) { fmt.Printf("--- %s\n", msg) })
+		return cfg.Open(*fm.chosen, "", func(msg string) { fmt.Printf("--- %s\n", msg) })
 	case fm.hop != "":
 		// The home session's loop redraws the picker behind us as soon as this returns, so the
 		// workspace we left is still warm when we hop back to it.
@@ -133,7 +133,7 @@ func loadRemote(cfg wisp.Config, refresh bool) tea.Cmd {
 		if refresh {
 			_ = cfg.RefreshCache()
 		}
-		items, err := cfg.GitLabItems()
+		items, err := cfg.RemoteItems()
 		return remoteMsg{items: items, err: err}
 	}
 }

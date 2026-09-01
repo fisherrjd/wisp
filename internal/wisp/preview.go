@@ -27,11 +27,12 @@ func (c Config) Preview(item Item, width int) string {
 	}
 
 	var b strings.Builder
-	if entries, err := c.Manifest(item); err == nil && len(entries) > 0 {
+	w := c.WorkflowFor(item, "")
+	if entries, err := c.Manifest(w, item); err == nil && len(entries) > 0 {
 		b.WriteString("repos\n\n")
 		for _, e := range entries {
 			mark := "needs provisioning"
-			if isDir(c.WorktreeFor(e.Repo, item)) {
+			if isDir(c.WorktreeFor(w, e.Repo, item)) {
 				mark = "worktree ready"
 			}
 			fmt.Fprintf(&b, "  %s\n    %s  %s\n", e.Repo, e.Branch, mark)

@@ -150,7 +150,9 @@ func run(args []string) error {
 		if err := cfg.RequireItem(it); err != nil {
 			return err
 		}
-		return cfg.Open(it, func(msg string) {
+		// --workflow is the one-shot: it sits above every configured layer and is written
+		// nowhere, for "open this one differently, just this once".
+		return cfg.Open(it, flagStr(args, "--workflow", ""), func(msg string) {
 			fmt.Fprintf(os.Stderr, "--- %s\n", msg)
 		})
 
@@ -344,7 +346,7 @@ func emitBoard(cfg wisp.Config, gitlab bool) error {
 			out.Note = err.Error()
 		}
 		if gitlab {
-			remote, err := cfg.GitLabItems()
+			remote, err := cfg.RemoteItems()
 			if err != nil && out.Note == "" {
 				out.Note = err.Error()
 			}

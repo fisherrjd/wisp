@@ -51,7 +51,7 @@ type Board struct {
 // most, the sessions already running, was available immediately.
 func (c Config) Local() (Board, error) {
 	all := AllSessions()
-	resolveStates(all)
+	resolveStates(all, c.NeedsInputMarker())
 	// One probe per remote workspace, reused for both the list and the header, because for the
 	// workspace you are actually in they answer the same question and a second round trip would
 	// be pure latency.
@@ -130,7 +130,7 @@ func (c Config) Items(all []Session) ([]Item, error) {
 // BoardItems is Items with the session scan done for you, for callers outside a picker load.
 func (c Config) BoardItems() ([]Item, error) {
 	all := AllSessions()
-	resolveStates(all)
+	resolveStates(all, c.NeedsInputMarker())
 	return c.Items(all)
 }
 
@@ -145,7 +145,7 @@ func sessionItems(sessions []Session) []Item {
 // Peers is the workspace tallies on their own, for `wisp ws`.
 func (c Config) Peers() []Peer {
 	all := AllSessions()
-	resolveStates(all)
+	resolveStates(all, c.NeedsInputMarker())
 	// Overlapped for the same reason Local overlaps them: two independent rounds of ssh, and
 	// running them in turn makes `wisp ws` and every ring hop wait the sum of both.
 	hosts, ready := c.probeHostsAsync()
@@ -160,7 +160,7 @@ func (c Config) Peers() []Peer {
 // two of them holding each other enumerate forever, the same trap `board` has a guard for.
 func (c Config) LocalPeers() []Peer {
 	all := AllSessions()
-	resolveStates(all)
+	resolveStates(all, c.NeedsInputMarker())
 	// Registered workspaces only. The one the current directory happens to resolve to is not
 	// something this machine was told to hold, and reporting it would put a row in the asking
 	// machine's ring for wherever an ssh session happened to land.

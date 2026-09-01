@@ -68,6 +68,22 @@ type Config struct {
 	// into Workspaces at load, so both spellings behave identically from there on.
 	DefaultWorkspace string `yaml:"workspace"`
 
+	// Workflow names the bundle this workspace is bound to. A bare name is one of yours under
+	// ~/.config/wisp/workflows, a leading ./ is one this workspace ships. Empty is the built-in.
+	//
+	// The key is read from both config files and overlaid normally, so the user config is the
+	// default binding for workspaces that do not state one, exactly like `default:` for
+	// workspaces themselves.
+	Workflow string `yaml:"workflow"`
+
+	// Accepted records which workspace-supplied workflows have been read and allowed to run,
+	// keyed by workspace and address, valued by a hash of the manifest.
+	//
+	// User config only, and for a sharper reason than the workspace set: this is the record that
+	// decides whether a checked-in workflow may execute at all, and a workspace that could write
+	// it would be accepting itself.
+	Accepted map[string]string `yaml:"accepted"`
+
 	Program   string `yaml:"program"`
 	Install   bool   `yaml:"install"`
 	Vault     string `yaml:"vault"`
@@ -76,12 +92,16 @@ type Config struct {
 	GitLab    GitLab `yaml:"gitlab"`
 }
 
+// defaults are the keys that are wisp's rather than a workflow's: where the vault and the
+// worktrees sit, and how long the remote cache lives.
+//
+// Program and Provision are deliberately absent. They are workflow keys now, supplied by the
+// built-in workflow, and defaulting them here as well would make "" mean both "unset" and
+// "claude", which is exactly the distinction per-key resolution needs.
 func defaults() Config {
 	return Config{
-		Program:   "claude",
 		Vault:     "working_items",
 		Worktrees: ".worktrees",
-		Provision: ".claude/scripts/provision-worktree.sh",
 		GitLab:    GitLab{CacheTTLMin: 15},
 	}
 }
@@ -180,6 +200,10 @@ func Load(name string) (Config, error) {
 	// file's entries are already in the map the reference points at.
 	set, hosts := maps.Clone(c.Workspaces), maps.Clone(c.Hosts)
 	def, name, explicit := c.Default, c.Name, c.explicit
+	// The accept record travels with the workspace set for a sharper reason than either: it is
+	// what decides whether this workspace's own checked-in workflow is allowed to run, and a
+	// workspace that could write it would be accepting itself.
+	accepted := maps.Clone(c.Accepted)
 
 	// A parse error in the workspace file is worth reporting: it is the file the user just
 	// edited, and silently falling back to defaults would look like wisp ignoring them.
@@ -190,6 +214,7 @@ func Load(name string) (Config, error) {
 	// them add, rename or hide another, which is the same thing the workspace set is protected
 	// from and for the same reason.
 	c.Workspaces, c.Hosts, c.Default, c.Name, c.explicit = set, hosts, def, name, explicit
+	c.Accepted = accepted
 
 	if v := os.Getenv("WISP_PROGRAM"); v != "" {
 		c.Program = v

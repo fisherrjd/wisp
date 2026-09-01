@@ -203,9 +203,18 @@ func (c Config) cachedResponse() ([]byte, error) {
 }
 
 // RefreshCache drops the cache so the next read re-queries. Bound to ctrl-r in the picker.
+//
+// Both caches, and then whichever source is actually configured. ctrl-r has to mean the same
+// thing whatever the workspace's source is, which is the reason caching stayed wisp's job rather
+// than moving into each hook.
 func (c Config) RefreshCache() error {
-	if err := os.Remove(c.CachePath()); err != nil && !os.IsNotExist(err) {
-		return err
+	for _, p := range []string{c.CachePath(), c.SourceCachePath()} {
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	if w := c.WorkflowFor(Item{}, ""); w.Hooks.Source != "" {
+		return c.refreshSource(w)
 	}
 	return c.refreshCache()
 }
