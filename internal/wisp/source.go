@@ -153,7 +153,12 @@ func (c Config) ResolveURL(url string) (Item, error) {
 	}
 	out, err := c.runHookArgs(w.Hooks.Source, "--url", url)
 	if err != nil {
-		return Item{}, err
+		// A non-zero exit here is the source saying it does not recognise this link, which is a
+		// normal state rather than a failure: not every tracker can resolve every URL. Said in
+		// wisp's own words, because "exit status 1" is not something anyone can act on, and it
+		// names the script so the next place to look is obvious.
+		return Item{}, fmt.Errorf("%s did not recognise that link (%v)\n\nname the item yourself instead:\n  wisp new <repo>/<name>",
+			shortPath(w.Hooks.Source), err)
 	}
 	for _, line := range strings.Split(string(out), "\n") {
 		line = strings.TrimSpace(line)

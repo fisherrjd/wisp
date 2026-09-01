@@ -13,7 +13,7 @@ wisp turns a unit of work into a running workspace: it finds the item (locally o
 ● live  ? needs input  ○ folder  + gitlab     enter open  ctrl-n new
 ```
 
-**Documentation:** [Commands](docs/commands.md) · [Configuration](docs/configuration.md) · [The picker](docs/picker.md) · [Sessions and worktrees](docs/sessions.md) · [Items](docs/items.md) · [Remote workspaces](docs/remote-workspaces.md) · [Hooks](docs/hooks.md) *(design)*
+**Documentation:** [Commands](docs/commands.md) · [Configuration](docs/configuration.md) · [The picker](docs/picker.md) · [Sessions and worktrees](docs/sessions.md) · [Items](docs/items.md) · [Remote workspaces](docs/remote-workspaces.md) · [Workflows](docs/workflows.md) · [Hooks](docs/hooks.md) *(the reasoning behind them)*
 
 ## The model
 
@@ -147,6 +147,7 @@ With no `notes.md`, the preview falls back to the first `.md` in the item folder
 `<workspace>/.wisp.yaml` wins over `~/.config/wisp/config.yaml`, and the environment wins over both.
 
 ```yaml
+workflow: default                        # the bundle below supplies the rest
 program: claude                          # runs in the agent window (default: claude)
 install: false                           # install deps when provisioning
 vault: working_items                     # where items live
@@ -161,6 +162,8 @@ gitlab:
   repo_pattern: '/subgroup/([^/]+)/-/'
   cache_ttl_min: 15
 ```
+
+A **workflow** is a directory holding a `workflow.yaml` and its scripts, and it supplies `program`, the branch and worktree templates, the session layout and the hooks. A bare name is one of yours under `~/.config/wisp/workflows/`, `./name` is one the workspace ships, and every key a bundle does not set falls back to the built-in, so a workflow that changes one thing is four lines long. `wisp open <item> --workflow <name>` uses another one just once. [docs/workflows.md](docs/workflows.md) has the addressing rule and the five layers.
 
 The user config, and only the user config, owns `workspaces:`, `hosts:` and `default:`. A workspace does not get to name its neighbours or its machines.
 

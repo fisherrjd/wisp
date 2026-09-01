@@ -145,7 +145,7 @@ var ErrNoWorkflow = errors.New("no such workflow")
 // The one shadowing left is yours over the built-in: a directory named `default` in your own
 // workflows directory wins, because it is your directory and you meant it.
 func (c Config) WorkflowDir(addr string) (string, error) {
-	addr = strings.TrimSpace(addr)
+	addr = normalizeAddr(addr)
 	switch {
 	case addr == "":
 		return "", ErrNoWorkflow
@@ -182,7 +182,18 @@ func safeWorkflowName(name string) bool {
 
 // IsWorkspaceWorkflow reports whether an address points into the workspace, which is the case
 // that needs accepting before anything of it runs.
-func IsWorkspaceWorkflow(addr string) bool { return strings.HasPrefix(addr, "./") }
+//
+// Trimmed, and that is not tidiness. WorkflowDir trims before resolving, so " ./ship" is a
+// workspace bundle as far as the filesystem is concerned; a gate that did not trim answered
+// "no" for the same string and skipped the acceptance check entirely. One leading space in a
+// checked-in .wisp.yaml was a workflow running unaccepted. Any two functions that decide what
+// an address means have to normalise it identically, so both call this.
+func IsWorkspaceWorkflow(addr string) bool {
+	return strings.HasPrefix(normalizeAddr(addr), "./")
+}
+
+// normalizeAddr is the one definition of what an address is. Every consumer goes through it.
+func normalizeAddr(addr string) string { return strings.TrimSpace(addr) }
 
 // LoadWorkflowFile reads one bundle's manifest. Everything it does not set stays zero, so the
 // caller can tell "said nothing" from "said this".
@@ -381,21 +392,24 @@ func (c Config) WorkflowFor(item Item, oneShot string) Workflow {
 		{itemOv.Workflow, "orchestration.md"},
 		{oneShot, "--workflow"},
 	} {
-		if cand.v != "" {
-			addr, addrFrom = cand.v, cand.src
+		if v := normalizeAddr(cand.v); v != "" {
+			addr, addrFrom = v, cand.src
 		}
 	}
 
+	var bundle Workflow
+	var bundleDir string
+	loaded := false
 	if addr != "" {
 		w.Addr, w.From["workflow"] = addr, addrFrom
-		if bundle, dir, err := c.loadBundle(addr); err != nil {
+		b, dir, err := c.loadBundle(addr)
+		if err != nil {
 			if err.Error() != "" {
 				w.Notes = append(w.Notes, err.Error())
 			}
 		} else {
+			bundle, bundleDir, loaded = b, dir, true
 			w.Dir = dir
-			label := addr
-			w.overlay(label, bundle, dir)
 			if bundle.Name != "" {
 				w.Name = bundle.Name
 			}
@@ -403,6 +417,11 @@ func (c Config) WorkflowFor(item Item, oneShot string) Workflow {
 				w.Description = bundle.Description
 			}
 		}
+	}
+	// A bundle named by a config file is layer 2, under the keys that file sets beside it: that
+	// is what makes "mostly this workflow, but this one key differently" work.
+	if loaded && addrFrom != "--workflow" {
+		w.overlay(addr, bundle, bundleDir)
 	}
 
 	w.overlay(shortPath(UserConfigPath()), user.workflow(), c.Workspace)
@@ -416,6 +435,14 @@ func (c Config) WorkflowFor(item Item, oneShot string) Workflow {
 		iw.Hooks.Source = ""
 	}
 	w.overlay("orchestration.md", iw, c.Workspace)
+
+	// A bundle named on the command line goes on top instead, because a one-shot is an
+	// instruction rather than a default. `wisp open x --workflow review` that still ran the
+	// program from .wisp.yaml would be doing most of what you asked and none of what you meant,
+	// and there would be nothing on screen saying which half it kept.
+	if loaded && addrFrom == "--workflow" {
+		w.overlay("--workflow "+addr, bundle, bundleDir)
+	}
 
 	// WISP_PROGRAM has always been the last word on the agent command, and stays so.
 	if v := os.Getenv("WISP_PROGRAM"); v != "" {
@@ -464,6 +491,9 @@ var errSilentBuiltin = errors.New("")
 
 // validate reports what wisp will ignore, so a typo is visible rather than merely ineffective.
 func (w *Workflow) validate() []string {
+	if w.From == nil {
+		w.From = map[string]string{}
+	}
 	var notes []string
 	if strings.Contains(w.Worktree, "/") {
 		notes = append(notes, fmt.Sprintf("worktree %q contains a /: it names a directory inside `worktrees:`, not a path", w.Worktree))

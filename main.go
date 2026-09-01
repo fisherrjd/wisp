@@ -44,6 +44,9 @@ usage:
                           joins the ring
   wisp host rm <name>     forget a machine and everything it holds
   wisp kill <item>        kill an item's session
+  wisp workflow [<item>]  the workflow in effect, key by key, and where each
+                          key came from. list, show, init, use, edit and
+                          accept live under it
   wisp repos              list workspace repos
   wisp version            print the version
 
@@ -239,6 +242,12 @@ func run(args []string) error {
 	// making a directory somewhere.
 	case "host", "hosts":
 		return hostCommand(cfg, args[1:])
+
+	// The workflow is resolved per key across five layers, which is what makes a four line
+	// workflow useful and also what makes "why did my session open like that" unanswerable from
+	// any one file. This command is where that is readable.
+	case "workflow", "wf":
+		return cfg.WorkflowCommand(args[1:])
 
 	case "repos":
 		repos, err := cfg.Repos()

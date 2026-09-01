@@ -142,7 +142,9 @@ Both are read and the nested one wins if somebody writes both. A bundle's `workf
 wisp open wisp/1042-retry --workflow review
 ```
 
-Above every configured layer, and **written nowhere**. It is a flag rather than a file precisely because a one-off should leave nothing behind. It does not change what the workspace is bound to and it does not survive the session being killed and reopened.
+It picks the bundle, above every configured layer, and it is **written nowhere**. A flag rather than a file precisely because a one-off should leave nothing behind: it does not change what the workspace is bound to and it does not survive the session being killed and reopened.
+
+It selects the address and nothing else, so the bundle it names is still layer 2. A `program:` written out in your `.wisp.yaml` still wins over the one in the workflow you asked for by hand. That reads oddly for one line and is right for all the others.
 
 ---
 
@@ -247,7 +249,8 @@ A workspace's `.wisp.yaml` is checked in, so `git clone && wisp open` would run 
 The first time wisp is asked for a `./`-addressed workflow it is not loaded. The workspace's keys fall back to the built-in and every command touching the workspace says so:
 
 ```
---- workflow "./team-gitlab" is supplied by this workspace and has not been accepted
+--- workflow "./team-gitlab" is supplied by this workspace and has not been
+    accepted; run `wisp workflow accept ./team-gitlab` after reading it
 ```
 
 Accepting records a SHA-256 of that workflow's `workflow.yaml` in the **user config**, under `accepted:`, keyed by the workspace path and the address together:

@@ -84,11 +84,9 @@ type Config struct {
 	// it would be accepting itself.
 	Accepted map[string]string `yaml:"accepted"`
 
-	Program   string `yaml:"program"`
 	Install   bool   `yaml:"install"`
 	Vault     string `yaml:"vault"`
 	Worktrees string `yaml:"worktrees"`
-	Provision string `yaml:"provision"`
 	GitLab    GitLab `yaml:"gitlab"`
 }
 
@@ -216,9 +214,8 @@ func Load(name string) (Config, error) {
 	c.Workspaces, c.Hosts, c.Default, c.Name, c.explicit = set, hosts, def, name, explicit
 	c.Accepted = accepted
 
-	if v := os.Getenv("WISP_PROGRAM"); v != "" {
-		c.Program = v
-	}
+	// WISP_PROGRAM is applied where the agent command is resolved, in WorkflowFor, so that it
+	// can be reported as the layer it is rather than silently arriving as if a file had set it.
 	if os.Getenv("WISP_INSTALL") != "" {
 		c.Install = true
 	}
@@ -385,9 +382,6 @@ func (c *Config) mergeFile(path string) error {
 
 func (c Config) VaultDir() string     { return filepath.Join(c.Workspace, c.Vault) }
 func (c Config) WorktreeRoot() string { return filepath.Join(c.Workspace, c.Worktrees) }
-func (c Config) ProvisionPath() string {
-	return filepath.Join(c.Workspace, c.Provision)
-}
 
 // CachePath is namespaced by workspace. The bash version used one fixed filename, so pointing
 // WISP_WORKSPACE at a second tree served it the first tree's remote items.
