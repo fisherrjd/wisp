@@ -194,12 +194,17 @@ func (c Config) cachedResponse() ([]byte, error) {
 		age := time.Since(fi.ModTime())
 		fresh = age < time.Duration(c.GitLab.CacheTTLMin)*time.Minute
 	}
-	if !fresh {
-		if err := c.refreshCache(); err != nil && !exists(path) {
-			return nil, err
-		}
+	if fresh {
+		return os.ReadFile(path)
 	}
-	return os.ReadFile(path)
+	refreshErr := c.refreshCache()
+	raw, readErr := os.ReadFile(path)
+	if readErr != nil {
+		return nil, refreshErr
+	}
+	// The stale rows and the reason they are stale. Silently serving an old list is how a broken
+	// query looks exactly like a quiet one.
+	return raw, refreshErr
 }
 
 // RefreshCache drops the cache so the next read re-queries. Bound to ctrl-r in the picker.
@@ -207,16 +212,17 @@ func (c Config) cachedResponse() ([]byte, error) {
 // Both caches, and then whichever source is actually configured. ctrl-r has to mean the same
 // thing whatever the workspace's source is, which is the reason caching stayed wisp's job rather
 // than moving into each hook.
+// Refreshed first, and the old file dropped only if that worked. Deleting up front meant a
+// ctrl-r against a source that had since broken emptied the list outright, which is exactly the
+// state every other path here goes out of its way to avoid.
 func (c Config) RefreshCache() error {
-	for _, p := range []string{c.CachePath(), c.SourceCachePath()} {
-		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
-			return err
-		}
-	}
 	if w := c.WorkflowFor(Item{}, ""); w.Hooks.Source != "" {
 		return c.refreshSource(w)
 	}
-	return c.refreshCache()
+	if err := c.refreshCache(); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (c Config) refreshCache() error {

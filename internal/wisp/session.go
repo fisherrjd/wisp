@@ -2,6 +2,7 @@ package wisp
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // ContextFile is written on open and handed to the agent as its first read. It is regenerated
@@ -158,25 +160,60 @@ func (c Config) runHookArgs(script string, args ...string) ([]byte, error) {
 	return c.runHookIn(script, nil, args...)
 }
 
+// hookTimeout bounds a hook. Generous, because a close hook may be posting to a tracker, and
+// bounded at all because these run where nothing can cancel them: a source hook that hangs takes
+// the picker's remote section with it, and a context hook that hangs takes an open.
+const hookTimeout = 60 * time.Second
+
+// maxHookOutput bounds what a hook can hand back. A context hook's stdout becomes a file and a
+// source hook's becomes the cache, and neither had a ceiling: a runaway script was read whole
+// into memory and then written to disk.
+const maxHookOutput = 8 << 20
+
 func (c Config) runHookIn(script string, stdin []byte, args ...string) ([]byte, error) {
 	if script == "" {
 		return nil, errors.New("no hook")
 	}
-	cmd := exec.Command(script, args...)
+	ctx, cancel := context.WithTimeout(context.Background(), hookTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, script, args...)
 	cmd.Dir = c.Workspace
 	cmd.Env = append(os.Environ(), "WISP_WORKSPACE="+c.Workspace)
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
 	}
 	var out, errBuf bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &out, &errBuf
+	cmd.Stdout, cmd.Stderr = &capped{w: &out, left: maxHookOutput}, &errBuf
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return out.Bytes(), fmt.Errorf("%s: gave up after %s", filepath.Base(script), hookTimeout)
+		}
 		if line := lastLine(errBuf.String()); line != "" {
 			return out.Bytes(), fmt.Errorf("%s: %s", filepath.Base(script), line)
 		}
 		return out.Bytes(), fmt.Errorf("%s: %w", filepath.Base(script), err)
 	}
 	return out.Bytes(), nil
+}
+
+// capped is a writer that stops at a limit rather than growing without one. The hook is left to
+// finish writing into the void rather than being killed, so a script that prints too much is
+// truncated instead of failing, which is the same bargain everything else here makes.
+type capped struct {
+	w    *bytes.Buffer
+	left int
+}
+
+func (c *capped) Write(p []byte) (int, error) {
+	if c.left <= 0 {
+		return len(p), nil
+	}
+	if len(p) > c.left {
+		p = p[:c.left]
+	}
+	n, err := c.w.Write(p)
+	c.left -= n
+	return len(p), err
 }
 
 // EnsureWorktrees reprovisions anything the manifest declares but disk lacks. Existing
@@ -397,6 +434,10 @@ func (c Config) expandLayout(w Workflow, item Item, entries []Entry, ctx string)
 		"program":   w.Program,
 		"prompt":    prompt,
 		"wisp":      self,
+		// The provisioning half runs as a separate process and re-resolves the workflow, so a
+		// one-shot has to be handed on or the two halves disagree about where the worktree goes.
+		// Empty for every configured layer, which is the common case.
+		"flags": oneShotFlag(w),
 	}
 	dirFor := func(kind, worktree string) string {
 		switch kind {
@@ -415,6 +456,26 @@ func (c Config) expandLayout(w Workflow, item Item, entries []Entry, ctx string)
 	}
 
 	var out []pane
+	taken := map[string]bool{}
+	// Names are truncated to what tmux takes, so two repos sharing the first twelve characters
+	// collide. Deduped here rather than at creation, because addWorktreeWindows also skips on
+	// name and would otherwise decide the second repo already had its window.
+	unique := func(name string) string {
+		if !taken[name] {
+			taken[name] = true
+			return name
+		}
+		for n := 2; n < 100; n++ {
+			suffix := fmt.Sprintf("~%d", n)
+			cut := min(len(name), 12-len(suffix))
+			cand := name[:cut] + suffix
+			if !taken[cand] {
+				taken[cand] = true
+				return cand
+			}
+		}
+		return name
+	}
 	for _, win := range w.Layout {
 		if win.When == "provisioning" && !provisioning {
 			continue
@@ -428,7 +489,7 @@ func (c Config) expandLayout(w Workflow, item Item, entries []Entry, ctx string)
 				vars := maps.Clone(base)
 				vars["repo"], vars["branch"], vars["base"], vars["worktree"] = e.Repo, e.Branch, e.Base, wt
 				out = append(out, pane{
-					name:  windowName(Expand(win.Window, vars)),
+					name:  unique(windowName(Expand(win.Window, vars))),
 					dir:   dirFor(win.Cwd, wt),
 					run:   Expand(win.Run, shellVars(vars)),
 					focus: win.Focus,
@@ -437,13 +498,23 @@ func (c Config) expandLayout(w Workflow, item Item, entries []Entry, ctx string)
 			continue
 		}
 		out = append(out, pane{
-			name:  windowName(Expand(win.Window, base)),
+			name:  unique(windowName(Expand(win.Window, base))),
 			dir:   dirFor(win.Cwd, ""),
 			run:   Expand(win.Run, shellVars(base)),
 			focus: win.Focus,
 		})
 	}
 	return out
+}
+
+// oneShotFlag repeats a --workflow onto a command line wisp runs for itself. A one-shot is
+// written nowhere, which is the point of it, so the only way the background half learns about it
+// is being told on the way past.
+func oneShotFlag(w Workflow) string {
+	if w.From["workflow"] != "--workflow" || w.Addr == "" {
+		return ""
+	}
+	return "--workflow " + shellQuote(w.Addr)
 }
 
 // shellVars is the substitution set for `run:`, which is handed to /bin/sh.
@@ -459,7 +530,9 @@ func (c Config) expandLayout(w Workflow, item Item, entries []Entry, ctx string)
 func shellVars(vars map[string]string) map[string]string {
 	out := make(map[string]string, len(vars))
 	for k, v := range vars {
-		if k == "program" {
+		// program is a command line rather than a path, and flags is one wisp assembled itself
+		// with its own quoting already applied. Everything else is data going into a shell.
+		if k == "program" || k == "flags" {
 			out[k] = v
 			continue
 		}
@@ -568,8 +641,10 @@ func (c Config) addWorktreeWindows(w Workflow, session string, item Item, entrie
 // ProvisionItem is the background half of Open: build the missing worktrees, then add their windows
 // and refresh the context file so it no longer says "still provisioning". Run in its own tmux
 // window by Open; also useful by hand after deleting a worktree.
-func (c Config) ProvisionItem(item Item, log func(string)) error {
-	w := c.WorkflowFor(item, "")
+func (c Config) ProvisionItem(item Item, oneShot string, log func(string)) error {
+	// The same one-shot the session was opened with. Without it this half re-resolves from the
+	// written-down layers and builds the worktree somewhere the session is not looking.
+	w := c.WorkflowFor(item, oneShot)
 	for _, note := range w.Notes {
 		log(note)
 	}

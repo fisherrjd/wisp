@@ -354,3 +354,76 @@ func TestHookFailureCarriesItsLastStderrLine(t *testing.T) {
 		t.Errorf("want the last stderr line, got %v", err)
 	}
 }
+
+// Two repos whose names share the first twelve characters truncate to the same window, and
+// addWorktreeWindows skips on name, so the second repo got no window at all and nothing said so.
+func TestWindowNamesAreUnique(t *testing.T) {
+	c := hookWorkspace(t, "repo/1-thing")
+	item := Item{Name: "repo/1-thing"}
+	w := c.WorkflowFor(item, "")
+	entries := []Entry{{Repo: "platform-service-alpha"}, {Repo: "platform-service-beta"}}
+	for _, e := range entries {
+		if err := os.MkdirAll(c.WorktreeFor(w, e.Repo, item), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seen := map[string]bool{}
+	for _, p := range c.expandLayout(w, item, entries, "") {
+		if seen[p.name] {
+			t.Errorf("two windows named %q; the second repo would never get one", p.name)
+		}
+		seen[p.name] = true
+	}
+	if len(seen) != 3 {
+		t.Errorf("got %d windows, want agent plus one per worktree: %v", len(seen), seen)
+	}
+}
+
+// A hook that never returns must not take the picker, or an open, with it.
+func TestHooksAreBounded(t *testing.T) {
+	c := hookWorkspace(t, "repo/1-thing")
+	// Far below hookTimeout, which is a minute: the point is the bound exists and is honoured,
+	// not how long it is.
+	big := script(t, t.TempDir(), "loud.sh", "yes hello | head -c 20000000\n")
+	out, err := c.runHook(big, nil)
+	if err != nil {
+		t.Fatalf("a noisy hook should be truncated, not failed: %v", err)
+	}
+	if len(out) > maxHookOutput {
+		t.Errorf("hook output was %d bytes, want it capped at %d", len(out), maxHookOutput)
+	}
+}
+
+// A one-shot is written nowhere, so the provisioning half only learns about it by being told on
+// the way past. Without that the two halves build worktrees in different places.
+func TestOneShotIsHandedToTheProvisionWindow(t *testing.T) {
+	c := hookWorkspace(t, "repo/1-thing")
+	item := Item{Name: "repo/1-thing"}
+	dir := filepath.Join(t.TempDir(), "xdg", "wisp", "workflows", "review")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", filepath.Dir(filepath.Dir(dir)))
+	if err := os.WriteFile(filepath.Join(dir, WorkflowFile), []byte("name: review\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	w := c.WorkflowFor(item, "review")
+	var provision string
+	for _, p := range c.expandLayout(w, item, []Entry{{Repo: "repo"}}, "") {
+		if p.name == "provision" {
+			provision = p.run
+		}
+	}
+	if !strings.Contains(provision, "--workflow 'review'") {
+		t.Errorf("the provision window does not carry the one-shot:\n%s", provision)
+	}
+
+	// And a configured workflow adds nothing, because there is nothing to hand on.
+	plain := c.WorkflowFor(item, "")
+	for _, p := range c.expandLayout(plain, item, []Entry{{Repo: "repo"}}, "") {
+		if p.name == "provision" && strings.Contains(p.run, "--workflow") {
+			t.Errorf("a configured workflow should not be repeated as a flag: %s", p.run)
+		}
+	}
+}

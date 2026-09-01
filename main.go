@@ -161,9 +161,12 @@ func run(args []string) error {
 
 	case "provision":
 		if len(args) < 2 {
-			return fmt.Errorf("usage: wisp provision <item>")
+			return fmt.Errorf("usage: wisp provision <item> [--workflow <name>]")
 		}
-		err := cfg.ProvisionItem(wisp.Item{Name: args[1]}, func(msg string) { fmt.Printf("--- %s\n", msg) })
+		// --workflow is passed on by the session that started this window, so both halves of an
+		// open resolve the same workflow.
+		err := cfg.ProvisionItem(wisp.Item{Name: args[1]}, flagStr(args, "--workflow", ""),
+			func(msg string) { fmt.Printf("--- %s\n", msg) })
 		if err != nil {
 			// Stay on screen. This runs in its own tmux window, which closes the moment the
 			// command returns, and a failure that vanishes is one nobody can read.

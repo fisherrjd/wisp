@@ -108,7 +108,7 @@ func builtinWorkflow() Workflow {
 		Layout: []Window{
 			{Window: "agent", Cwd: "workspace", Run: "{program} {prompt}", Focus: true},
 			{Window: "{repo}", For: "each-worktree", Cwd: "worktree"},
-			{Window: "provision", When: "provisioning", Cwd: "workspace", Run: "{wisp} provision {item}"},
+			{Window: "provision", When: "provisioning", Cwd: "workspace", Run: "{wisp} provision {flags} {item}"},
 		},
 		Status: Status{NeedsInput: needsInputMarker},
 	}
