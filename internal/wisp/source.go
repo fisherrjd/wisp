@@ -65,11 +65,12 @@ func (c Config) RemoteItems() ([]Item, error) {
 	if w.Hooks.Source == "" {
 		return c.GitLabItems()
 	}
+	// The rows and the reason, not one or the other. cachedSource deliberately hands back stale
+	// rows alongside the error that stopped them being refreshed, and returning early on the
+	// error threw the rows away, which turned "here is an old list, and here is why" back into
+	// the empty-and-annotated list this was supposed to stop being.
 	raw, err := c.cachedSource(w)
-	if err != nil {
-		return nil, err
-	}
-	return c.parseSource(raw), nil
+	return c.parseSource(raw), err
 }
 
 // parseSource reads JSONL, one object per line.

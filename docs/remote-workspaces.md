@@ -1,6 +1,6 @@
 # Remote workspaces
 
-A workspace on another machine, in the same ring as the ones on this one. Wire version 1, as of wisp 0.16.0.
+A workspace on another machine, in the same ring as the ones on this one. Wire version 1, as of wisp 0.17.0.
 
 Workspaces and the hop ring shipped first on purpose: a remote workspace is a workspace with a host, and everything below plugs into machinery that already existed.
 
@@ -73,7 +73,7 @@ Both `board --json` and `ws --json` carry a `wire` integer alongside the version
 
 ```
 eldo runs wisp 0.14.0 speaking wire 0; this one speaks wire 1
-eldo: unreadable board; wisp there is probably older than this one (0.16.0)
+eldo: unreadable board; wisp there is probably older than this one (0.17.0)
 ```
 
 Fields are added without bumping the number when they can be. `ItemJSON.done` is omitted when false, so an older wisp on either end ignores a field it does not know and reads a missing one as not done, which is the behaviour it had before the flag existed.
@@ -134,10 +134,10 @@ The raw failure is `exit status 255`, which is true and useless. Six cases get t
 
 | when | you get |
 |---|---|
-| the far side prints `unknown command` | `wisp on eldo is too old for this (this one is 0.16.0)` |
+| the far side prints `unknown command` | `wisp on eldo is too old for this (this one is 0.17.0)` |
 | exit 127 | `wisp is not on PATH on eldo` |
 | exit 255 | `cannot reach eldo: ssh: connect to host eldo port 22: Operation timed out` |
-| the JSON does not parse | `eldo: unreadable board; wisp there is probably older than this one (0.16.0)` |
+| the JSON does not parse | `eldo: unreadable board; wisp there is probably older than this one (0.17.0)` |
 | the wire number differs | `eldo runs wisp 0.14.0 speaking wire 0; this one speaks wire 1` |
 | anything else non-zero | `eldo: <the last line of stderr>` |
 

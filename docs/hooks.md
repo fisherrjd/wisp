@@ -2,13 +2,35 @@
 
 Status: **built, all four.** A hook is a key in a workflow bundle rather than a loose key in one file, wisp resolves `source:`, `context:`, `close:` and `provision:` to an absolute path across every layer, and it runs each of them at the point described below. [Workflows](workflows.md) is the reference for the bundle, the addressing and the precedence; this page stays because it holds the reasoning that picked the hook shape, and the contracts below are what a hook is actually handed.
 
-Two of its decisions were changed on purpose. Both are marked where they are made, and [What changed, and why](#what-changed-and-why) at the end says what the alternative cost.
+Three of its decisions were changed on purpose. Each is marked where it is made, and [What changed, and why](#what-changed-and-why) at the end says what the alternative cost.
 
 **`source:`, `context:` and `close:` are run the same way**, through one function. The command is the script path, with no shell around it, so the file has to be executable and carry its own `#!` line. Its working directory is the workspace root, never wherever wisp was invoked from, and `WISP_WORKSPACE` is set to the same path. stdout is captured, because for all three it is the answer. stderr is captured rather than inherited, and on a non-zero exit its **last line** becomes what the hook gets to say, prefixed with the script's basename: one line, because it goes somewhere with room for one.
 
-`provision:` is the odd one, and it is odd because it is older than the rest. It is invoked directly rather than through that function: same working directory, but **no `WISP_WORKSPACE`**, a fixed argument list instead of stdin, and stdout and stderr inherited rather than captured, because it runs in a window of its own where a live build log is the point. A failure is logged to that window and the other repos are still attempted, rather than the whole open being abandoned. Do not write a `provision` script that reads `WISP_WORKSPACE`; it gets `<repo-path>` as its first argument instead.
+`provision:` is the odd one, and it is odd because it is older than the rest. It is invoked directly rather than through that function: same working directory, but **no `WISP_WORKSPACE`**, a fixed argument list instead of stdin, and neither stream captured, because it runs in a window of its own where a live build log is the point. Both of its streams go to wisp's stderr, which is that window. A failure is logged there and the other repos are still attempted, rather than the whole open being abandoned. Do not write a `provision` script that reads `WISP_WORKSPACE`; it gets `<repo-path>` as its first argument instead.
 
-**There is no timeout on any of them.** wisp waits for the process, with no deadline and nothing to interrupt it but `ctrl-c`. That is a deliberate omission rather than an oversight: a deadline wisp picked would kill a slow-but-working tracker query on a bad network, and a `source` hook that is merely slow is a much more likely thing than one that hangs. The cost is real and is yours to carry: a `source` hook that never returns hangs the picker's refresh, and a `close` hook that never returns sits between `ctrl-d` and the row disappearing.
+## What a hook is allowed to cost
+
+**60 seconds, and 8 MB on stdout.** Both apply to `source:`, `context:` and `close:`, the three that go through the shared runner. `provision:` is outside both, for the reason above: it runs in its own window, a cold nix build is a normal thing for it to be doing, and there is a person watching it.
+
+The deadline is generous because a `close` hook may be posting to a tracker over a bad network, and it exists at all because these three run where nothing can cancel them. A `source` hook that hangs takes the picker's refresh with it, and a `context` hook that hangs takes an open. Neither has a `ctrl-c` reaching it. That is a change of mind from the paragraph this replaced, which argued for no deadline on the grounds that killing a slow-but-working query is worse than a wait you can see. It is worse; a wait you cannot see, in a UI with no way to interrupt it, is worse still.
+
+The hook is killed and the failure names the bound:
+
+```
+source: items.sh: gave up after 1m0s
+```
+
+**Two edges worth knowing, because neither is what the numbers suggest.**
+
+The deadline kills the hook and not its children. A hook that backgrounds something, or that runs a long command without `exec`, leaves a process holding the pipe wisp is reading, and wisp waits for that pipe to close. A hook whose script ends in `sleep 90` reports `gave up after 1m0s` and returns after ninety seconds; the same script written `exec sleep 90` returns after sixty. If a hook must outlive its own answer, detach it properly and close its output.
+
+The 8 MB ceiling ends the run rather than truncating it. Crossing it closes wisp's end of the pipe, the hook takes a `SIGPIPE`, and what surfaces is a failure with no rows kept:
+
+```
+source: items.sh: signal: broken pipe
+```
+
+Under the ceiling everything is normal. A source listing tens of thousands of rows is well inside it; this is a bound on a runaway script, not a budget to work against.
 
 ---
 
@@ -103,9 +125,13 @@ name the item yourself instead:
 
 ### What wisp keeps
 
-Caching stays wisp's job. The hook is called when the cache is older than `gitlab.cache_ttl_min` or when `ctrl-r` drops it, exactly as the GitLab query is. A hook that wants to be cheap can be cheap; a hook that wants to be slow does not have to think about it. Moving the TTL into every hook would make `ctrl-r` mean something different for each one.
+Caching stays wisp's job. The hook is called when the cache is older than `cache_ttl_min` or when `ctrl-r` re-asks, exactly as the GitLab query is. A hook that wants to be cheap can be cheap; a hook that wants to be slow does not have to think about it. Moving the TTL into every hook would make `ctrl-r` mean something different for each one.
 
-The cache is a separate file from the GitLab one, namespaced by workspace the same way, so switching a workspace from one to the other cannot serve the other's rows out of a warm cache. That the TTL is still spelled `gitlab.cache_ttl_min` is a leftover, and one of the places `gitlab.*` has not yet stopped being a top-level concern.
+**The TTL is a top-level key now, not a GitLab one.** `cache_ttl_min` times whichever source a workspace has, which is what it was always doing; `gitlab.cache_ttl_min` is still read as the older spelling of the same thing, and is what answers when the neutral key is not written at all. Written and zero is a different answer from not written: `cache_ttl_min: 0` means "ask every time", the same as the older spelling always did.
+
+The cache is a separate file from the GitLab one, and is keyed on the **hook** as well as the workspace. Both halves of that matter. Separate, so switching a workspace between the two does not serve one's rows out of the other's warm cache. Keyed on the hook, because on the workspace alone, changing `source:` served the *previous* hook's rows until the TTL ran out, which is the same "an empty source and a broken one look identical" problem wearing different clothes.
+
+`ctrl-r` re-asks and only then replaces the file. It does not delete the cache first: deleting up front meant a `ctrl-r` against a source that had since broken emptied the list outright, which is exactly the state everything else here goes out of its way to avoid.
 
 Merging stays wisp's job too. Items from the hook arrive at `StateRemote`, the lowest rung, so a live session or a vault folder still wins and a hand-chosen local slug still beats the name the hook produced. Nothing about identity changes.
 
@@ -117,7 +143,11 @@ A non-zero exit is a **state, not an exception**: the local items still paint, a
 source: items.sh: curl: (6) Could not resolve host: gitlab.example.com
 ```
 
-An empty source and a broken one look identical otherwise, and the silent version of that already cost one real debugging session. A refresh that fails while a cache exists falls back to the stale cache rather than emptying the list, which is the same bargain the GitLab source has always made.
+An empty source and a broken one look identical otherwise, and the silent version of that already cost one real debugging session.
+
+**What a failed refresh costs the list, exactly.** Inside the TTL nothing is asked at all, so a source that broke since the last refresh is invisible until the TTL runs out and the rows keep painting. Once the TTL has passed, the hook is asked, and if it fails the reason above is what you get **and the remote rows are dropped for that repaint**: the `+` section empties and the message says why. Local rows, sessions and vault folders are untouched, so the picker is still a list of your work.
+
+That is not the bargain the layer underneath was written for. The cache layer hands its caller the stale rows *and* the reason, on purpose, so that a broken source annotates a list rather than emptying one. Both callers, the source hook's and GitLab's, then return on the error and throw the rows away. The reason survives and the rows do not, which is half of the intended behaviour: better than the silent stale list it replaced, and not yet the annotated one it is aiming at. Written down here rather than left as a surprise, because [what would make this wrong](#what-would-make-each-one-wrong) names exactly this.
 
 ### The fallback
 
@@ -259,11 +289,11 @@ It is the one that changes who can use wisp. It is self-contained: one function 
 
 ### What would make each one wrong
 
-That list of three is the acceptance test, and it outlived the order it was written for. All three hold in what shipped.
+That list of three is the acceptance test, and it outlived the order it was written for. Two of the three hold in what shipped.
 
-- **`source:`** if the failure path empties the list instead of annotating it. The whole value of the GitLab source's current design is that a broken query and an empty one look different.
-- **`context:`** if a broken hook stops a session opening. Falling back is not a compromise, it is the requirement.
-- **`close:`** if the refusal is silent, or if the flag gets written before the hook runs.
+- **`source:`** if the failure path empties the list instead of annotating it. The whole value of the GitLab source's current design is that a broken query and an empty one look different. **This one is half met.** The list is annotated, which is the part that matters most, and the remote rows are also dropped for that repaint rather than served stale. [Failure](#failure) above has the detail and says where the two halves come apart.
+- **`context:`** if a broken hook stops a session opening. Falling back is not a compromise, it is the requirement. Held.
+- **`close:`** if the refusal is silent, or if the flag gets written before the hook runs. Held: the hook runs first and its last line of stderr is the message.
 
 The place the same standard is not applied is one layer up: a `source` hook silently switches the built-in GitLab source off, and a workspace with `gitlab.group` filled in gets no word that its query has stopped running. It is named under [The fallback](#the-fallback) rather than quietly left out.
 
@@ -275,18 +305,20 @@ Four decisions on this page were kept without change, and they are the load-bear
 
 - **Name a contract, shell out, stay out of it.** A hook is a program, not a Go plugin, not a shared object, not a DSL in YAML.
 - **Identity is not configurable.** `Item.Key()` and the four-word slug cut stay compiled in.
-- **Failure is a state, not an exception.** A broken source annotates the list and never empties it; a broken context hook falls back to the built-in briefing rather than refusing to open a session. That discipline generalised: a workflow that will not load now costs you its keys rather than your session.
+- **Failure is a state, not an exception.** A broken source annotates the list rather than raising, and a broken context hook falls back to the built-in briefing rather than refusing to open a session. That discipline generalised: a workflow that will not load now costs you its keys rather than your session, and a manifest key wisp does not recognise is reported instead of ignored. The one place it is not fully honoured is the source's own rows, which a failed refresh drops as well as annotating; [Failure](#failure) says so rather than leaving it implied.
 - **Remote workspaces need no design.** Hooks run on the machine that owns the workspace, because that machine runs its own load and answers `board --json` for itself.
 
-Two were changed.
+Three were changed.
 
 **Scope: hooks are no longer workspace-only.** The argument above is right about the tracker and wrong about the rest. How you like your session laid out and what you like your agent told are properties of *you*, and a design where the answer lives only in a checked-in per-workspace file gets that backwards: it makes the thing that should follow you between workspaces the one thing that cannot. The cost of keeping it would have been a per-workspace file edit for every workspace you open, forever, to say the same thing each time. So `source:`, `context:`, `close:` and `provision:` are now keys of a workflow bundle, resolvable from the bundle, either config file, or an item, per key. The workspace file still wins over the user file, which is the ordering this page's argument actually wanted.
 
-One piece of the original scope survives intact and is now a rule rather than a habit: **`source` is workspace-only**, and an item that sets it is refused. Not because a workspace owns the tracker, but because an item cannot have an opinion about where items come from: it does not exist until `source` has run.
+One piece of the original scope survives intact and is now a rule rather than a habit: **`source` is workspace-only**, and an item that sets it is refused. Not because a workspace owns the tracker, but because an item cannot have an opinion about where items come from: it does not exist until `source` has run. `status.needs_input` is refused on an item too, for the different reason that the pane scan asks the workspace once per repaint rather than once per row.
 
 **Session layout: deferred as "not hook-shaped", now built as a key.** The observation was correct and the conclusion was not. Layout is a list in config rather than a script, so it does not fit the hook shape, but that is an argument for it not being a hook, not an argument for leaving it compiled in. It is also the single most visible "that is not how I work" surface wisp has, the fix is declarative, and it needs no new execution contract, which makes it the *cheapest* of the lot rather than the one to do last. Waiting for the three hooks here to be real would have cost the highest-payoff change the longest wait, for no information it would have produced.
 
-A third thing moved but is not a reversal: `status.needs_input`, the pane string that decides the `?` state. It was not on this page at all, and it belongs in the same bundle for the same reason. Matching a literal line out of Claude Code's permission dialog means anyone driving aider, codex or a bare shell has a state that can never fire.
+**No deadline: argued for, then reversed.** This page used to say wisp waits for a hook with no timeout and nothing to interrupt it, on the grounds that a deadline wisp picked would kill a slow-but-working tracker query on a bad network. The premise held and the conclusion did not. The three shared-runner hooks run where nothing can cancel them, so the failure being traded away was not "a wait you can see", it was a picker that never repaints and an open that never opens, with no key to press. Sixty seconds is far outside a working query and well inside a person's patience for a hung one. [What a hook is allowed to cost](#what-a-hook-is-allowed-to-cost) has the numbers and the two places they do not hold.
+
+A further thing moved but is not a reversal: `status.needs_input`, the pane string that decides the `?` state. It was not on this page at all, and it belongs in the same bundle for the same reason. Matching a literal line out of Claude Code's permission dialog means anyone driving aider, codex or a bare shell has a state that can never fire.
 
 The order of work above was also superseded. It is ordered by "who can use wisp at all", which puts `source:` first; [Workflows](workflows.md) is ordered by "whose workflow is it", which puts the bundle and resolution first so no hook has to be retrofitted onto them afterwards. Both are defensible and the second one shipped.
 

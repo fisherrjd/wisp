@@ -157,6 +157,7 @@ install: false                           # install deps when provisioning
 vault: working_items                     # where items live
 worktrees: .worktrees                    # where the worktree cache goes
 provision: .claude/scripts/provision-worktree.sh
+cache_ttl_min: 15                        # how long any source's answer is reused
 gitlab:
   group: your-group/subgroup
   username: you
@@ -164,10 +165,13 @@ gitlab:
   # group, which must be the repo. GitLab nests projects arbitrarily, so there
   # is no generic form for this.
   repo_pattern: '/subgroup/([^/]+)/-/'
-  cache_ttl_min: 15
 ```
 
-A **workflow** is a directory holding a `workflow.yaml` and its scripts, and it supplies `program`, the branch and worktree templates, the session layout and four hooks: where items come from, what the agent is told, what closing an item out does, and how a worktree is built. A bare name is one of yours under `~/.config/wisp/workflows/`, `./name` is one the workspace ships (read and accepted once before anything of it runs), and every key a bundle does not set falls back to the built-in, so a workflow that changes one thing is four lines long. `wisp open <item> --workflow <name>` uses another one just once.
+`cache_ttl_min` is top-level because it times whichever source a workspace has, not just GitLab. `gitlab.cache_ttl_min` still works as the older spelling of the same key, and is where the default of 15 lives.
+
+A **workflow** is a directory holding a `workflow.yaml` and its scripts, and it supplies `program`, the branch and worktree templates, the session layout and four hooks: where items come from, what the agent is told, what closing an item out does, and how a worktree is built. A bare name is one of yours under `~/.config/wisp/workflows/`, `./name` is one the workspace ships, and every key a bundle does not set falls back to the built-in, so a workflow that changes one thing is four lines long. A key wisp does not recognise is reported rather than ignored, because a workflow that quietly does nothing is the worst thing that file can be. `wisp open <item> --workflow <name>` uses another one just once, and carries that choice to the background provisioning window on a tmux session option so both halves agree.
+
+A `./name` bundle is read and accepted once before anything of it runs. Worth knowing what that does and does not cover: it hashes `workflow.yaml`, not the scripts that file names, and it gates `workflow: ./name` and not a checked-in `.wisp.yaml` that writes `program:`, `context:`, `close:`, `provision:` or a `layout[].run` directly. It stops a workspace *bundle* from running unread; it does not make `git clone && wisp open` safe.
 
 ```
 wisp workflow              what is in effect, key by key, and which file set each

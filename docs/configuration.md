@@ -27,24 +27,27 @@ The user config lives at `$XDG_CONFIG_HOME/wisp/config.yaml` if that is set, oth
 | `install` | bool | `false` | Whether to install dependencies when provisioning a worktree. False passes `--no-install` to the script. |
 | `vault` | string | `working_items` | The directory under the workspace where items live. Also doubles as the workspace-root marker in the upward search. |
 | `worktrees` | string | `.worktrees` | Where the worktree cache goes. |
+| `cache_ttl_min` | int | unset | Minutes before whichever source this workspace has is asked again. Source-neutral. Unset, not zero, is what defers to `gitlab.cache_ttl_min`. |
 | `gitlab.group` | string | — | The group the queue is scoped to. |
 | `gitlab.username` | string | — | The assignee the queue is filtered to. |
 | `gitlab.repo_pattern` | string | — | Regex recovering a repo directory name from an item's web URL. Exactly one capturing group. |
-| `gitlab.cache_ttl_min` | int | `15` | Minutes before the cached remote response is refreshed. Also the TTL for a `source` hook's cache. |
+| `gitlab.cache_ttl_min` | int | `15` | The older spelling of `cache_ttl_min`, and still where the default lives. |
 
 ```yaml
 # <workspace>/.wisp.yaml
 install: false
 vault: working_items
 worktrees: .worktrees
+cache_ttl_min: 15
 gitlab:
   group: your-group/subgroup
   username: you
   repo_pattern: '/subgroup/([^/]+)/-/'
-  cache_ttl_min: 15
 ```
 
-`cache_ttl_min: 0` is legal and means every load shells out to `glab`, or to your `source` hook. That is a slow picker, not an error.
+**One TTL, two spellings.** `cache_ttl_min` is top-level because it times whatever source a workspace has, which is what it was always doing: a `source` hook's cache is on the same clock as the GitLab query's, so that `ctrl-r` means the same thing whichever one is behind it. `gitlab.cache_ttl_min` still works and is read as the older spelling of the same key, so no config had to change.
+
+The top-level key wins whenever the file mentions it at all, including when it says `0`. Absent and zero are held apart deliberately, because zero is a useful value rather than a missing one: `cache_ttl_min: 0` means every load shells out to `glab`, or to your `source` hook. That is a slow picker, not an error, and the newer spelling had to be able to say something the older one always could.
 
 ### Workflow keys, in either file
 
@@ -57,9 +60,17 @@ gitlab:
 | `branch` | `feature/{slug}` | The branch an item's repo gets when its manifest does not name one. |
 | `worktree` | `{repo}--{slug}` | The directory name inside `worktrees:` for one repo's checkout. |
 | `provision` | `.claude/scripts/provision-worktree.sh` | Path to the provisioning script. The one place wisp has always run code you wrote. |
-| `source`, `context`, `close` | none | The other three hooks. Also spellable nested under `hooks:`, which wins if both are written. |
+| `source`, `context`, `close` | none | The other three hooks. Also spellable nested under `hooks:`, which wins if both are written, and says so. |
 | `layout` | one `agent`, one per worktree, one `provision` | The session's tmux windows. |
-| `status.needs_input` | Claude Code's permission dialog line | The pane text that means an agent is waiting on a human. |
+| `status.needs_input` | Claude Code's permission dialog line | The pane text that means an agent is waiting on a human. Workspace-level: an item that sets it is refused. |
+
+Writing a hook both ways in one file is no longer resolved silently:
+
+```
+  note: context is set both as `context:` and under `hooks:`; the one under hooks wins
+```
+
+Every other conflict in resolution already produced a note, and "the nested one wins" is not a rule anyone would guess from a file that sets both.
 
 ```yaml
 # <workspace>/.wisp.yaml
@@ -100,7 +111,9 @@ accepted:
   /Users/you/work ./ship: 854659096926d77dbfe636122cf24cd7cc39e87426d7a46009cae5bbb6169f8f
 ```
 
-The key is the workspace path and the address together, because the same relative address in two workspaces is two different directories. The value is a SHA-256 of that workflow's `workflow.yaml`, re-checked on every load, so editing the manifest puts it back to unaccepted. It does not cover the scripts the manifest names; [Workflows](workflows.md) says what that buys and what it costs.
+The key is the workspace path and the address together, because the same relative address in two workspaces is two different directories. The value is a SHA-256 of that workflow's `workflow.yaml`, re-checked on every load, so editing the manifest puts it back to unaccepted.
+
+Two things it does not cover, both worth knowing before this is treated as a guard on a checked-out repo. It does not cover the scripts the manifest names, only the manifest that names them. And it is a gate on `workflow: ./name` alone: a checked-in `.wisp.yaml` that writes `program:`, `context:`, `close:`, `provision:` or a `layout[].run` directly is not gated at all, and never has been. [Workflows](workflows.md#what-the-gate-does-not-cover-said-plainly) says what that buys and what it costs.
 
 ### Location shapes
 
@@ -145,7 +158,7 @@ A hand-written list is converted to a mapping the first time `wisp host add` rew
 | `XDG_CONFIG_HOME` | Relocates the user config, and with it `~/.config/wisp/workflows/`. The two are found together on purpose: a config file and the workflows it names must not be able to end up on opposite sides of this variable. |
 | `EDITOR`, `VISUAL` | Read by `wisp workflow edit`, in that order, falling back to `vi`. Split on spaces rather than handed to a shell, so `code -w` works. |
 | `TMUX` | Not wisp's, but read: it decides `switch-client` against `attach-session`, and gates `next`, `prev` and `hop`. |
-| `TMPDIR` | Where the GitLab cache file goes, and the `source` hook's separate one. |
+| `TMPDIR` | Where the GitLab cache file goes, and the `source` hook's separate one. The source cache is keyed on the hook as well as the workspace, so changing `source:` gets a new file rather than the previous hook's rows. |
 | `WISP_WORKSPACE` (again) | Also **set** by wisp, for every hook it runs, alongside a working directory of the workspace root. |
 
 `WISP_PROGRAM` and `WISP_INSTALL` are **inert for a remote workspace named on this side**. Resolving `-w eldo` returns as soon as the host is known, before the environment is applied, because the far side runs its own `Load` and answers for its own config. Set them over there.
@@ -195,7 +208,7 @@ Hand-editing stays fine. A path with no vault in it is reported as configured bu
 
 It is the **fallback**, used when the workflow in effect sets no `source` hook. A workflow that sets one displaces it entirely, and says nothing about having done so: `wisp workflow` is where that shows, as a `source` row naming a script and the layer it came from.
 
-`gitlab.*` are still top-level config keys rather than options of a bundled source, which is the one place the workflow rework is not finished. A `source` hook shipped in a bundle carries its own configuration however it likes; the one tracker wisp knows about is still spelled differently from every other, and its cache TTL is still what a hook's cache TTL is read from.
+`gitlab.*` are still top-level config keys rather than options of a bundled source, which is the one place the workflow rework is not finished. A `source` hook shipped in a bundle carries its own configuration however it likes; the one tracker wisp knows about is still spelled differently from every other. The TTL is the one key that has come out of that group: `cache_ttl_min` is top-level and source-neutral now, because it was never a fact about GitLab. `gitlab.cache_ttl_min` remains as its older spelling.
 
 Off until `group`, `username` and `repo_pattern` are all set. It says which are missing:
 
@@ -219,9 +232,11 @@ Anchoring on the literal `/-/` is what stops the group segment being captured.
 
 ### The cache
 
-The raw query response is cached at `$TMPDIR/wisp-gitlab-<hash of workspace path>.json`, refreshed when older than `cache_ttl_min`. It is namespaced by workspace because the bash version used one fixed filename, and pointing `WISP_WORKSPACE` at a second tree served it the first tree's items.
+The raw query response is cached at `$TMPDIR/wisp-gitlab-<hash of workspace path>.json`, refreshed when older than `cache_ttl_min`. It is namespaced by workspace because the bash version used one fixed filename, and pointing `WISP_WORKSPACE` at a second tree served it the first tree's items. A `source` hook's cache sits beside it under `wisp-source-<hash>.jsonl`, hashed over the workspace **and the hook**, so changing `source:` does not serve the previous hook's rows until the TTL runs out.
 
-A failed refresh falls back to a stale cache rather than emptying the picker. `ctrl-r` drops the cache and re-queries.
+`ctrl-r` re-queries and replaces the cache only if an answer arrives. It no longer deletes the file first: deleting up front meant a `ctrl-r` against a source that had since broken emptied the list outright.
+
+A refresh that fails says so in the status line, and the remote rows are dropped for that repaint rather than served stale. Local rows are untouched. [Hooks](hooks.md#failure) has the detail, and is honest that this is half of the intended behaviour: the cache layer hands its caller the stale rows and the reason together, and the caller keeps the reason.
 
 The query asks for open work items **assigned to you**, across the group and its descendants, capped at the first 100. That cap is silent: if you are the assignee on more than a hundred open items, the rest do not appear and nothing says so.
 

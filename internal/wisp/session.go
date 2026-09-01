@@ -195,16 +195,20 @@ type capped struct {
 	left int
 }
 
+// Always the length it was handed, never the length it kept. Reporting the truncated length is
+// a short write, which closes the pipe and kills the hook with SIGPIPE: exactly the failure the
+// cap exists to avoid, and it produced no output at all rather than the first 8 MB of it.
 func (c *capped) Write(p []byte) (int, error) {
+	full := len(p)
 	if c.left <= 0 {
-		return len(p), nil
+		return full, nil
 	}
 	if len(p) > c.left {
 		p = p[:c.left]
 	}
 	n, err := c.w.Write(p)
 	c.left -= n
-	return len(p), err
+	return full, err
 }
 
 // EnsureWorktrees reprovisions anything the manifest declares but disk lacks. Existing

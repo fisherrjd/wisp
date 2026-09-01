@@ -821,11 +821,12 @@ install: false                  # install deps when provisioning
 vault: working_items            # where items live
 worktrees: .worktrees           # the worktree cache
 provision: .claude/scripts/provision-worktree.sh
+workflow: solo                  # which workflow this workspace runs
+cache_ttl_min: 15               # how long any remote source's answer is reused
 gitlab:
   group: your-group/subgroup
   username: you
-  repo_pattern: '/subgroup/([^/]+)/-/'
-  cache_ttl_min: 15</code></pre>
+  repo_pattern: '/subgroup/([^/]+)/-/'</code></pre>
 
         <div class="note">
           The user config, and <strong>only</strong> the user config, owns
@@ -895,7 +896,7 @@ wisp ws new scratch -p bigbox:~/scratch  # and make it there too</code></pre>
               </tr>
               <tr>
                 <td>a wisp new enough</td>
-                <td><code>wisp on eldo is too old for this (this one is 0.16.0)</code></td>
+                <td><code>wisp on eldo is too old for this (this one is 0.17.0)</code></td>
               </tr>
               <tr>
                 <td>the same wire number</td>

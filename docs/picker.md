@@ -46,7 +46,7 @@ The picker has five, and each one owns every key while it is open. For the lines
 | `ctrl-t` | show the closed-out ones again |
 | `ctrl-x` | kill the highlighted item's session |
 | `ctrl-w` | open the workspace tree |
-| `ctrl-r` | drop the GitLab cache and re-query |
+| `ctrl-r` | re-ask the remote source, whichever one this workspace has |
 | `esc` `ctrl-c` | quit, leaving everything running |
 
 `ctrl-j` and `ctrl-k` rather than the emacs `ctrl-p` and `ctrl-n`, because `ctrl-n` is wanted for creating an item and splitting the pair across two idioms reads worse than moving both.

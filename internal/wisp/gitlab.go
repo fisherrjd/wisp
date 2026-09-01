@@ -139,9 +139,11 @@ func (c Config) GitLabItems() ([]Item, error) {
 		return nil, fmt.Errorf("gitlab.repo_pattern needs one capturing group for the repo name")
 	}
 
-	raw, err := c.cachedResponse()
-	if err != nil {
-		return nil, err
+	// Stale rows survive the error that stopped them being refreshed, for the same reason the
+	// source hook's do: an old list with a note beats no list at all, and the caller decides.
+	raw, cacheErr := c.cachedResponse()
+	if len(raw) == 0 {
+		return nil, cacheErr
 	}
 	var parsed glabResponse
 	if err := json.Unmarshal(raw, &parsed); err != nil {
@@ -165,7 +167,7 @@ func (c Config) GitLabItems() ([]Item, error) {
 			Title: n.Title,
 		})
 	}
-	return out, nil
+	return out, cacheErr
 }
 
 // gitlabMissing names the config keys the remote source still needs, so the message can point

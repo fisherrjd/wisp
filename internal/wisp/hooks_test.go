@@ -434,3 +434,54 @@ func TestOneShotIsRecordedOnTheResolution(t *testing.T) {
 		t.Error("a configured workflow is marked as a one-shot")
 	}
 }
+
+// A source that has since broken must annotate the list, never empty it. The cache hands back
+// stale rows alongside the reason they are stale, and the caller has to keep both: returning
+// early on the error turned "here is an old list, and here is why" back into no list at all.
+func TestABrokenSourceKeepsTheStaleRows(t *testing.T) {
+	c := hookWorkspace(t, "repo/1-thing")
+	zero := 0
+	c.CacheTTLMin = &zero // every load re-asks, so the refresh always runs
+	tmp := t.TempDir()
+
+	good := script(t, tmp, "good.sh", `echo '{"name":"repo/7-warm","title":"warm"}'`+"\n")
+	if err := os.WriteFile(filepath.Join(c.Workspace, MarkerFile),
+		[]byte("source: "+good+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if items, err := c.RemoteItems(); err != nil || len(items) != 1 {
+		t.Fatalf("warming the cache: %d items, err %v", len(items), err)
+	}
+
+	// Same script path, now failing, so the cache it already wrote is the stale one.
+	if err := os.WriteFile(good, []byte("#!/bin/sh\necho 'tracker is down' >&2\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	items, err := c.RemoteItems()
+	if err == nil {
+		t.Error("a broken source reported no error, so nothing would annotate the list")
+	}
+	if len(items) != 1 || items[0].Name != "repo/7-warm" {
+		t.Errorf("the stale rows were dropped: %+v", items)
+	}
+}
+
+// The output cap truncates. Reporting the short length back to io.Copy is a short write, which
+// closes the pipe and kills the hook with SIGPIPE, producing nothing at all instead of the first
+// 8 MB, which is the opposite of what a cap is for.
+func TestTheOutputCapTruncatesRatherThanKilling(t *testing.T) {
+	c := hookWorkspace(t, "repo/1-thing")
+	var b strings.Builder
+	for b.Len() <= maxHookOutput {
+		b.WriteString(strings.Repeat("x", 1<<16) + "\n")
+	}
+	big := script(t, t.TempDir(), "loud.sh", "cat <<'EOF'\n"+b.String()+"EOF\n")
+
+	out, err := c.runHook(big, nil)
+	if err != nil {
+		t.Fatalf("the hook was killed instead of truncated: %v", err)
+	}
+	if len(out) != maxHookOutput {
+		t.Errorf("kept %d bytes, want exactly the cap %d", len(out), maxHookOutput)
+	}
+}
