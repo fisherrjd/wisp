@@ -5,12 +5,12 @@ One work item, one tmux session.
 wisp turns a unit of work into a running workspace: it finds the item (locally or on GitLab), reprovisions any git worktrees it needs, writes a context file for the agent, and drops you into a tmux session named after it.
 
 ```
-› ledger                                  airbook ●3 · eldo ?1      2/8
-▌ ? ledger-service/318-double-entry-audit  │  Edit file src/reconcile.ts
-  + ledger-service/327-backfill-entries    │
-                                           │  Do you want to make this edit?
-──────────────────────────────────────────────────────────────────────
-● live  ? needs input  ○ folder  + gitlab     enter open  ctrl-n new
+› ledger                                          airbook ●3 · eldo ?1   2/8
+▌ ? ledger-service/318-double-entry-audit │ Edit file src/reconcile.ts
+  + ledger-service/327-backfill-entries   │
+  ○ payments-api/1042-retry-backoff       │ Do you want to make this edit?
+────────────────────────────────────────────────────────────────────────────
+● live  ? needs input  ○ folder  + gitlab            enter open   ctrl-n new
 ```
 
 **Documentation:** [Commands](docs/commands.md) · [Configuration](docs/configuration.md) · [The picker](docs/picker.md) · [Sessions and worktrees](docs/sessions.md) · [Items](docs/items.md) · [Remote workspaces](docs/remote-workspaces.md) · [Workflows](docs/workflows.md) · [Hooks](docs/hooks.md) *(the reasoning behind them)*

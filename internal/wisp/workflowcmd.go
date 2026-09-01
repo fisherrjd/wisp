@@ -218,25 +218,50 @@ func (c Config) printHostWorkflows(host string) error {
 // programs wisp hands off to. `program` first is worth more than alphabetical.
 var workflowKeys = []struct {
 	key string
-	get func(Workflow) string
+	get func(Config, Workflow) string
 }{
-	{"program", func(w Workflow) string { return w.Program }},
-	{"branch", func(w Workflow) string { return w.Branch }},
-	{"worktree", func(w Workflow) string { return w.Worktree }},
-	{"layout", func(w Workflow) string { return layoutSummary(w.Layout) }},
-	{"source", func(w Workflow) string { return shortPath(w.Hooks.Source) }},
-	{"context", func(w Workflow) string { return shortPath(w.Hooks.Context) }},
-	{"close", func(w Workflow) string { return shortPath(w.Hooks.Close) }},
-	{"provision", func(w Workflow) string { return shortPath(w.Hooks.Provision) }},
-	{"needs_input", func(w Workflow) string { return w.Status.NeedsInput }},
+	{"program", func(_ Config, w Workflow) string { return w.Program }},
+	{"branch", func(_ Config, w Workflow) string { return w.Branch }},
+	{"worktree", func(_ Config, w Workflow) string { return w.Worktree }},
+	{"layout", func(_ Config, w Workflow) string { return layoutSummary(w.Layout) }},
+	{"source", func(c Config, w Workflow) string { return c.displayPath(w.Hooks.Source) }},
+	{"context", func(c Config, w Workflow) string { return c.displayPath(w.Hooks.Context) }},
+	{"close", func(c Config, w Workflow) string { return c.displayPath(w.Hooks.Close) }},
+	{"provision", func(c Config, w Workflow) string { return c.displayPath(w.Hooks.Provision) }},
+	{"needs_input", func(_ Config, w Workflow) string { return w.Status.NeedsInput }},
+}
+
+// displayPath is a hook path as a person would like to read it: relative to the workspace when it
+// is inside one, with ~ for the home directory otherwise.
+//
+// Hooks are resolved to absolute paths so wisp can run them from anywhere, and printing them that
+// way put a hundred-character temp path in a nine-row table and pushed the `from` column, which is
+// the column anybody ran this command for, off the side of every row.
+func (c Config) displayPath(p string) string {
+	if p == "" {
+		return ""
+	}
+	if rel, err := filepath.Rel(c.Workspace, p); err == nil && !strings.HasPrefix(rel, "..") {
+		return rel
+	}
+	return shortPath(p)
+}
+
+// ellipsize keeps a value inside the column, cutting from the left because the identifying end of
+// a path or a command is its tail.
+func ellipsize(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return "..." + s[len(s)-(max-3):]
 }
 
 // value renders one key for the table. A key nothing sets prints as "-" rather than as an empty
 // column, so "wisp runs no close hook" is visibly an answer.
-func (w Workflow) value(key string) string {
+func (c Config) value(w Workflow, key string) string {
 	for _, k := range workflowKeys {
 		if k.key == key {
-			if v := k.get(w); v != "" {
+			if v := k.get(c, w); v != "" {
 				return v
 			}
 			return "-"
@@ -292,8 +317,11 @@ func (c Config) printWorkflow(w Workflow, item string) {
 	// to line up.
 	vals := make([]string, len(workflowKeys))
 	for i, k := range workflowKeys {
-		vals[i] = w.value(k.key)
-		if n := len(vals[i]); n > wide && n <= widest {
+		// Cut to the cap rather than merely excluded from measuring it. Excluding a long value
+		// kept the header narrow and then printed the long row anyway, which is the one thing
+		// worse than a wide column: eight rows that line up and one that does not.
+		vals[i] = ellipsize(c.value(w, k.key), widest)
+		if n := len(vals[i]); n > wide {
 			wide = n
 		}
 	}
