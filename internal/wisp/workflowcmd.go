@@ -618,7 +618,12 @@ func (c Config) workflowEdit(addr string) error {
 	}
 	// Split on spaces rather than handed to a shell, so an EDITOR of `code -w` works without a
 	// path holding a space becoming two arguments somewhere inside sh -c.
+	// Fields, then checked: an EDITOR of " " passes a non-empty test and splits into nothing,
+	// which is one index away from a panic in the middle of someone opening a file.
 	argv := strings.Fields(editor)
+	if len(argv) == 0 {
+		return fmt.Errorf("EDITOR is set to whitespace, so there is nothing to run\n\nset it to an editor that is installed, or unset it and wisp uses vi:\n  EDITOR=vi wisp workflow edit")
+	}
 	cmd := exec.Command(argv[0], append(argv[1:], path)...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	if err := cmd.Run(); err != nil {

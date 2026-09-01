@@ -986,14 +986,25 @@ func TestListWorkflows(t *testing.T) {
 	if byAddr["solo"].Note != "" || !byAddr["default"].Accepted {
 		t.Errorf("yours and the built-in should carry no warning: %+v %+v", byAddr["solo"], byAddr["default"])
 	}
-	if !byAddr["./ship"].InUse {
-		t.Error("the workflow in force is not marked as such")
+	// Bound but refused is not in force, and the mark says what is running rather than what is
+	// written down. A star beside a row whose own note reads "not yet accepted" would be the
+	// listing claiming a workflow is doing something it is being prevented from doing.
+	if byAddr["./ship"].InUse {
+		t.Error("an unaccepted workflow is marked as in force")
+	}
+	if !byAddr["default"].InUse {
+		t.Error("the built-in is what actually runs here and is not marked")
 	}
 
 	f.accept("./ship")
+	byAddr = map[string]WorkflowEntry{}
 	for _, e := range f.c.ListWorkflows("./ship") {
-		if e.Addr == "./ship" && (!e.Accepted || e.Note != "") {
-			t.Errorf("./ship after accepting: %+v", e)
-		}
+		byAddr[e.Addr] = e
+	}
+	if e := byAddr["./ship"]; !e.Accepted || e.Note != "" || !e.InUse {
+		t.Errorf("./ship after accepting: %+v", e)
+	}
+	if byAddr["default"].InUse {
+		t.Error("the built-in is still marked once a real workflow took over")
 	}
 }

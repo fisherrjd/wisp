@@ -1,6 +1,8 @@
 package wisp
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -139,13 +141,37 @@ func (c Config) itemInVault(name string) bool {
 // is a parameter rather than something resolved in here: the caller almost always has one
 // already, and resolving it per repo would read the same three files in a loop.
 func (c Config) WorktreeFor(w Workflow, repo string, item Item) string {
-	name := w.WorktreeName(item, repo)
-	// A template that expanded to nothing, or to something with a separator in it, would put the
-	// checkout somewhere `worktrees:` does not reach. Fall back rather than write outside it.
-	if name == "" || strings.ContainsRune(name, filepath.Separator) || name == "." || name == ".." {
-		name = repo + "--" + item.Slug()
+	// Checked after substitution, not before. The template is the workflow's, but the values are
+	// not: `repo` is whatever an item's orchestration.md says, so even the built-in
+	// `{repo}--{slug}` puts the checkout outside the root for `repo: ../../evil`. The guard has
+	// to be on the name that comes out.
+	name := safeWorktreeName(w.WorktreeName(item, repo))
+	if name == "" {
+		name = safeWorktreeName(repo + "--" + item.Slug())
+	}
+	if name == "" {
+		// Both the template and the fallback produced something unusable. A hash of the two is
+		// still a stable directory for this repo and item, and it is inside the root.
+		sum := sha256.Sum256([]byte(repo + "\x00" + item.Name))
+		name = "wt-" + hex.EncodeToString(sum[:])[:12]
 	}
 	return filepath.Join(c.WorktreeRoot(), name)
+}
+
+// safeWorktreeName returns the name if it is a single directory inside the worktree root, or ""
+// if it is anything else. One place, so the template and the fallback are held to one rule.
+func safeWorktreeName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" || name == "." || name == ".." {
+		return ""
+	}
+	if strings.ContainsRune(name, filepath.Separator) || strings.Contains(name, "/") {
+		return ""
+	}
+	if name != filepath.Clean(name) {
+		return ""
+	}
+	return name
 }
 
 func exists(path string) bool {

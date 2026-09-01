@@ -434,6 +434,13 @@ func (c Config) WorkflowFor(item Item, oneShot string) Workflow {
 		w.Notes = append(w.Notes, "an item cannot set `source`: it decides which items exist, and this one does not yet")
 		iw.Hooks.Source = ""
 	}
+	// Nor status. The pane scan runs over every live session at once and resolves one workflow
+	// for the workspace, so an item's marker would be reported here and never consulted, which
+	// is worse than refusing it.
+	if iw.Status.NeedsInput != "" {
+		w.Notes = append(w.Notes, "an item cannot set `status.needs_input`: the pane scan asks the workspace once, not each item")
+		iw.Status.NeedsInput = ""
+	}
 	w.overlay("orchestration.md", iw, c.Workspace)
 
 	// A bundle named on the command line goes on top instead, because a one-shot is an
@@ -536,20 +543,40 @@ func (w *Workflow) validate() []string {
 // Expand substitutes a workflow's template vocabulary. It is deliberately tiny and closed:
 // {item} {slug} {repo} {branch} {base} {worktree} {workspace} {program} {prompt} {wisp}, plain
 // substitution and nothing else.
+// One pass, scanning for tokens, rather than a ReplaceAll per key. The difference is not
+// efficiency: sequential replacement rescans what it has already substituted, so a value
+// containing {repo} would be expanded again by a later key. That is reachable, because {prompt}
+// carries the item's own notes, and the run line is shell-quoted before substitution, so a
+// second expansion inside an already-quoted string breaks the quoting it was relying on. The
+// text a value happens to contain must never be treated as template.
 func Expand(tmpl string, vars map[string]string) string {
-	if tmpl == "" {
-		return ""
+	if tmpl == "" || !strings.ContainsRune(tmpl, '{') {
+		return tmpl
 	}
-	keys := make([]string, 0, len(vars))
-	for k := range vars {
-		keys = append(keys, k)
+	var b strings.Builder
+	b.Grow(len(tmpl))
+	for i := 0; i < len(tmpl); {
+		if tmpl[i] != '{' {
+			b.WriteByte(tmpl[i])
+			i++
+			continue
+		}
+		end := strings.IndexByte(tmpl[i:], '}')
+		if end < 0 {
+			b.WriteString(tmpl[i:])
+			break
+		}
+		name := tmpl[i+1 : i+end]
+		if v, ok := vars[name]; ok {
+			b.WriteString(v)
+		} else {
+			// An unknown token is left alone rather than blanked, so a typo is visible in the
+			// window it produced instead of silently becoming nothing.
+			b.WriteString(tmpl[i : i+end+1])
+		}
+		i += end + 1
 	}
-	sort.Strings(keys)
-	out := tmpl
-	for _, k := range keys {
-		out = strings.ReplaceAll(out, "{"+k+"}", vars[k])
-	}
-	return out
+	return b.String()
 }
 
 // BranchFor is the branch an item's repo gets when the manifest does not name one outright.
@@ -618,8 +645,21 @@ func (c Config) ListWorkflows(current string) []WorkflowEntry {
 	for _, name := range dirNames(c.WorkspaceWorkflowsDir()) {
 		add("./"+name, filepath.Join(c.WorkspaceWorkflowsDir(), name), ".wisp/workflows")
 	}
-	out = append(out, WorkflowEntry{Addr: "default", Where: "built-in", Accepted: true,
-		InUse: current == "" || (current == "default" && !isDir(filepath.Join(UserWorkflowsDir(), "default")))})
+	// The built-in is in use whenever nothing else actually loaded, which includes a bound
+	// address that turned out not to resolve. Marking the row that failed would say a workflow
+	// is running when the note two lines above says it is not.
+	builtinInUse := current == "" || (current == "default" && !isDir(filepath.Join(UserWorkflowsDir(), "default")))
+	if !builtinInUse {
+		found := false
+		for _, e := range out {
+			found = found || (e.Addr == current && e.Note == "")
+		}
+		builtinInUse = !found
+	}
+	for i := range out {
+		out[i].InUse = out[i].InUse && !builtinInUse
+	}
+	out = append(out, WorkflowEntry{Addr: "default", Where: "built-in", Accepted: true, InUse: builtinInUse})
 	return out
 }
 
@@ -633,7 +673,13 @@ func dirNames(root string) []string {
 	}
 	var out []string
 	for _, e := range ents {
-		if e.IsDir() && !strings.HasPrefix(e.Name(), ".") {
+		if strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		// isDir, not e.IsDir(): ReadDir does not follow symlinks, and every other consumer here
+		// does. A bundle reached by a symlink, which is how you keep one in a git checkout, was
+		// loadable and acceptable and invisible in the only command that lists them.
+		if isDir(filepath.Join(root, e.Name())) {
 			out = append(out, e.Name())
 		}
 	}

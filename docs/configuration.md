@@ -14,6 +14,8 @@ The user config lives at `$XDG_CONFIG_HOME/wisp/config.yaml` if that is set, oth
 
 **A parse error in either file is fatal and names the file.** Falling back to defaults on a broken user config made every workspace and machine vanish at once, and `wisp -w demo` then answered `no workspace named "demo"; known:` with an empty list, about a file with `demo` written plainly in it.
 
+**Workflow keys are the exception**, and they are most of what these files hold in practice. `workflow:`, `program:`, `branch:`, `worktree:`, the hooks, `layout:` and `status:` are read out of these two files separately, and resolved across five layers rather than two: a bundle sits under both files, and an item's `orchestration.md` sits over them. The order between the two files is the same. [Workflows](workflows.md) has the rest, and `wisp workflow` prints the answer with the file that supplied each key beside it.
+
 ---
 
 ## What each file may contain
@@ -22,23 +24,19 @@ The user config lives at `$XDG_CONFIG_HOME/wisp/config.yaml` if that is set, oth
 
 | key | type | default | what it controls |
 |---|---|---|---|
-| `program` | string | `claude` | The command run in the session's `agent` window. wisp appends the context prompt as one shell-quoted argument, so flags belong here. |
 | `install` | bool | `false` | Whether to install dependencies when provisioning a worktree. False passes `--no-install` to the script. |
 | `vault` | string | `working_items` | The directory under the workspace where items live. Also doubles as the workspace-root marker in the upward search. |
 | `worktrees` | string | `.worktrees` | Where the worktree cache goes. |
-| `provision` | string | `.claude/scripts/provision-worktree.sh` | Workspace-relative path to the provisioning script. The one place wisp runs code you wrote. |
 | `gitlab.group` | string | — | The group the queue is scoped to. |
 | `gitlab.username` | string | — | The assignee the queue is filtered to. |
 | `gitlab.repo_pattern` | string | — | Regex recovering a repo directory name from an item's web URL. Exactly one capturing group. |
-| `gitlab.cache_ttl_min` | int | `15` | Minutes before the cached GitLab response is refreshed. |
+| `gitlab.cache_ttl_min` | int | `15` | Minutes before the cached remote response is refreshed. Also the TTL for a `source` hook's cache. |
 
 ```yaml
 # <workspace>/.wisp.yaml
-program: claude
 install: false
 vault: working_items
 worktrees: .worktrees
-provision: .claude/scripts/provision-worktree.sh
 gitlab:
   group: your-group/subgroup
   username: you
@@ -46,7 +44,30 @@ gitlab:
   cache_ttl_min: 15
 ```
 
-`cache_ttl_min: 0` is legal and means every load shells out to `glab`. That is a slow picker, not an error.
+`cache_ttl_min: 0` is legal and means every load shells out to `glab`, or to your `source` hook. That is a slow picker, not an error.
+
+### Workflow keys, in either file
+
+`program:` and `provision:` used to be config keys and are now **workflow keys**, along with everything else about how a session is laid out and where work comes from. They can still be written in either config file and still mean what they always meant; what changed is that they are resolved per key across the workflow's five layers rather than through the config merge, and that they have no default in the config at all. That distinction is what lets `""` mean "said nothing" rather than "said `claude`".
+
+| key | default | what it controls |
+|---|---|---|
+| `workflow` | the built-in | The bundle this file binds to. A bare name is one of yours under `~/.config/wisp/workflows/`, a leading `./` is one this workspace ships in `.wisp/workflows/`. |
+| `program` | `claude` | The command run in the session's `agent` window. wisp appends the context prompt as one shell-quoted argument, so flags belong here. |
+| `branch` | `feature/{slug}` | The branch an item's repo gets when its manifest does not name one. |
+| `worktree` | `{repo}--{slug}` | The directory name inside `worktrees:` for one repo's checkout. |
+| `provision` | `.claude/scripts/provision-worktree.sh` | Path to the provisioning script. The one place wisp has always run code you wrote. |
+| `source`, `context`, `close` | none | The other three hooks. Also spellable nested under `hooks:`, which wins if both are written. |
+| `layout` | one `agent`, one per worktree, one `provision` | The session's tmux windows. |
+| `status.needs_input` | Claude Code's permission dialog line | The pane text that means an agent is waiting on a human. |
+
+```yaml
+# <workspace>/.wisp.yaml
+workflow: solo          # the bundle supplies the rest
+context: .wisp/house-briefing.sh    # overriding one key of it
+```
+
+A relative hook path written **here** resolves against the workspace root, which is what a path in `.wisp.yaml` has always meant. The same key inside a bundle resolves against the bundle directory instead, so the bundle stays copyable. [Workflows](workflows.md) has the full table, the five layers and the addressing rule; `wisp workflow` prints what won and which file it came from.
 
 ### The user config only
 
@@ -56,6 +77,7 @@ gitlab:
 | `default` | string | Which one is the fallback, and which one adopts sessions from before workspaces existed. If unset, the first name in sorted order. |
 | `hosts` | list or map | The machines wisp can reach. |
 | `workspace` | location | The older single-workspace spelling. Still works; folded into `workspaces:` under its directory name. |
+| `accepted` | map of `<workspace> <address>` to hash | Which workspace-supplied workflows have been read and allowed to run. Written by `wisp workflow accept`. |
 
 ```yaml
 # ~/.config/wisp/config.yaml
@@ -68,7 +90,17 @@ hosts:
   - bigbox
 ```
 
-These four are read from the user config **and nowhere else**. A workspace naming its neighbours or its machines would let one of them rename or hide another, so whatever a `.wisp.yaml` says about them is discarded rather than merged. That matters because `.wisp.yaml` is a file you check into a repo and hand to other people.
+These five are read from the user config **and nowhere else**. A workspace naming its neighbours or its machines would let one of them rename or hide another, so whatever a `.wisp.yaml` says about them is discarded rather than merged. That matters because `.wisp.yaml` is a file you check into a repo and hand to other people.
+
+`accepted:` is on that list for a sharper reason than the rest: it is the record that decides whether a workspace's own checked-in workflow may execute at all, and a workspace that could write it would be accepting itself.
+
+```yaml
+# ~/.config/wisp/config.yaml
+accepted:
+  /Users/you/work ./ship: 854659096926d77dbfe636122cf24cd7cc39e87426d7a46009cae5bbb6169f8f
+```
+
+The key is the workspace path and the address together, because the same relative address in two workspaces is two different directories. The value is a SHA-256 of that workflow's `workflow.yaml`, re-checked on every load, so editing the manifest puts it back to unaccepted. It does not cover the scripts the manifest names; [Workflows](workflows.md) says what that buys and what it costs.
 
 ### Location shapes
 
@@ -108,11 +140,13 @@ A hand-written list is converted to a mapping the first time `wisp host add` rew
 | var | effect |
 |---|---|
 | `WISP_WORKSPACE` | The workspace root, as a path. Consulted only when `-w` was not given, and beats the upward search and the configured default. |
-| `WISP_PROGRAM` | Overrides `program:`. Applied after both config files. |
+| `WISP_PROGRAM` | Overrides `program:`, above every workflow layer including a bundle and an item. `wisp workflow` reports it by name in the `from` column rather than letting it arrive as if a file had set it. |
 | `WISP_INSTALL` | **Any non-empty value** sets `install: true`, including `WISP_INSTALL=0`. |
-| `XDG_CONFIG_HOME` | Relocates the user config. |
+| `XDG_CONFIG_HOME` | Relocates the user config, and with it `~/.config/wisp/workflows/`. The two are found together on purpose: a config file and the workflows it names must not be able to end up on opposite sides of this variable. |
+| `EDITOR`, `VISUAL` | Read by `wisp workflow edit`, in that order, falling back to `vi`. Split on spaces rather than handed to a shell, so `code -w` works. |
 | `TMUX` | Not wisp's, but read: it decides `switch-client` against `attach-session`, and gates `next`, `prev` and `hop`. |
-| `TMPDIR` | Where the GitLab cache file goes. |
+| `TMPDIR` | Where the GitLab cache file goes, and the `source` hook's separate one. |
+| `WISP_WORKSPACE` (again) | Also **set** by wisp, for every hook it runs, alongside a working directory of the workspace root. |
 
 `WISP_PROGRAM` and `WISP_INSTALL` are **inert for a remote workspace named on this side**. Resolving `-w eldo` returns as soon as the host is known, before the environment is applied, because the far side runs its own `Load` and answers for its own config. Set them over there.
 
@@ -145,15 +179,23 @@ wisp ws new side                 # adopt the current directory
 wisp ws new side ~/projects/side # adopt one you already have
 wisp ws new side -p ~/new/side   # create the directory too
 wisp host add jade@eldo          # a machine, and everything on it
+wisp workflow init solo          # a bundle, the built-in spelled out
+wisp workflow use solo           # write workflow:, --here for this workspace
 ```
 
 Both kinds of conflict are refused: a name already in use, and a path already registered under another name. Edits go through a YAML node, so comments survive.
+
+The `.wisp.yaml` that `wisp ws new` writes is entirely commented out, and its first entry is `workflow:`, with a line saying what a bare name and a leading `./` mean and that `wisp workflow` reports what is in effect. The keys anyone will want are already there with the right spelling, which is otherwise a trip to this page.
 
 Hand-editing stays fine. A path with no vault in it is reported as configured but missing rather than silently ignored: `wisp ws` says so, the workspace tree marks it `✗`, and `hop next` steps over it. Hopping to it by name still fails loudly, because you asked for that one specifically.
 
 ---
 
 ## The GitLab source
+
+It is the **fallback**, used when the workflow in effect sets no `source` hook. A workflow that sets one displaces it entirely, and says nothing about having done so: `wisp workflow` is where that shows, as a `source` row naming a script and the layer it came from.
+
+`gitlab.*` are still top-level config keys rather than options of a bundled source, which is the one place the workflow rework is not finished. A `source` hook shipped in a bundle carries its own configuration however it likes; the one tracker wisp knows about is still spelled differently from every other, and its cache TTL is still what a hook's cache TTL is read from.
 
 Off until `group`, `username` and `repo_pattern` are all set. It says which are missing:
 

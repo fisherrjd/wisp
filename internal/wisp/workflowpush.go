@@ -31,6 +31,10 @@ import (
 // tar over the ssh connection wisp is already holding open rather than scp per file: a bundle is
 // a handful of small files, and the round trips cost more than the bytes.
 func (c Config) PushWorkflow(addr, host string) (string, error) {
+	// Normalised once, here, and used for both ends. WorkflowDir trims and the remote shell line
+	// did not, so `push '  solo  '` packed the right directory and created one on the far side
+	// that nothing could address afterwards.
+	addr = normalizeAddr(addr)
 	if IsWorkspaceWorkflow(addr) {
 		return "", fmt.Errorf("%s belongs to this workspace, so it travels with it; there is nothing to push", addr)
 	}
@@ -46,7 +50,7 @@ func (c Config) PushWorkflow(addr, host string) (string, error) {
 	}
 	files, size := bundleContents(dir)
 
-	loc := Location{Host: host}
+	loc := c.hostLocation(host)
 	// The far side's own config directory, expanded by its shell rather than guessed here: XDG
 	// may be set over there and is none of this machine's business.
 	remote := `"${XDG_CONFIG_HOME:-$HOME/.config}"/wisp/workflows`
@@ -70,6 +74,17 @@ func (c Config) PushWorkflow(addr, host string) (string, error) {
 		addr, host, addr, len(files), humanBytes(size)), nil
 }
 
+// hostLocation resolves a configured machine name to its ssh target, falling back to the
+// argument itself. `wisp host` is what the usage text tells you to name, so naming one of those
+// has to work; an ssh target typed directly still does, because refusing it would be a rule
+// nobody asked for.
+func (c Config) hostLocation(host string) Location {
+	if target, ok := c.Hosts[host]; ok && target != "" {
+		return Location{Host: target}
+	}
+	return Location{Host: host}
+}
+
 // HostWorkflow is one workflow as it stands on another machine, next to how it stands here.
 type HostWorkflow struct {
 	Name  string
@@ -82,7 +97,7 @@ type HostWorkflow struct {
 // is the change worth reporting. Push is idempotent and this is what makes the drift it
 // reintroduces visible rather than silent, which is the standard applied everywhere else here.
 func (c Config) HostWorkflows(host string) ([]HostWorkflow, error) {
-	loc := Location{Host: host}
+	loc := c.hostLocation(host)
 	// One shell line rather than a wisp subcommand: the far side may be running an older wisp
 	// that has never heard of workflows, and this still answers correctly there.
 	line := `d="${XDG_CONFIG_HOME:-$HOME/.config}"/wisp/workflows; ` +
@@ -129,21 +144,25 @@ func (c Config) HostWorkflows(host string) ([]HostWorkflow, error) {
 // bundleContents is what a bundle holds, for the line printed after a push. Counting beats
 // listing here: a push that says "4 files" is checkable, and one that says nothing is not.
 func bundleContents(dir string) ([]string, int64) {
-	ents, err := os.ReadDir(dir)
-	if err != nil {
-		return nil, 0
-	}
+	// Walked, not listed. tar ships the whole tree, and a bundle keeping its scripts in bin/,
+	// which is what the generated template suggests, reported "1 files" after moving four.
 	var files []string
 	var size int64
-	for _, e := range ents {
-		if e.IsDir() {
-			continue
+	_ = filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
 		}
-		files = append(files, e.Name())
-		if fi, err := e.Info(); err == nil {
+		rel, relErr := filepath.Rel(dir, p)
+		if relErr != nil {
+			rel = d.Name()
+		}
+		files = append(files, rel)
+		if fi, err := d.Info(); err == nil {
 			size += fi.Size()
 		}
-	}
+		return nil
+	})
+	sort.Strings(files)
 	return files, size
 }
 

@@ -25,7 +25,7 @@ Five nouns, and everything else follows from them.
 | **Workspace** | The container. Every repo checkout, `docs/`, `.worktrees/` and the vault sit side by side inside it. Agents start here, so one cwd sees all of them. You can have several, and not everything you work on belongs in the same one. |
 | **Item** | A folder in the vault, `<repo>/<iid>-<slug>` or `_adhoc/<name>`. The unit of work. Its stable identity is only `<repo>/<iid>`, because slugs drift between what you typed locally and what GitLab derives from the title. |
 | **Worktree** | A cache, deliberately. Branches are the real state. Delete a worktree and reopening the item reprovisions it. |
-| **Session** | A tmux session tagged `@wisp_item`. The `agent` window runs at the workspace root; one further window per worktree, for builds and dev servers, plus a transient `provision` window while any are still being built. |
+| **Session** | A tmux session tagged `@wisp_item`. Its windows come from the workflow's `layout:`, and the built-in one is: an `agent` window at the workspace root, one further window per worktree for builds and dev servers, plus a transient `provision` window while any are still being built. |
 
 Nothing wisp does destroys work. Killing a session leaves worktrees and branches; deleting a worktree leaves the branch; closing an item out leaves every file it holds.
 
@@ -58,6 +58,9 @@ wisp done <item> [-m <line>]
                            --list shows what has been closed out
 wisp kill <item>           kill an item's session
 wisp ls                    list live sessions, every workspace
+wisp workflow [<item>]     the workflow in effect, key by key, and where each
+                           key came from; list, show, init, use, edit, accept
+                           and push live under it
 wisp repos                 list workspace repos
 wisp ws                    list workspaces
 wisp ws new [-p] <name> [path]
@@ -126,6 +129,7 @@ wisp reads and writes exactly these paths.
 ```
 $WS/
 ├── .wisp.yaml                     this workspace's config
+├── .wisp/workflows/<name>/        workflows this workspace ships, addressed ./<name>
 ├── <repo>/                        any dir with a .git
 ├── docs/<repo>.md                 workspace doc
 ├── .worktrees/<repo>--<slug>/     the cache, safe to delete
@@ -163,7 +167,20 @@ gitlab:
   cache_ttl_min: 15
 ```
 
-A **workflow** is a directory holding a `workflow.yaml` and its scripts, and it supplies `program`, the branch and worktree templates, the session layout and the hooks. A bare name is one of yours under `~/.config/wisp/workflows/`, `./name` is one the workspace ships, and every key a bundle does not set falls back to the built-in, so a workflow that changes one thing is four lines long. `wisp open <item> --workflow <name>` uses another one just once. [docs/workflows.md](docs/workflows.md) has the addressing rule and the five layers.
+A **workflow** is a directory holding a `workflow.yaml` and its scripts, and it supplies `program`, the branch and worktree templates, the session layout and four hooks: where items come from, what the agent is told, what closing an item out does, and how a worktree is built. A bare name is one of yours under `~/.config/wisp/workflows/`, `./name` is one the workspace ships (read and accepted once before anything of it runs), and every key a bundle does not set falls back to the built-in, so a workflow that changes one thing is four lines long. `wisp open <item> --workflow <name>` uses another one just once.
+
+```
+wisp workflow              what is in effect, key by key, and which file set each
+wisp workflow list         everything addressable from here
+wisp workflow init solo    a starting point: the built-in, spelled out
+wisp workflow use solo     bind to it; --here binds the workspace instead
+wisp workflow accept ./ship
+                           read one this workspace ships, and allow it to run
+wisp workflow push solo bigbox
+                           copy one of yours to another machine
+```
+
+[docs/workflows.md](docs/workflows.md) has the addressing rule, the five layers and the limitations; [docs/hooks.md](docs/hooks.md) has each hook's contract.
 
 The user config, and only the user config, owns `workspaces:`, `hosts:` and `default:`. A workspace does not get to name its neighbours or its machines.
 
@@ -221,11 +238,13 @@ It records intent, and deliberately not worktree paths: a path would be a cache 
 
 Without an `orchestration.md`, a single-repo item is inferred from the folder's parent with branch `feature/<slug>`. `_adhoc` items get no repos at all, which is correct: no repo can be inferred, and the session is notes-only.
 
-Provisioning shells out to your workspace's own script, with a fixed contract:
+Provisioning shells out to the workflow's `provision` hook, which by default is your workspace's own `.claude/scripts/provision-worktree.sh`, with a fixed contract:
 
 ```
 provision-worktree.sh <repo-path> <slug> <branch> --attach [--base <base>] [--no-install]
 ```
+
+It does not block the session opening. The agent window runs at the workspace root and reads the context file, so the session appears at once and any missing worktrees are built in a side window that adds their windows and rewrites the context file when it is done.
 
 ## Remote workspaces
 
@@ -275,10 +294,11 @@ Attaching stacks two tmux servers, so the prefix key means two things. The wrapp
 |---|---|
 | **tmux** | Required for everything. |
 | **ssh** | Required for remote workspaces. Purely local use never invokes it. |
-| **glab** | Optional. Without it the GitLab source is empty and pasting a link into `wisp new` fails; everything else is unaffected. |
+| **glab** | Optional, and only for the built-in GitLab source. Without it that source is empty and pasting a link into `wisp new` fails; a workflow with its own `source` hook never invokes it, and everything else is unaffected. |
 | **git** | Not invoked by wisp itself. Your provisioning script needs it, and `wisp repos` looks for `.git` directories. |
+| **tar** | Only for `wisp workflow push`, on both ends. |
 
-Provisioning shells out to a `provision-worktree.sh` in the workspace, which owns branching, env file copying and dependency installation; wisp does not duplicate that.
+Provisioning shells out to a script, by default a `provision-worktree.sh` in the workspace, which owns branching, env file copying and dependency installation; wisp does not duplicate that.
 
 ## Install
 

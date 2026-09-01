@@ -4,7 +4,7 @@ A workflow is a directory. It is what turns a handful of loose config keys into 
 
 wisp used to compile one workflow in: branch `feature/<slug>`, one agent window at the workspace root, a shell per worktree, a briefing naming two files in an order somebody chose, and a needs-input signal grepped out of Claude Code's permission dialog. Every one of those is a preference wearing the clothes of a fact. They now live in a bundle, and the bundle wisp ships is one of the ones you can replace.
 
-Status: **the bundle format and resolution are built. The hooks and the layout are resolved but not yet run.** [Where this stands](#where-this-stands) says exactly which is which. [Hooks](hooks.md) holds the reasoning that picked the hook shape.
+Status: **built.** The bundle format, the addressing, the five-layer resolution, the declarative layout, all four hooks and the `wisp workflow` commands are in and running. [Where this stands](#where-this-stands) lists what is done, and the five limitations that are real and known. [Hooks](hooks.md) holds the reasoning that picked the hook shape.
 
 ---
 
@@ -19,7 +19,9 @@ Status: **the bundle format and resolution are built. The hooks and the layout a
 └── provision.sh
 ```
 
-`workflow.yaml` is the manifest. Everything else in the directory is whatever the manifest points at.
+`workflow.yaml` is the manifest. Everything else in the directory is whatever the manifest points at, in whatever arrangement you like: `wisp workflow init` writes a manifest whose commented hook lines suggest `bin/`, and nothing enforces either shape.
+
+`wisp workflow init solo` makes this directory and writes that manifest as the built-in spelled out, so none of it has to be typed from memory.
 
 ```yaml
 # workflow.yaml
@@ -115,7 +117,7 @@ A bundle is *selected*, not merged with another bundle. There is no `extends:`, 
    WISP_PROGRAM                  the agent command, above all of it
 ```
 
-Layers 1 to 4 are the config merge that already exists ([Configuration](configuration.md)); layer 5 is the item, and it is the subject of the next section.
+Layers 3 and 4 are the same two files, in the same order, as the config merge ([Configuration](configuration.md)), but they are read separately for this: workflow keys never become `Config` fields. That is why `program` and `provision` have no default in `Config` at all. Defaulting them in both places would make `""` mean "unset" and "claude" at once, and per-key resolution needs exactly that distinction. Layer 5 is the item, and it is the subject of the next section.
 
 Two consequences worth knowing before they surprise you:
 
@@ -173,7 +175,9 @@ Not a policy call, a bootstrapping impossibility. `source` decides where items c
 --- an item cannot set `source`: it decides which items exist, and this one does not yet
 ```
 
-`source` is therefore the only workspace-only key. Everything else acts on an item, which is exactly why an item may have a say.
+That is the `wisp open` form; `wisp workflow <item>` shows the same line as a `note:` under the table, which is the place to check a frontmatter edit before opening anything.
+
+`source` is the only key an item is **refused**. It is not the only one an item cannot usefully set: `status.needs_input` is resolved once for the whole workspace, so an item may write it and be shown as having written it, and nothing will ever read it. That is honest to report and worth fixing one way or the other, and [`status`](#status) says which two ways.
 
 ### `branch:` and `repos[].branch` do not fight
 
@@ -223,7 +227,7 @@ layout:
 
 | field | values | |
 |---|---|---|
-| `window` | templated | The window name. Truncated to 12 characters, as tmux window names have always been here. |
+| `window` | templated | The window name. Truncated to 12 characters, as tmux window names have always been here, and a template that expanded to nothing becomes `window`, since a window with no name is not creatable. |
 | `cwd` | `workspace`, `worktree`, `home` | Where the window starts. `worktree` only means anything with `for:` set. |
 | `run` | templated | The command line, handed to `/bin/sh`. Empty leaves an interactive shell. |
 | `for` | `each-worktree` | One window per repo in the manifest, instead of one window. |
@@ -232,13 +236,19 @@ layout:
 
 `for:` and `when:` are the only control flow there is, for the reason above.
 
+**The order of the list decides which window the session is built around.** tmux only makes a session's first window through `new-session`, so the first entry is the one that exists before anything else does, and `focus:` decides where the cursor lands afterwards rather than which window is first. That is the point of reading the order out of the layout instead of assuming window 0 is the agent. Focus is selected by name rather than index, because `base-index` may be 1 and `session:0` is then not reliably the first window.
+
+A session's windows are built once, at open. Editing a layout never reaches into a running session and rearranges windows under an agent mid-task; reopening a killed session is how a change is adopted. The one exception is per-worktree windows, which the provision window adds when its checkouts land, skipping any name that is already there.
+
 ### `status`
 
 `status.needs_input` is small and matters more than its size. wisp used to match a literal string out of Claude Code's permission dialog, so anyone driving aider, codex or a bare shell had a `?` state that could never fire. One string per workflow fixes it.
 
 It is resolved at the **workspace** level rather than per item, because the pane scan runs over every live session at once on every repaint, and resolving a workflow per row would read three files per row to answer a question that is the same for almost all of them.
 
-An empty marker means the workflow has no needs-input signal. That is a live session, never an error.
+**That has a sharp edge, and it is worth knowing rather than discovering.** `needs_input` is an ordinary overlay key, so an item's `orchestration.md` may set it and `wisp workflow <item>` will report it as coming from `orchestration.md`. Nothing ever consults that value: the picker asks the workspace for one marker and scans every pane with it. An item-level override parses, displays, and does nothing. The honest fix is either to resolve per row and pay for it, or to refuse the key on an item the way `source` is refused; neither has been done, so for now the workspace answer is the only one that fires.
+
+An empty marker means the workflow has no needs-input signal. Every session under it stays `●` rather than `?`. That is a live session, never an error.
 
 ---
 
@@ -249,16 +259,27 @@ A workspace's `.wisp.yaml` is checked in, so `git clone && wisp open` would run 
 The first time wisp is asked for a `./`-addressed workflow it is not loaded. The workspace's keys fall back to the built-in and every command touching the workspace says so:
 
 ```
---- workflow "./team-gitlab" is supplied by this workspace and has not been
-    accepted; run `wisp workflow accept ./team-gitlab` after reading it
+  note: workflow "./ship" is supplied by this workspace and has not been accepted; run `wisp workflow accept ./ship` after reading it
 ```
+
+That is the `wisp workflow` rendering. The same line arrives on `wisp open`'s stderr prefixed `--- ` instead, which is how every note wisp logs while opening a session is marked.
+
+`wisp workflow list` marks the same thing in its own column, so the state is visible before a session is opened rather than only after:
+
+```
+  quiet                ~/.config/wisp/workflows
+* ./ship               .wisp/workflows                            not yet accepted
+  default              built-in
+```
+
+`wisp workflow accept ./ship` prints the manifest in full, then the body of every script the manifest names, then asks. A hook naming a file that is not there yet is printed as `not there yet` rather than skipped, because that is still a file the workspace decides the contents of later. Scripts are never truncated: the interesting line in a script somebody else wrote is exactly as likely to be the last one as the first. `-y` answers yes without the prompt, and is required rather than assumed when stdin is not a terminal, because a prompt written to something that cannot answer is either a hang or a silent yes.
 
 Accepting records a SHA-256 of that workflow's `workflow.yaml` in the **user config**, under `accepted:`, keyed by the workspace path and the address together:
 
 ```yaml
 # ~/.config/wisp/config.yaml
 accepted:
-    /Users/you/work ./team-gitlab: 9f2c...
+    /Users/you/work ./ship: 854659096926d77dbfe636122cf24cd7cc39e87426d7a46009cae5bbb6169f8f
 ```
 
 Three properties fall out of that, each because the alternative fails silently:
@@ -269,13 +290,15 @@ Three properties fall out of that, each because the alternative fails silently:
 
 It is the manifest that is hashed rather than the whole directory. The manifest is what names every script, so a change to it is the change worth re-asking about; hashing the scripts as well would re-prompt on every edit to your own workflow and train you to say yes.
 
+**That is a real gap, not a technicality.** Accepting `./ship` shows you `bin/close.sh` and then records a hash of `workflow.yaml` alone. A later commit that rewrites `bin/close.sh` without touching the manifest is a script you have not read, running with the acceptance you gave to a different one. What is bought with that is a workflow you can iterate on without a prompt per save; what is paid is that the trust boundary is drawn around the list of scripts rather than around their contents. If that trade is wrong for a workspace, do not accept its workflow; the built-in is complete and costs a plainer session.
+
 Only a `./` address needs this. Your own bundles are yours, and the built-in is the binary.
 
 ---
 
 ## When a workflow is broken
 
-**A workflow that will not load costs you its keys, not your session.** Every failure below is a note rather than an error: notes are logged to stderr on `wisp open`, and to the provision window when provisioning is running.
+**A workflow that will not load costs you its keys, not your session.** Every failure below is a note rather than an error: notes are logged to stderr on `wisp open`, to the provision window when provisioning is running, and printed under the table by `wisp workflow` and `wisp workflow show`, which is where you go looking for them on purpose.
 
 | what | what happens |
 |---|---|
@@ -291,43 +314,199 @@ Only a `./` address needs this. Your own bundles are yours, and the built-in is 
 
 This is what makes the built-in complete rather than merely first. Every key always has an answer, so a malformed bundle degrades one key at a time and you get a plainer session rather than a dead workspace.
 
+Three things degrade **without** a note, because in each case there is an honest answer and nothing to report:
+
+- `cwd: worktree` on a window with no `for:` starts at the workspace root. There is no checkout for that window to mean, and refusing the window would be worse than putting it somewhere you can work.
+- A `for: each-worktree` window whose checkout does not exist yet is not created at open. The provision window adds it once the checkout lands, which is why that entry is separate from the rest of the layout.
+- A layout that produces no windows at all, usually a layout of nothing but per-worktree entries with no worktrees yet, opens a single `agent` shell at the workspace root. A tmux session with no windows cannot exist, and an unexpected layout should still leave you somewhere you can work.
+
 ---
 
 ## The command surface
 
-Today, one flag:
+Everything here is still files. `workflow:` goes in `~/.config/wisp/config.yaml` or `<workspace>/.wisp.yaml`, a bundle is a directory, and an item's override is frontmatter in its `orchestration.md`. All of that is hand-editable and always will be. `wisp workflow` exists so that none of it has to be.
 
 ```
-wisp open <item> --workflow <name>     open this one differently, just this once
+wisp workflow [<item>]      the workflow in effect, key by key, and where each key came from
+wisp workflow list          every workflow addressable from here
+wisp workflow show <name>   what one workflow sets, on its own
+wisp workflow init <name> [--here]
+                            write a starting point: the built-in, spelled out
+wisp workflow use <name> [--here]
+                            bind to a workflow
+wisp workflow edit [<name>]
+                            open its workflow.yaml in $EDITOR
+wisp workflow accept ./<name> [-y]
+                            read a workflow this workspace ships, and allow it to run
+wisp workflow push <name> <host>
+                            copy one of yours to another machine
+wisp workflow list --host <host>
+                            what is over there, and whether it matches here
+
+wisp open <item> --workflow <name>
+                            open this one differently, just this once
 ```
 
-Everything else is files. `workflow:` goes in `~/.config/wisp/config.yaml` or `<workspace>/.wisp.yaml`, a bundle is a directory you create with `mkdir`, and an item's override is frontmatter in its `orchestration.md`. All of that is hand-editable and always will be.
+`--here` writes to the workspace instead of your user config, for `init` and `use` both.
 
-The commands that would make it less so are designed and not built:
+### `wisp workflow`
 
-| command | would do |
-|---|---|
-| `wisp workflow [<item>]` | what resolved here, per key, with provenance |
-| `wisp workflow list` | everything addressable from here, with source and status |
-| `wisp workflow init <name>` | copy the commented built-in out as a starting point |
-| `wisp workflow edit [<name>]` | `$EDITOR` on `workflow.yaml`, validated on save |
-| `wisp workflow use <name>` | set `workflow:`, `--here` for this workspace |
-| `wisp workflow show <name>` | resolved values for any workflow, and any errors in it |
-| `wisp workflow accept <name>` | record the hash of a workspace-supplied workflow |
+The provenance column is the point of the whole thing. A value on its own says what wisp will do and says nothing about which of five files to edit to change it.
 
-`wisp workflow` takes an optional item because with the item layer in place the resolved values are only fully answerable per item. The provenance column is the point of the whole command: "why did my session open like that" is currently unanswerable without reading Go, which is a bad answer for a tool whose entire subject is that the answer used to be hardcoded.
+```
+$ wisp workflow
+default: one agent at the workspace root, a shell per worktree
 
-`wisp workflow accept` is named in the message wisp prints for an unaccepted workspace workflow, and until it exists the hash has to be written into `accepted:` by hand. That is stated rather than hidden, because a message naming a command that does not run is worse than no message.
+  address   default
+  selected  nothing names one, so the built-in
+  lives in  compiled into wisp
+
+  key         value                                      from
+  program     claude                                     built-in
+  branch      feature/{slug}                             built-in
+  worktree    {repo}--{slug}                             built-in
+  layout      3 windows: agent, {repo}, provision        built-in
+  source      -                                          -
+  context     -                                          -
+  close       -                                          -
+  provision   /Users/you/work/.claude/scripts/provision-worktree.sh built-in
+  needs_input No, and tell Claude what to do differently built-in
+
+  agent        workspace  {program} {prompt}         [focus]
+  {repo}       worktree   (a shell)                  [for each-worktree]
+  provision    workspace  {wisp} provision {item}    [when provisioning]
+```
+
+The layout summary in the table names the windows and stops, which is enough to see that the layout changed and not enough to see how, so the detail follows underneath. A key nothing sets prints as `-` rather than as an empty column, so "wisp runs no close hook" is visibly an answer.
+
+It takes an **optional item** because with the item layer in place the resolved values are only fully answerable per item. Given one, the header says so and the `from` column names `orchestration.md` where the item had an opinion:
+
+```
+$ wisp workflow repoa/42-do-a-thing
+ship: say what this one is for
+for repoa/42-do-a-thing
+
+  address   ./ship
+  selected  .wisp.yaml
+  lives in  /Users/you/work/.wisp/workflows/ship
+
+  key         value                               from
+  program     aider                               orchestration.md
+  branch      feature/{slug}                      ./ship
+  ...
+
+  note: an item cannot set `source`: it decides which items exist, and this one does not yet
+```
+
+Anything that is not a known verb is taken as an item name, so a typo is refused as a missing item rather than silently answering the workspace question.
+
+### `list`, `show`, `init`, `use`, `edit`
+
+`list` shows what is **addressable**, not what is in effect. Two rows may share a name and be two different workflows, which is what the addresses are for. `*` marks the one in use, and the last column carries whatever is wrong with a row:
+
+```
+$ wisp workflow list
+* quiet                ~/.config/wisp/workflows
+  ./ship               .wisp/workflows                            not yet accepted
+  default              built-in
+```
+
+A directory of your own named `default` is listed with `(shadows the built-in)` beside its path, because that is the one case where two rows genuinely collide.
+
+`show <name>` resolves one address on its own: the built-in, overlaid by that bundle, and nothing else. Deliberately not the whole stack, since `wisp workflow` already answers "what is in effect here" and folding the config layers in here too would answer that question twice while leaving "what does this bundle actually set" unanswerable, which is the question you have when you are choosing between two of them. Its `selected` line reads `the command line`, since that is what named it. A `./` workflow that has not been accepted shows the built-in and the note, not its contents; `accept` is the command that prints those.
+
+`init <name>` writes `workflow.yaml` as the built-in spelled out, with the reasoning beside each key, and it never writes over one that is there. An empty file would work just as well, since every key falls back on its own; it would also teach nothing, and the spelling of the keys is the part nobody can guess.
+
+```
+$ wisp workflow init quiet
+~/.config/wisp/workflows/quiet/workflow.yaml
+
+it is a copy of the built-in, so it changes nothing until you edit it:
+  wisp workflow edit quiet
+  wisp workflow use quiet
+```
+
+With `--here` it lands in `.wisp/workflows/` and the acceptance requirement is said at the moment the workflow is made, rather than left to surface as a note on the next session:
+
+```
+$ wisp workflow init ship --here
+/Users/you/work/.wisp/workflows/ship/workflow.yaml
+
+it is a copy of the built-in, so it changes nothing until you edit it:
+  wisp workflow edit ./ship
+  wisp workflow use ./ship
+
+this one is the workspace's, so it also has to be accepted before it runs:
+  wisp workflow accept ./ship
+```
+
+`use <name>` writes the `workflow:` key, through a YAML node so the comments in the file survive. The two destinations answer different questions: the user config is "this is how I work", inherited by every workspace that does not say otherwise, and `--here` is "this is how work happens here", travelling with the repos to everyone else who checks them out.
+
+```
+$ wisp workflow use ./ship --here
+workflow: ./ship
+  in /Users/you/work/.wisp.yaml
+
+nothing of it runs until it has been read and accepted:
+  wisp workflow accept ./ship
+
+  wisp workflow   what that changed, key by key
+```
+
+`edit` opens `$EDITOR` (then `$VISUAL`, then `vi`) on the manifest and re-reads it afterwards. The re-read is the whole reason to go through wisp rather than the editor alone: a manifest that no longer parses costs its keys silently, and the moment to be told is while you still remember what you changed. `EDITOR` is split on spaces rather than handed to a shell, so `code -w` works. Asked to edit the built-in, it refuses and names the three commands that get you a copy of it instead, since there is no file to open.
+
+A flag a subcommand does not take is **refused rather than ignored**, and that is because of `accept`: a mistyped `-Y` that silently means "no flag at all" is the difference between recording an acceptance and being asked about one, and those two must never be one keystroke apart.
+
+### Remote workspaces refuse all of it
+
+```
+$ wisp -w box workflow
+wisp: workspace "box" is on bigbox, and its workflows are files over there
+
+ask the wisp that owns them:
+  ssh bigbox wisp workflow
+```
+
+Every workflow is a file, and for a remote workspace every one of those files is on the other machine. Answering from here would describe this machine's config against that machine's paths, which is worse than not answering. This applies to the whole subcommand, `list` and `show` included, and it is not a gap to be filled later: the answer genuinely lives over there, and the message names the command that gets it.
 
 ---
 
 ## Moving one between machines
 
-**A workflow does not cross a host boundary.** A remote workspace runs its own wisp, its own config load and its own `.wisp.yaml`, and nothing is shipped over ssh ([Remote workspaces](remote-workspaces.md)). A bundle in `~/.config/wisp/workflows/` on this laptop has no effect on a workspace that lives on another machine. You install it there too, the same way dotfiles get there.
+**A workflow does not cross a host boundary on its own.** A remote workspace runs its own wisp, its own config load and its own `.wisp.yaml`, and nothing is shipped over ssh ([Remote workspaces](remote-workspaces.md)). A bundle in `~/.config/wisp/workflows/` on this laptop has no effect on a workspace that lives on another machine.
 
 That falls out of the existing design rather than being added to it, and it is the right way round: hooks configured here and run against a filesystem over there would be wrong in a way that is not obvious until it fails.
 
-It also promotes the `./team-gitlab` form from a team-sharing convenience to something structural. **A workflow checked into the workspace is the only form that follows a workspace across hosts**, because it travels with the thing it is bound to.
+So across machines a workflow is necessarily a **copy**. The question is not how to avoid the copy, it is whether wisp makes one for you and tells you when it has drifted. It does both:
+
+```
+$ wisp workflow push hooked localhost
+hooked to localhost:~/.config/wisp/workflows/hooked  (1 files, 317 B)
+
+check it landed:
+  wisp workflow list --host localhost
+```
+
+The `<host>` argument of `push` and of `list --host` is handed to `ssh` as written, so it is an ssh target rather than a lookup into `hosts:`. Where a machine is registered under its own name that is the same string and the distinction never surfaces; where you have renamed one (`hosts: {box: jade@eldo}`) the name `box` is not what to type here, `jade@eldo` is.
+
+It packs the directory with `tar` and sends it down the ssh connection wisp is already opening, rather than `scp` per file: a bundle is a handful of small files and the round trips cost more than the bytes. The destination is expanded by the **far side's** shell, `"${XDG_CONFIG_HOME:-$HOME/.config}"/wisp/workflows`, because XDG may be set over there and that is none of this machine's business. `push` is idempotent, so re-running it is how you resync rather than something to be careful about.
+
+The count in that line is of files at the top of the bundle only. Everything under it is sent, so a bundle keeping its scripts in `bin/` reports fewer files than it moved. The tally is a sanity check on the transfer, not an inventory.
+
+`list --host` is the drift check, and it has four answers:
+
+```
+$ wisp workflow list --host localhost
+  hooked               differs
+  onlythere            only there
+  quiet                missing
+```
+
+`same`, `differs`, `missing` (yours, not there yet) and `only there` (theirs, not here). The comparison is a hash of `workflow.yaml`, for the same reason acceptance hashes it: the manifest is what names every script. It runs one `shasum`/`sha256sum` shell line over there rather than a wisp subcommand, so it still answers correctly against a machine running an older wisp that has never heard of workflows.
+
+Two things `push` will not do. It refuses a `./` address, since a workspace's own workflow travels with the workspace and there is nothing to push. And it is never automatic on open: opening a remote item would then silently write into another machine's config directory, which is a surprising thing for a command called `open` to do, and it would fire on the non-interactive paths (`board --json`, the remote board fetches under `BatchMode=yes`) where nothing can ask you first.
+
+None of this changes the fact that **a workflow checked into the workspace is the only form that follows a workspace across hosts**, because it travels with the thing it is bound to. `push` is for the other case: your own bundle, on every machine you work from.
 
 ---
 
@@ -340,7 +519,7 @@ It also promotes the `./team-gitlab` form from a team-sharing convenience to som
 | `wisp workflow add <url>` | `git clone` installs a directory and a symlink keeps it current; a package manager is a second distribution story to maintain |
 | a Go plugin API | a hook is a program: writable in anything, testable by running it, debuggable by reading its output |
 
-There is no cache and no install step. Config points at a directory by name, never at a copy taken at selection time, so editing a workflow reaches the next `wisp open` in any workspace on this host, and reaches no session that is already running. A session's windows and briefing are built once, at open, so an edit never reaches in and rearranges windows under an agent mid-task. Reopening a killed session is the way to adopt a change you just made.
+There is no cache and no install step on a machine. Config points at a directory by name, never at a copy taken at selection time, so editing a workflow reaches the next `wisp open` in any workspace on this host, and reaches no session that is already running. `wisp workflow push` is the one copy, and it exists only because a host boundary leaves no alternative; `list --host` is there so that copy cannot drift silently. A session's windows and briefing are built once, at open, so an edit never reaches in and rearranges windows under an agent mid-task. Reopening a killed session is the way to adopt a change you just made.
 
 ---
 
@@ -367,13 +546,15 @@ layout:
       run: "{program} {prompt}"
 ```
 
-`~/.config/wisp/workflows/quiet/workflow.yaml`, then `workflow: quiet` in either config file. There is no `name:`, no `hooks:`, no `program:` and no `branch:`. Everything it does not say falls back to the built-in, so branches are still `feature/{slug}`, worktrees are still `{repo}--{slug}`, provisioning still runs your script, and `?` still fires on Claude Code's permission dialog. What changes is that no shell windows are opened for the worktrees.
+`~/.config/wisp/workflows/quiet/workflow.yaml`, then `workflow: quiet` in either config file. `wisp workflow init quiet` makes the directory and a manifest, and `wisp workflow use quiet` writes the binding; what init writes is the built-in in full, so getting to the four lines above means deleting the rest, which is the intended direction of travel. There is no `name:`, no `hooks:`, no `program:` and no `branch:`. Everything it does not say falls back to the built-in, so branches are still `feature/{slug}`, worktrees are still `{repo}--{slug}`, provisioning still runs your script, and `?` still fires on Claude Code's permission dialog. What changes is that no shell windows are opened for the worktrees. `wisp workflow` afterwards is the shape of the idea in one screen: `layout  1 window: agent  quiet`, five rows still reading `built-in`, and three hooks still reading `-`. Its header still says `default: one agent at the workspace root, a shell per worktree`, because a bundle with no `name:` and no `description:` sets neither, and the built-in's are what is left. Set `name:` if you would rather the header agreed with the address.
 
 That is the whole shape of the thing: a workflow is a diff against the built-in, expressed as the keys you disagree about.
 
 ---
 
 ## Where this stands
+
+All of it is built.
 
 | | |
 |---|---|
@@ -384,11 +565,21 @@ That is the whole shape of the thing: a workflow is a diff against the built-in,
 | `--workflow` on `wisp open` | built |
 | accept-on-first-use, and the hash re-check | built |
 | `program`, `branch`, `worktree`, `hooks.provision`, `status.needs_input` | built, and in use |
-| `layout` | parsed and validated, not yet applied |
-| `hooks.source`, `hooks.context`, `hooks.close` | resolved to a path, not yet run |
-| the `wisp workflow` subcommands | not built |
-| `workflow:` in the `wisp ws new` template | not built |
+| `layout` | built: it is what the session builder builds from |
+| `hooks.source`, including `--url`, `hooks.context`, `hooks.close` | built, and run |
+| the `wisp workflow` subcommands, `push` and `list --host` included | built |
+| `workflow:` in the `wisp ws new` template | built |
 
-Layout resolving without being applied is invisible today, because the built-in layout describes exactly what the session builder does. That is the acceptance test for the whole first step: with no config at all, naming today's behaviour as a bundle changed nothing.
+The acceptance test for the whole thing was that with no config at all, naming today's behaviour as a bundle changed nothing: the built-in layout describes exactly what the session builder used to do by hand, so a workspace that says nothing gets the session it always got.
 
-[Hooks](hooks.md) has the contract each of the three unbuilt hooks will have, and the reasoning that picked it.
+### The limitations that are real
+
+Five, and none of them is a rough edge waiting on a rename. Each is a trade somebody made and could unmake.
+
+- **`status.needs_input` is workspace-only in practice.** An item may set it, `wisp workflow <item>` will show it, and the picker will never consult it. The scan is once per repaint over every session at once, and per-row resolution would read three files per row.
+- **`gitlab.*` is still a set of top-level config keys, not a bundled source.** The built-in GitLab source is the fallback when no `source` hook is set, and it is configured where it always was, in `gitlab:` in either config file. A `source` hook shipped with a bundle carries its own configuration however it likes; the built-in one does not, so the one tracker wisp knows about is still spelled differently from every other.
+- **Acceptance hashes `workflow.yaml` and nothing else.** A script the manifest names can be rewritten afterwards without wisp asking again. See [Accepting a workspace's workflow](#accepting-a-workspaces-workflow) for what that buys and what it costs.
+- **There is no timeout on a hook.** A `source` hook that hangs hangs the picker's refresh, and a `close` hook that hangs sits between `ctrl-d` and the row disappearing. wisp waits for the process, with no deadline and nothing to interrupt it but `ctrl-c`. A hook is a program you chose to run, and the alternative (a deadline wisp picks) would kill a slow-but-working tracker query on a bad network, which is a worse failure than a wait you can see.
+- **A remote workspace refuses `wisp workflow` entirely.** Not a gap: the files are on the other machine, and the command says which `ssh` line answers.
+
+[Hooks](hooks.md) has the contract each hook has, and the reasoning that picked it.
