@@ -111,7 +111,7 @@ accepted:
   /Users/you/work ./ship: 854659096926d77dbfe636122cf24cd7cc39e87426d7a46009cae5bbb6169f8f
 ```
 
-The key is the workspace path and the address together, because the same relative address in two workspaces is two different directories. The value is a SHA-256 of that workflow's `workflow.yaml`, re-checked on every load, so editing the manifest puts it back to unaccepted.
+The key is the workspace path and the address together, because the same relative address in two workspaces is two different directories. The value is a SHA-256 of what was accepted, re-checked on every load, so editing it puts it back to unaccepted.
 
 It covers three files, and all three are files that can arrive with a repository or be written by something other than you: a workspace bundle, the workspace's own `.wisp.yaml`, and an item's `orchestration.md`. For a bundle it hashes every file in the directory, not just the manifest that names them. The gate is on execution rather than configuration, so `branch:` and `worktree:` apply from any of them at once and only the keys naming something to run wait for an answer. [Workflows](workflows.md#what-the-gate-covers) is the whole of it.
 

@@ -358,6 +358,12 @@ default: one agent at the workspace root, a shell per worktree
   provision    workspace  {wisp} provision {item}    [when provisioning]
 ```
 
+The header line names the workflow only when a bundle named itself. When nothing names one and a config file has simply taken keys off the built-in, it says so instead, because the built-in's description stops being true of what runs the moment `program:` comes from somewhere else:
+
+```
+default: the built-in, with program, layout overridden
+```
+
 A key nothing sets prints as `-`, so "wisp runs no close hook" is visibly an answer rather than an empty column. Hook paths print relative to the workspace, or with `~` for your home directory, and are cut from the left at 44 characters so the `from` column stays on screen. Non-fatal problems print as `note:` lines under the layout detail.
 
 The optional item argument is the per-item answer, which is the one worth having: an item may override keys in its own `orchestration.md`, so "why did *this one* open like that" is a different question from "what does this workspace do". Anything that is not a known verb is taken as an item name, so a typo is refused as a missing item rather than silently answering the workspace question.
@@ -532,28 +538,59 @@ is worth fixing now:
   wisp workflow edit <name>
 ```
 
-### `wisp workflow accept ./<name> [-y]`
+### `wisp workflow accept ./<name> [-y]`, `accept .wisp.yaml`, `accept <item>`
 
-Read a workflow this workspace ships, and record that it may run. This is the only security decision wisp has, so it prints the manifest in full, then the body of every script the manifest names, then asks. A hook naming a file that is not there yet prints as `not there yet` rather than being skipped, because that is still a file the workspace decides the contents of later. Scripts are never truncated.
+Read something that arrived with a repo, and record that it may run. This is the only security decision wisp has, so it prints the file in full, then the body of every script that file names, then asks. A hook naming a file that is not there yet prints as `not there yet` rather than being skipped, because that is still a file the workspace decides the contents of later. Scripts are never truncated.
+
+Three things can be accepted, and they are the three files that arrive from somewhere other than your own config:
+
+| address | what it covers | recorded as |
+|---|---|---|
+| `./<name>` | a bundle under `.wisp/workflows/` | SHA-256 of the whole directory |
+| `.wisp.yaml` | the workspace config's own `program:`, hooks and `layout[].run` | SHA-256 of the file |
+| `<item>` | an item's `orchestration.md`, same keys | SHA-256 of the file |
+
+The gate is on **executable keys only**: `program`, `source`, `context`, `close`, `provision`, and any `layout` entry with a `run:` in it. `branch:`, `worktree:` and `status.needs_input` are strings wisp interprets itself and apply from any file with no ceremony. A file setting none of the executable keys needs no acceptance and says so:
+
+```
+.wisp.yaml runs nothing, so there is nothing to accept
+
+it sets no program, no hooks and no layout command, and every other key in it
+already applies.
+```
+
+Until accepted, those keys are **stripped and the session still opens**, on the built-in's values, with a note saying what was dropped and how to allow it:
+
+```
+note: .wisp.yaml sets program, layout, which wisp would run; it has not been accepted, so run
+`wisp workflow accept .wisp.yaml` after reading it
+```
 
 `-y` (or `--yes`) answers yes without the prompt, and is **required rather than assumed** when stdin is not a terminal, because a prompt written to something that cannot answer is either a hang or a silent yes.
 
-The record goes into the user config under `accepted:`, keyed by workspace path and address together, as a SHA-256 of `workflow.yaml`. Editing the manifest puts it back to unaccepted.
+The record goes into the user config under `accepted:`, keyed by workspace path and address together. Never into the workspace config: a workspace that could write it would be accepting itself. For a bundle the hash covers every file in the directory, not just the manifest, which is what makes showing you the scripts worth anything: a `git pull` rewriting `bin/close.sh` alone puts it back to unaccepted.
 
 ```
 accepted ./ship in work, recorded in ~/.config/wisp/config.yaml
 
-editing workflow.yaml puts it back to unaccepted, which is the point: this is not a
-standing permission for whatever the file becomes later.
+editing anything in it, the workflow.yaml or a script it names, puts it back to
+unaccepted, which is the point: this is not a standing permission for whatever
+the bundle becomes later.
 ```
 
 ```
 usage: wisp workflow accept ./<name> [-y]
 
 `wisp workflow list` marks the ones still waiting on this
+no workflow "nope" anywhere: not one of yours under ~/.config/wisp/workflows, and not one this workspace ships
+
+  wisp workflow list   what there is to name
+no item "_adhoc/nope" in ~/work/working_items
+
+  wisp ls   what there is to name
 only a workflow this workspace supplies has to be accepted, and those are addressed ./hooked
 
-"hooked" would be one of yours, under ~/.config/wisp/workflows, and yours already run
+"hooked" is one of yours, under ~/.config/wisp/workflows, and yours already run
 "ship" names one of yours; this workspace ships one by that name too
 
 the workspace's one is the one that needs accepting:
@@ -588,7 +625,7 @@ check it landed:
 
 The `~/.config/wisp/workflows/` in that line is how it reads, not what was sent: the destination is expanded by the far side's shell, so a machine with `XDG_CONFIG_HOME` set puts it somewhere else.
 
-The file count is of the top of the bundle only; everything under it is sent, so a bundle keeping its scripts in `bin/` reports fewer files than it moved. `push` is idempotent, so re-running it is how you resync. It refuses a `./` address, since a workspace's own workflow travels with the workspace.
+The file count is of the whole tree, matching what `tar` ships, so a bundle keeping its scripts in `bin/` reports all of them. `push` is idempotent, so re-running it is how you resync. It refuses a `./` address, since a workspace's own workflow travels with the workspace.
 
 ```
 usage: wisp workflow push <name> <host>

@@ -305,7 +305,7 @@ The `*` is on `default`, not on the bound-but-unaccepted `./ship`, and that is t
 
 `wisp workflow accept ./ship` prints the manifest in full, then the body of every script the manifest names, then asks. A hook naming a file that is not there yet is printed as `not there yet` rather than skipped, because that is still a file the workspace decides the contents of later. Scripts are never truncated: the interesting line in a script somebody else wrote is exactly as likely to be the last one as the first. `-y` answers yes without the prompt, and is required rather than assumed when stdin is not a terminal, because a prompt written to something that cannot answer is either a hang or a silent yes.
 
-Accepting records a SHA-256 of that workflow's `workflow.yaml` in the **user config**, under `accepted:`, keyed by the workspace path and the address together:
+Accepting records a SHA-256 of the whole bundle directory in the **user config**, under `accepted:`, keyed by the workspace path and the address together:
 
 ```yaml
 # ~/.config/wisp/config.yaml
@@ -316,12 +316,12 @@ accepted:
 Three properties fall out of that, each because the alternative fails silently:
 
 - **The record lives in the user config and nowhere else**, and is restored after the workspace file is merged. A workspace that could write its own acceptance would be accepting itself. This is the same protection `workspaces:`, `hosts:` and `default:` get, for a sharper reason ([Configuration](configuration.md)).
-- **The hash is re-checked on every load**, not once. Accepting once must not be a standing permission for whatever the file becomes later: a `git pull` that rewrites `workflow.yaml` is exactly the moment worth asking about again, and it is the moment nobody would notice by hand.
+- **The hash is re-checked on every load**, not once. Accepting once must not be a standing permission for whatever the file becomes later: a `git pull` that rewrites the bundle is exactly the moment worth asking about again, and it is the moment nobody would notice by hand.
 - **The key is the workspace and the address together.** The same relative address in two workspaces is two different directories, and has to be accepted twice.
 
-It is the manifest that is hashed rather than the whole directory. The manifest is what names every script, so a change to it is the change worth re-asking about; hashing the scripts as well would re-prompt on every edit to your own workflow and train you to say yes.
+The hash covers every file in the directory, not the manifest alone, and the path and length of each go into it as well as the contents, so renaming a script or moving bytes between two of them changes it. That is what makes printing the scripts worth anything: the prompt shows you `bin/close.sh`, and the record is of the bytes you were shown. Hashing the manifest alone would have left a later commit rewriting `bin/close.sh` running under the acceptance you gave to a different script.
 
-**That is a real gap, not a technicality.** Accepting `./ship` shows you `bin/close.sh` and then records a hash of `workflow.yaml` alone. A later commit that rewrites `bin/close.sh` without touching the manifest is a script you have not read, running with the acceptance you gave to a different one. What is bought with that is a workflow you can iterate on without a prompt per save; what is paid is that the trust boundary is drawn around the list of scripts rather than around their contents. If that trade is wrong for a workspace, do not accept its workflow; the built-in is complete and costs a plainer session.
+The cost is a prompt after every edit to a workspace bundle you are iterating on yourself. That is the right way round: a workflow of your own belongs under `~/.config/wisp/workflows`, where nothing is gated at all, and `./` is for the ones that arrive with the repository.
 
 ### What the gate covers
 

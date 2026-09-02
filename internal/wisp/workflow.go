@@ -160,8 +160,11 @@ func (w *Workflow) applyBundle(bundle Workflow, src string) {
 	// bundle, stayed silent about the same file.
 	w.Notes = append(w.Notes, bundle.Notes...)
 	w.overlay(src, bundle, bundle.Dir)
+	// Recorded like any other key, because the header is the one line that claims to say what is
+	// running and a name nobody supplied is the built-in's. Only a bundle can name a workflow, so
+	// this is what tells the header apart from "the built-in, with keys taken off it".
 	if bundle.Name != "" {
-		w.Name = bundle.Name
+		w.Name, w.From["name"] = bundle.Name, src
 	}
 	if bundle.Description != "" {
 		w.Description = bundle.Description

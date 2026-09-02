@@ -233,3 +233,49 @@ func TestWorkflowAcceptRecordsTheHash(t *testing.T) {
 		t.Error("accept took a bare name, which is one of yours")
 	}
 }
+
+// accept refuses three different addresses for three different reasons, and the reason is the
+// whole value of the message: it says where to go and look. Telling someone a workflow of theirs
+// "already runs" when they never made one sends them to a directory that is not there.
+func TestWorkflowAcceptSaysWhichThingIsMissing(t *testing.T) {
+	c := newWorkflowConfig(t)
+	if err := os.MkdirAll(filepath.Join(UserWorkflowsDir(), "mine", "x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ addr, want string }{
+		{"nope", `no workflow "nope" anywhere`},
+		{"_adhoc/nope", `no item "_adhoc/nope"`},
+		{"mine", "and yours already run"},
+	} {
+		err := c.workflowAccept(tc.addr, false)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("accept %q: %v, want it to mention %q", tc.addr, err, tc.want)
+		}
+	}
+}
+
+// The header is the one line claiming to say what runs. With no bundle named, the name is the
+// built-in's and so is the description, and printing that above a table saying `program` came
+// from .wisp.yaml is the header contradicting the rows under it.
+func TestTheHeaderDoesNotClaimTheBuiltinWhenAConfigOverrodeIt(t *testing.T) {
+	f := newWorkflowFixture(t)
+	body := "program: aider\n"
+	f.spaceConfig(body)
+	f.c.Accepted[f.c.acceptKey(MarkerFile)] = sumOf([]byte(body))
+
+	w := f.c.WorkflowFor(Item{}, "")
+	if got := overrides(w); len(got) != 1 || got[0] != "program" {
+		t.Fatalf("overrides = %v, want just program", got)
+	}
+	if w.From["name"] != "" {
+		t.Errorf("nothing named this workflow, so From[name] should be empty, got %q", w.From["name"])
+	}
+
+	// A bundle names itself, and then its own description is the honest one.
+	f.userBundle("solo", "name: solo\ndescription: mine\n")
+	f.userConfig("workflow: solo\n")
+	w = f.c.WorkflowFor(Item{}, "")
+	if w.Name != "solo" || w.From["name"] != "solo" {
+		t.Errorf("name = %q from %q, want solo from the bundle", w.Name, w.From["name"])
+	}
+}

@@ -235,6 +235,19 @@ var workflowKeys = []struct {
 	{"needs_input", func(_ Config, w Workflow) string { return w.Status.NeedsInput }},
 }
 
+// overrides names the keys some layer other than the built-in supplied, in the order the table
+// below prints them. It is what the header says when nothing named a bundle: the built-in's
+// description is no longer true of a resolution that has had half its keys replaced.
+func overrides(w Workflow) []string {
+	var out []string
+	for _, k := range workflowKeys {
+		if src := w.From[k.key]; src != "" && src != "built-in" {
+			out = append(out, k.key)
+		}
+	}
+	return out
+}
+
 // displayPath is a hook path as a person would like to read it: relative to the workspace when it
 // is inside one, with ~ for the home directory otherwise.
 //
@@ -290,8 +303,21 @@ func layoutSummary(wins []Window) string {
 // five files to edit to change it.
 func (c Config) printWorkflow(w Workflow, item string) {
 	head := w.Name
-	if w.Description != "" {
-		head += ": " + w.Description
+	switch {
+	// A bundle named this workflow, so its own description is the description of what runs.
+	case w.From["name"] != "":
+		if w.Description != "" {
+			head += ": " + w.Description
+		}
+	// Nothing named one, so this is the built-in with keys taken off it by a config file. Its
+	// description describes the built-in, and printing it above rows that say `program` came from
+	// .wisp.yaml is the header contradicting the table.
+	case len(overrides(w)) > 0:
+		head += ": the built-in, with " + strings.Join(overrides(w), ", ") + " overridden"
+	default:
+		if w.Description != "" {
+			head += ": " + w.Description
+		}
 	}
 	if item != "" {
 		head += "\nfor " + item
@@ -799,7 +825,19 @@ func (c Config) workflowAccept(addr string, yes bool) error {
 		if isDir(filepath.Join(c.WorkspaceWorkflowsDir(), addr)) {
 			return fmt.Errorf("%q names one of yours; this workspace ships one by that name too\n\nthe workspace's one is the one that needs accepting:\n  wisp workflow accept ./%s", addr, addr)
 		}
-		return fmt.Errorf("only a workflow this workspace supplies has to be accepted, and those are addressed ./%s\n\n%q would be one of yours, under %s, and yours already run",
+		// An address holding a slash was reaching for an item, and got here because no item by
+		// that name exists. Answering about workflows would send someone looking in the wrong
+		// place for a directory that is missing from the other one.
+		if strings.Contains(addr, "/") {
+			return fmt.Errorf("no item %q in %s\n\n  wisp ls   what there is to name", addr, shortPath(c.VaultDir()))
+		}
+		// Nothing anywhere by that name. "yours already run" is true of a workflow of yours and
+		// misleading about one you never made: it describes the rule and implies the directory.
+		if dir := UserWorkflowsDir(); dir == "" || !isDir(filepath.Join(dir, addr)) {
+			return fmt.Errorf("no workflow %q anywhere: not one of yours under %s, and not one this workspace ships\n\n  wisp workflow list   what there is to name",
+				addr, shortPath(UserWorkflowsDir()))
+		}
+		return fmt.Errorf("only a workflow this workspace supplies has to be accepted, and those are addressed ./%s\n\n%q is one of yours, under %s, and yours already run",
 			addr, addr, shortPath(UserWorkflowsDir()))
 	}
 	dir, err := c.WorkflowDir(addr)
@@ -871,7 +909,10 @@ func (c Config) workflowAccept(addr string, yes bool) error {
 	if err := c.writeInto("accepted", c.acceptKey(addr), sum); err != nil {
 		return err
 	}
-	fmt.Printf("\naccepted %s in %s, recorded in %s\n\nediting %s puts it back to unaccepted, which is the point: this is not a\nstanding permission for whatever the file becomes later.\n",
+	// "anything in it", not "the manifest": the hash covers the whole directory, which is what
+	// makes showing you the scripts above worth anything. Naming only workflow.yaml here would
+	// describe a narrower record than the one being written.
+	fmt.Printf("\naccepted %s in %s, recorded in %s\n\nediting anything in it, the %s or a script it names, puts it back to\nunaccepted, which is the point: this is not a standing permission for whatever\nthe bundle becomes later.\n",
 		addr, c.Name, shortPath(UserConfigPath()), WorkflowFile)
 	return nil
 }
