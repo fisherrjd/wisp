@@ -7,10 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
+	"sync"
 
 	"gopkg.in/yaml.v3"
 )
@@ -567,7 +570,27 @@ func (c Config) itemManifestAccepted(item Item) (bool, error) {
 // The item may be zero, for the workspace-level answer. An item may override anything except
 // where items come from: `source` decides that, and an item cannot have an opinion about it,
 // since it does not exist until source has run.
+//
+// Memoized when the caller asked for it with CacheWorkflows, because resolution is two to five
+// file reads and the picker's preview pane asks on every cursor move.
 func (c Config) WorkflowFor(item Item, oneShot string) Workflow {
+	if c.wfCache == nil {
+		return c.resolveWorkflow(item, oneShot)
+	}
+	// The item and the one-shot are the whole of the question: everything else resolution reads
+	// is a file, and the cache's lifetime is what says how stale a file's answer may be.
+	key := item.Name + "\x00" + oneShot
+	if w, ok := c.wfCache.get(key); ok {
+		return w
+	}
+	w := c.resolveWorkflow(item, oneShot)
+	c.wfCache.put(key, w)
+	return w
+}
+
+// resolveWorkflow is WorkflowFor with the memoization peeled off, so the cache wraps one
+// function rather than being threaded through the layers.
+func (c Config) resolveWorkflow(item Item, oneShot string) Workflow {
 	w := c.builtinResolved()
 
 	user, _ := readOverlayFile(UserConfigPath())
@@ -678,6 +701,60 @@ func (c Config) WorkflowFor(item Item, oneShot string) Workflow {
 	}
 
 	w.Notes = append(w.Notes, w.validate()...)
+	return w
+}
+
+// workflowCache holds resolved workflows for as long as a caller says a file's answer may be
+// reused. There is no TTL: the lifetime is the caller's, which is the only party that knows when
+// it last had a reason to believe the files changed.
+type workflowCache struct {
+	mu sync.Mutex
+	m  map[string]Workflow
+}
+
+// CacheWorkflows returns a copy of the config that resolves each workflow once and remembers it.
+//
+// For the picker, which resolves a workflow per preview: arrowing through forty items was two to
+// five file reads each, forty times, to answer a question whose inputs nobody touched. Everything
+// else leaves this off, because a command that runs once has nothing to save and a config that
+// remembered a workflow across an edit would be answering from before it.
+func (c Config) CacheWorkflows() Config {
+	c.wfCache = &workflowCache{m: map[string]Workflow{}}
+	return c
+}
+
+// ForgetWorkflows drops what CacheWorkflows remembered, for the moment the caller knows the files
+// may have moved under it: a refresh, or a config reloaded from disk.
+func (c Config) ForgetWorkflows() {
+	if c.wfCache == nil {
+		return
+	}
+	c.wfCache.mu.Lock()
+	defer c.wfCache.mu.Unlock()
+	c.wfCache.m = map[string]Workflow{}
+}
+
+func (wc *workflowCache) get(key string) (Workflow, bool) {
+	wc.mu.Lock()
+	defer wc.mu.Unlock()
+	w, ok := wc.m[key]
+	return w.clone(), ok
+}
+
+func (wc *workflowCache) put(key string, w Workflow) {
+	wc.mu.Lock()
+	defer wc.mu.Unlock()
+	wc.m[key] = w.clone()
+}
+
+// clone copies the parts of a Workflow a caller could append to or write through. A cache that
+// handed out its own slices would have callers editing each other's answers: Notes in particular
+// is appended to by everything that resolves one, and the second caller would inherit the first
+// caller's notes and then add its own.
+func (w Workflow) clone() Workflow {
+	w.Layout = slices.Clone(w.Layout)
+	w.Notes = slices.Clone(w.Notes)
+	w.From = maps.Clone(w.From)
 	return w
 }
 

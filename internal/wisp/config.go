@@ -98,6 +98,15 @@ type Config struct {
 	Vault     string `yaml:"vault"`
 	Worktrees string `yaml:"worktrees"`
 	GitLab    GitLab `yaml:"gitlab"`
+
+	// wfCache memoizes workflow resolution, for the one caller that asks the same question
+	// hundreds of times: the picker's preview pane, which resolves a workflow on every cursor
+	// move. Nil everywhere else, and nil means resolve every time, which is the answer a
+	// one-shot command wants.
+	//
+	// A pointer, so it survives the copies Config makes of itself, and so that not having one
+	// costs nothing. Unexported, so no YAML round trip can see it.
+	wfCache *workflowCache
 }
 
 // defaults are the keys that are wisp's rather than a workflow's: where the vault and the

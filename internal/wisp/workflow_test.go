@@ -1039,3 +1039,77 @@ func TestListWorkflows(t *testing.T) {
 		t.Error("the built-in is still marked once a real workflow took over")
 	}
 }
+
+// The picker resolves a workflow for the highlighted item on every cursor move, which is a
+// handful of file reads per keystroke. CacheWorkflows says those reads may be reused; the proof
+// is that a config holding one keeps answering from before an edit while a plain one does not.
+func TestCachedResolutionReusesItsAnswer(t *testing.T) {
+	f := newWorkflowFixture(t)
+	f.spaceConfig("program: aider\n")
+	f.c.Accepted[f.c.acceptKey(MarkerFile)] = sumOf([]byte("program: aider\n"))
+
+	cached := f.c.CacheWorkflows()
+	if got := cached.WorkflowFor(Item{}, "").Program; got != "aider" {
+		t.Fatalf("program = %q, want aider", got)
+	}
+
+	f.spaceConfig("program: codex\n")
+	f.c.Accepted[f.c.acceptKey(MarkerFile)] = sumOf([]byte("program: codex\n"))
+	if got := cached.WorkflowFor(Item{}, "").Program; got != "aider" {
+		t.Errorf("cached program = %q, want the remembered aider", got)
+	}
+	if got := f.c.WorkflowFor(Item{}, "").Program; got != "codex" {
+		t.Errorf("uncached program = %q, want the edited codex", got)
+	}
+
+	// ctrl-r is the key someone presses after editing a workflow in another terminal, so it has
+	// to mean the memo as well as the network.
+	cached.ForgetWorkflows()
+	if got := cached.WorkflowFor(Item{}, "").Program; got != "codex" {
+		t.Errorf("after forgetting, program = %q, want codex", got)
+	}
+}
+
+// An item may override the workflow in its own frontmatter, so the memo is per item. One key for
+// the workspace would hand every item the first item's answer.
+func TestCachedResolutionIsPerItem(t *testing.T) {
+	f := newWorkflowFixture(t)
+	f.itemFile("_adhoc/one", "---\nbranch: one/{slug}\n---\n")
+	f.itemFile("_adhoc/two", "---\nbranch: two/{slug}\n---\n")
+
+	cached := f.c.CacheWorkflows()
+	if got := cached.WorkflowFor(Item{Name: "_adhoc/one"}, "").Branch; got != "one/{slug}" {
+		t.Fatalf("first item branch = %q", got)
+	}
+	if got := cached.WorkflowFor(Item{Name: "_adhoc/two"}, "").Branch; got != "two/{slug}" {
+		t.Errorf("second item branch = %q, want its own", got)
+	}
+}
+
+// The cache hands out copies. Notes is appended to by everything that resolves a workflow, so a
+// caller writing through to the cache's own slice would leave the next caller reading notes about
+// somebody else's resolution.
+func TestCachedResolutionHandsOutCopies(t *testing.T) {
+	f := newWorkflowFixture(t)
+	f.spaceConfig("worktree: has/a/slash\n")
+
+	cached := f.c.CacheWorkflows()
+	first := cached.WorkflowFor(Item{}, "")
+	if len(first.Notes) == 0 {
+		t.Fatal("a worktree name with slashes in it should be noted")
+	}
+	first.Notes = append(first.Notes, "written by the caller")
+	first.From["program"] = "written by the caller"
+	first.Layout[0].Window = "written by the caller"
+
+	second := cached.WorkflowFor(Item{}, "")
+	if len(second.Notes) != len(first.Notes)-1 {
+		t.Errorf("notes leaked between callers: %v", second.Notes)
+	}
+	if second.From["program"] == "written by the caller" {
+		t.Error("From leaked between callers")
+	}
+	if second.Layout[0].Window == "written by the caller" {
+		t.Error("Layout leaked between callers")
+	}
+}

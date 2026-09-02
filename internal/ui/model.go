@@ -13,7 +13,11 @@ import (
 // Run starts the picker. It returns the chosen item, if any, by opening it directly: the
 // program exits into tmux, so there is no value to hand back to a caller.
 func Run(cfg wisp.Config) error {
-	m := newModel(cfg)
+	// Cached for the picker's lifetime, and only here. The preview pane resolves a workflow for
+	// the highlighted item on every cursor move, which is a handful of file reads per keystroke to
+	// answer a question whose inputs are the same until something says otherwise. ctrl-r and a
+	// reload are the two things that say otherwise.
+	m := newModel(cfg.CacheWorkflows())
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	final, err := p.Run()
 	if err != nil {
@@ -297,7 +301,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "ctrl+r":
 			m.status = "refreshing gitlab"
-			return m, tea.Batch(loadLocal(m.cfg), loadRemote(m.cfg, true))
+			// Refresh means everything, not only the network. A workflow edited or accepted in
+			// another terminal is exactly what someone reaches for this key after doing.
+			m.cfg.ForgetWorkflows()
+			return m, tea.Batch(loadLocal(m.cfg), loadRemote(m.cfg, true), m.previewCmd())
 
 		case "backspace":
 			if m.query != "" {
@@ -829,7 +836,9 @@ func firstLine(s string) string {
 // reflects the edit without leaving the picker.
 func (m *model) reload() tea.Cmd {
 	if cfg, err := m.cfg.Reload(); err == nil {
-		m.cfg = cfg
+		// Re-read from disk, so the memo starts empty; and cached again, because the picker it is
+		// going back to is the same picker with the same preview pane.
+		m.cfg = cfg.CacheWorkflows()
 	}
 	return loadLocal(m.cfg)
 }
