@@ -28,7 +28,8 @@
 
         # `nix develop` for contributors who do not use the direnv/default.nix path.
         devShells.default = pkgs.mkShell {
-          packages = with pkgs; [ go gopls go-tools tmux fzf glab ];
+          # nodejs is for docs/site, the vite app that renders docs/*.md
+          packages = with pkgs; [ go gopls go-tools tmux fzf glab nodejs ];
         };
       });
 }

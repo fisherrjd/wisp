@@ -63,6 +63,7 @@ const (
 	modeNewWS                 // typing names a new workspace
 	modeNewHost               // typing names a machine to reach
 	modeClose                 // typing says what finished, on the way to closing an item out
+	modeHelp                  // the whole key list, since the footer only shows what applies
 )
 
 type model struct {
@@ -83,6 +84,10 @@ type model struct {
 	// thing needs a way back into view or ctrl-d is a one-way door, and an item marked finished
 	// by mistake would only be recoverable by editing its note by hand.
 	showDone bool
+	// hasDone is whether there is anything to come back to, which is what decides if the footer
+	// mentions ctrl-t. Answered before the hiding happens, since afterwards there is nothing
+	// left to count.
+	hasDone bool
 
 	// peers is every workspace's live tally, shown in the header and, in workspace mode, as the
 	// list itself. Without it the workspace ring is invisible from inside any one of its members.
@@ -197,10 +202,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateNewHost(msg)
 		case modeClose:
 			return m.updateClose(msg)
+		case modeHelp:
+			return m.updateHelp(msg)
 		}
 		switch msg.String() {
 		case "ctrl+c", "esc":
 			return m, tea.Quit
+
+		// The footer lists what applies to the row under the cursor, which is most of what
+		// anyone needs and none of the rest. This is the rest.
+		//
+		// ctrl+g rather than the obvious "?": the filter line types, so a bare ? has to reach
+		// the query or a name containing one cannot be searched for. ctrl+? is worse than
+		// unavailable — most terminals send DEL for it, which is Backspace, already bound here.
+		case "ctrl+g":
+			m.mode = modeHelp
+			m.status = ""
+			return m, nil
 
 		case "ctrl+n":
 			m.mode = modeNew
@@ -378,6 +396,21 @@ func (m model) updateNew(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // It exists because the flag and the write-up were two separate actions and only one of them was
 // a keystroke, so the items that got closed out and the items that got written up were disjoint
 // sets. Asking here makes the cheap action the complete one.
+// updateHelp is the key list. It reads rather than does, so every key that is not a way out is
+// ignored: a page of bindings that acts on one of them while you are still reading it would be
+// the worst possible place to be surprised.
+func (m model) updateHelp(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+	// ctrl+g closes what ctrl+g opened, which is how ctrl+w already behaves for the tree.
+	case "esc", "ctrl+g", "enter", "q":
+		m.mode = modeFilter
+		return m, nil
+	}
+	return m, nil
+}
+
 func (m model) updateClose(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc", "ctrl+c":
@@ -460,6 +493,13 @@ func (m *model) move(delta int) {
 // vault row carries the flag.
 func (m *model) rebuild() {
 	m.all = wisp.MergeAll(m.local, m.remote)
+	m.hasDone = false
+	for _, it := range m.all {
+		if it.Done {
+			m.hasDone = true
+			break
+		}
+	}
 	if !m.showDone {
 		m.all = wisp.HideDone(m.all)
 	}

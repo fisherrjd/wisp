@@ -314,6 +314,8 @@ A remote workspace needs wisp on both machines, at versions speaking the same wi
 
 For working on wisp itself, `default.nix` plus direnv gives the dev environment, and `nix develop` gives a second one from the flake.
 
+The documentation site is `docs/site`, a Vue app that renders the markdown above rather than restating it: `nix build .#wisp-docs`, or `npm run dev` in that directory. [docs/site/README.md](docs/site/README.md) says how it fits together.
+
 ## License
 
 MIT.

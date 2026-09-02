@@ -17,7 +17,7 @@ Four regions: the prompt line, with the machine ring on the right and a match co
 
 ## Modes
 
-The picker has five, and each one owns every key while it is open. For the lines you type into, that is what lets a URL or a path containing characters that are bindings elsewhere still type through cleanly.
+The picker has seven, and each one owns every key while it is open. For the lines you type into, that is what lets a URL or a path containing characters that are bindings elsewhere still type through cleanly.
 
 | mode | what you see | enter with | leave with |
 |---|---|---|---|
@@ -27,6 +27,7 @@ The picker has five, and each one owns every key while it is open. For the lines
 | **new workspace** | a create line over the tree | `n` in the tree | `esc` |
 | **add machine** | a create line over the tree | `a` in the tree | `esc` |
 | **closing out** | a line over the list | `ctrl-d` on an item with an empty note | `esc` |
+| **keys** | every binding, grouped | `ctrl-g` | `esc`, `ctrl-g`, `enter`, `q` |
 
 `ctrl-c` quits from the item list and **cancels the mode** everywhere else. In the create lines it is the same as `esc`.
 
@@ -47,9 +48,12 @@ The picker has five, and each one owns every key while it is open. For the lines
 | `ctrl-x` | kill the highlighted item's session |
 | `ctrl-w` | open the workspace tree |
 | `ctrl-r` | drop the GitLab cache and re-query |
+| `ctrl-g` | the key list, every binding in one page |
 | `esc` `ctrl-c` | quit, leaving everything running |
 
 `ctrl-j` and `ctrl-k` rather than the emacs `ctrl-p` and `ctrl-n`, because `ctrl-n` is wanted for creating an item and splitting the pair across two idioms reads worse than moving both.
+
+`ctrl-g` rather than the obvious `?`, because the filter line types: a bare `?` has to reach the query or an item with one in its name cannot be searched for. `ctrl-?` is worse than unavailable — most terminals send DEL for it, which is what `backspace` sends, and that is already bound.
 
 The filter is fuzzy and matches the item **name** only, not its GitLab title. Matching re-orders the list by rank.
 
@@ -205,3 +209,27 @@ Errors from a create line keep your text so you can correct it in place. A missi
 The list is fixed at 40% of the width so long item names stay readable while the preview still gets the majority. Both panes derive their height from one number, which is what keeps them ending on the same row.
 
 The footer **stacks rather than truncating** when the terminal is too narrow. That is the whole reason for leaving fzf, whose header could only ever truncate: each half wraps onto as many rows as it needs, and every row is counted, so the panes above never slide off the top.
+
+### The footer is five hints, not a manifest
+
+| Hint | Shown when |
+|---|---|
+| `enter open`, `ctrl-d done` | the cursor is on a row. Both act on the highlighted item, so neither means anything on an empty list |
+| `ctrl-t show closed` | something has been closed out. It becomes `ctrl-t hide closed` while they are on screen |
+| `ctrl-n new`, `ctrl-g keys`, `esc quit` | always |
+
+The three verbs, the way out, and the way to everything else. `ctrl-x`, `ctrl-w`, `ctrl-r` and the tree's own letters are on the `ctrl-g` page, which exists so this line does not have to carry them.
+
+Listing all eight came to 120 columns, wider than an ordinary terminal, so the stacking above happened to most people most of the time and the bar was the busiest thing on a screen whose whole point is a calm list. Five hints is 62 columns, which stays on one line beside the legend down to a 108-column terminal.
+
+`ctrl-w` is the one that hurts to drop, since the workspace ring is half of what wisp is. The header already carries that: it names the other machines and tallies what is waiting on each. A hint repeating that the tree exists is not what makes it discoverable.
+
+`ctrl-t` is the exception that stays conditional rather than moving to the page. It is the way back from a mistaken `ctrl-d`, so it cannot wait for someone to already know about it, and it arrives the moment there is something to come back to.
+
+### `ctrl-g` is the whole vocabulary
+
+A footer that only shows what applies needs somewhere the rest still lives. `ctrl-g` opens a page of every binding, grouped by what it acts on, and `esc` closes it.
+
+It takes the whole body rather than floating over the panes. Compositing a box on top of two panes is a layer lipgloss does not have, and a page you are reading does not need to show you the list you are not reading.
+
+The tree's plain letters are the reason this page exists as much as the shed hints are: `n`, `a` and `x` were previously discoverable only by already being in the tree, which is the one place the footer describing them is not on screen when you would want it.
