@@ -55,7 +55,7 @@ function isActive(slug: string) {
     <nav class="hidden lg:sticky lg:top-20 lg:block lg:self-start" aria-label="Reference pages">
       <div v-for="group in GROUPED" :key="group.group" class="mb-4">
         <div
-          class="px-2.5 pb-1 text-[0.68rem] font-semibold tracking-[0.09em] text-muted-foreground uppercase"
+          class="eyebrow mb-2"
         >
           {{ group.group }}
         </div>
@@ -80,15 +80,15 @@ function isActive(slug: string) {
     <!-- the page -->
     <article class="min-w-0">
       <div class="mb-6">
-        <div class="mb-1 flex items-center gap-2 text-[0.68rem] tracking-[0.09em] uppercase">
+        <div class="eyebrow mb-2">
           <span class="text-muted-foreground">{{ page.group }}</span>
           <span
             v-if="page.note"
-            class="rounded-full border px-1.5 text-muted-foreground"
+            class="rounded-full bg-muted px-2.5 py-0.5 text-[0.8rem] text-muted-foreground"
             >{{ page.note }}</span
           >
         </div>
-        <h1 class="text-3xl font-semibold tracking-[-0.03em] text-balance">{{ page.title }}</h1>
+        <h1 class="text-3xl font-bold text-balance">{{ page.title }}</h1>
       </div>
 
       <MarkdownView :source="page.body" @toc="onToc" />

@@ -4,7 +4,7 @@ import PageGrid from '@/components/PageGrid.vue'
 
 <template>
   <div class="rise-in pt-10">
-    <h1 class="mb-2 text-3xl font-semibold tracking-[-0.03em] text-balance">Reference</h1>
+    <h1 class="mb-3 text-3xl font-bold text-balance">Reference</h1>
     <p class="mb-8 max-w-[68ch] text-pretty text-muted-foreground">
       Every command, every key, every error message. Each page here is a file in
       <span class="font-mono text-[0.9em]">docs/</span> in the repository, rendered as it is: the

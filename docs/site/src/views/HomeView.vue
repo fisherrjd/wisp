@@ -77,14 +77,14 @@ const requirements = [
 
 <template>
   <div>
-    <section class="rise-in pt-14 pb-10">
+    <section class="pt-10 pb-10">
       <h1
-        class="mb-2.5 text-[clamp(2.1rem,6vw,3.4rem)] leading-[1.05] font-semibold tracking-[-0.035em] text-balance"
+        class="mb-4 text-[clamp(1.9rem,4.5vw,2.6rem)] leading-[1.15] font-bold text-balance"
       >
         One work item, one tmux session.
       </h1>
       <p
-        class="mb-2 max-w-[60ch] text-[clamp(1.05rem,2.2vw,1.3rem)] text-pretty text-muted-foreground"
+        class="mb-3 max-w-[62ch] text-[1.05rem] leading-relaxed text-pretty text-muted-foreground"
       >
         wisp turns a unit of work into a running workspace: it finds the item, reprovisions the
         git worktrees it needs, writes a context file for the agent, and drops you into a tmux
@@ -92,7 +92,7 @@ const requirements = [
         <strong class="font-semibold text-foreground">Nothing it does destroys work.</strong>
       </p>
       <p
-        class="mb-8 max-w-[60ch] text-[clamp(1.05rem,2.2vw,1.3rem)] text-pretty text-muted-foreground"
+        class="mb-8 max-w-[62ch] text-[1.05rem] leading-relaxed text-pretty text-muted-foreground"
       >
         <strong class="font-semibold text-foreground"
           >And it has no concept of a supported agent.</strong
@@ -109,7 +109,7 @@ const requirements = [
            The page's max width is set to this window rather than the other way
            around, in App.vue. A terminal narrower than the page it sits on
            looks undersized; wider, and it looks like it escaped. -->
-      <Terminal title='1: wisp-airbook:1:wisp - "airbook"' glow>
+      <Terminal title='1: wisp-airbook:1:wisp - "airbook"'>
 <pre class="term-pre"><span class="g-acc">› </span><span class="g-acc">▏</span>                                                                                                                   <span class="g-acc-b">airbook</span><span class="g-attn"> ?1</span><span class="g-faint"> · </span><span class="g-faint">eldo</span><span class="g-live"> ●3</span>   <span class="g-faint">8/8</span>
   <span class="g-live">●</span> <span class="g-faint">ledger-service/</span><span class="g-soft">318-audit-trail</span>                      <span class="g-rule">│</span>  <span class="g-soft">● Backfill streams by day now, and the batch size is a flag.</span>
 <span class="g-acc">▌ </span><span class="g-attn">?</span> <span class="g-faint">ledger-service/</span><span class="g-ink-b">327-backfill</span>                         <span class="g-rule">│</span>  
@@ -122,15 +122,13 @@ const requirements = [
     </section>
 
     <section id="model" class="scroll-mt-20 pt-4">
-      <h2 class="mb-1.5 text-2xl font-semibold tracking-[-0.025em] text-balance">The model</h2>
+      <h2 class="mb-2 text-2xl font-bold text-balance">The model</h2>
       <p class="mb-6 max-w-[68ch] text-pretty text-muted-foreground">
         Five nouns, and everything else follows from them.
       </p>
       <div class="grid gap-3.5 sm:grid-cols-2 lg:grid-cols-3">
-        <div v-for="noun in nouns" :key="noun.name" class="rounded-lg border bg-card px-4.5 py-4">
-          <h3
-            class="mb-1 text-[0.7rem] font-bold tracking-[0.1em] text-primary uppercase"
-          >
+        <div v-for="noun in nouns" :key="noun.name" class="blob">
+          <h3 class="mb-1 font-bold text-foreground">
             {{ noun.name }}
           </h3>
           <p class="text-sm text-muted-foreground">
@@ -140,7 +138,7 @@ const requirements = [
         </div>
       </div>
       <p
-        class="my-5 max-w-[66ch] border-l-2 border-primary/55 pl-4 text-pretty text-muted-foreground"
+        class="blob my-6 max-w-[70ch] text-pretty text-muted-foreground"
       >
         Killing a session leaves worktrees and branches. Deleting a worktree leaves the branch.
         Closing an item out leaves every file it holds.
@@ -151,7 +149,7 @@ const requirements = [
     </section>
 
     <section id="levels" class="mt-14 scroll-mt-20">
-      <h2 class="mb-1.5 text-2xl font-semibold tracking-[-0.025em] text-balance">Three levels</h2>
+      <h2 class="mb-2 text-2xl font-bold text-balance">Three levels</h2>
       <p class="mb-6 max-w-[68ch] text-pretty text-muted-foreground">
         Systems hold workspaces hold sessions, and wisp moves between all three.
       </p>
@@ -162,7 +160,7 @@ const requirements = [
               <th
                 v-for="head in ['Level', 'Move with', 'Why it is its own level']"
                 :key="head"
-                class="border-b py-2 pr-3.5 text-left text-[0.68rem] font-semibold tracking-[0.09em] text-muted-foreground uppercase"
+                class="eyebrow mb-2"
               >
                 {{ head }}
               </th>
@@ -188,7 +186,7 @@ const requirements = [
     </section>
 
     <section id="states" class="mt-14 scroll-mt-20">
-      <h2 class="mb-1.5 text-2xl font-semibold tracking-[-0.025em] text-balance">
+      <h2 class="mb-2 text-2xl font-bold text-balance">
         The state ladder
       </h2>
       <p class="mb-5 max-w-[68ch] text-pretty text-muted-foreground">
@@ -200,7 +198,7 @@ const requirements = [
         <span
           v-for="state in ladder"
           :key="state.name"
-          class="inline-flex items-center gap-2 rounded-full border bg-card py-1.5 pr-3 pl-2.5 text-[0.83rem]"
+          class="inline-flex items-center gap-2 rounded-full bg-muted/60 py-2 pr-4 pl-3 text-[0.9rem]"
         >
           <span class="w-[1ch] text-center font-mono text-base" :class="state.cls">{{
             state.mark
@@ -211,7 +209,7 @@ const requirements = [
         </span>
       </div>
       <p
-        class="my-5 max-w-[66ch] border-l-2 border-primary/55 pl-4 text-pretty text-muted-foreground"
+        class="blob my-6 max-w-[70ch] text-pretty text-muted-foreground"
       >
         <strong class="font-semibold text-foreground">Done is not a fifth rung.</strong> The
         states are a ladder and merging keeps the highest, so a done item found again as a live
@@ -222,7 +220,7 @@ const requirements = [
     </section>
 
     <section id="reference" class="mt-14 scroll-mt-20">
-      <h2 class="mb-1.5 text-2xl font-semibold tracking-[-0.025em] text-balance">Reference</h2>
+      <h2 class="mb-2 text-2xl font-bold text-balance">Reference</h2>
       <p class="mb-6 max-w-[68ch] text-pretty text-muted-foreground">
         Every flag, every key, every error message. These pages are
         <span class="font-mono text-[0.9em]">docs/*.md</span> from the repository, rendered here
@@ -232,7 +230,7 @@ const requirements = [
     </section>
 
     <section id="install" class="mt-14 scroll-mt-20">
-      <h2 class="mb-1.5 text-2xl font-semibold tracking-[-0.025em] text-balance">
+      <h2 class="mb-2 text-2xl font-bold text-balance">
         Requirements and install
       </h2>
       <div class="my-5 overflow-x-auto">
@@ -242,7 +240,7 @@ const requirements = [
               <th
                 v-for="head in ['Binary', 'Needed for']"
                 :key="head"
-                class="border-b py-2 pr-3.5 text-left text-[0.68rem] font-semibold tracking-[0.09em] text-muted-foreground uppercase"
+                class="eyebrow mb-2"
               >
                 {{ head }}
               </th>

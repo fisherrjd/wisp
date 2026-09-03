@@ -6,20 +6,18 @@
 // template compiler condenses runs of whitespace everywhere except lexically
 // inside a `<pre>` tag, and condensed whitespace is a picker whose columns no
 // longer line up.
-defineProps<{ title: string; glow?: boolean }>()
+//
+// No glow under it. A coloured bloom behind a screenshot is the most reliable
+// tell of a page trying to sell you something.
+defineProps<{ title: string }>()
 </script>
 
 <template>
-  <!-- w-fit, so the chrome ends where the 120th column does. A terminal tiles
+  <!-- w-fit, so the chrome ends where the 144th column does. A terminal tiles
        its width exactly; a transcript adrift in a box half again as wide is
        the one thing a picture of one must not do. -->
   <div
     class="w-fit max-w-full overflow-hidden rounded-xl border bg-card"
-    :class="
-      glow
-        ? 'shadow-[0_12px_40px_-12px_hsl(var(--primary)/0.22),0_2px_8px_-4px_rgb(0_0_0/0.18)]'
-        : ''
-    "
   >
     <div
       class="flex items-center gap-2 border-b bg-muted/55 px-3.5 py-[0.45rem] font-mono text-[0.7rem] text-muted-foreground"

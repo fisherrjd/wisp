@@ -50,7 +50,7 @@ onBeforeUnmount(teardown)
 <template>
   <nav v-if="entries.length" :aria-label="label ?? 'On this page'" class="text-sm">
     <div
-      class="px-2.5 pb-1.5 text-[0.68rem] font-semibold tracking-[0.09em] text-muted-foreground uppercase"
+      class="eyebrow mb-2"
     >
       {{ label ?? 'On this page' }}
     </div>
