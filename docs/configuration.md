@@ -80,6 +80,20 @@ context: .wisp/house-briefing.sh    # overriding one key of it
 
 A relative hook path written **here** resolves against the workspace root, which is what a path in `.wisp.yaml` has always meant. The same key inside a bundle resolves against the bundle directory instead, so the bundle stays copyable. [Workflows](workflows.md) has the full table, the five layers and the addressing rule; `wisp workflow` prints what won and which file it came from.
 
+**`program:` is the whole of wisp's agent support, and there is deliberately no more of it.** The value is handed to tmux as a shell command line with the context file appended as one shell-quoted argument, which means flags, environment prefixes, pipelines and wrapper scripts are all already expressible, and it means wisp has no concept of a supported agent: no adapter to write, no list to be absent from.
+
+```yaml
+program: claude
+program: codex
+program: aider --model sonnet
+program: OPENAI_BASE_URL=http://localhost:8080 my-agent
+program: .claude/scripts/agent-wrapper.sh
+```
+
+The one contract is that the prompt arrives as an argument. An agent that only reads its prompt from stdin, or that expects to be typed into after it starts, needs a wrapper script that does the reading. That is the cost of having no adapters, and it is a file you write once.
+
+`WISP_PROGRAM` overrides it for a single session without editing either file, which is how you try a different agent on one item.
+
 ### The user config only
 
 | key | type | what it controls |

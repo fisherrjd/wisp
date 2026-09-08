@@ -1,0 +1,319 @@
+@import "tailwindcss";
+
+/* One preset. app-template ships four and a picker; a docs site wants a look,
+   not a playground, so dusk is the only file here and the header switch moves
+   between its two halves rather than between themes. */
+@import "./themes/dusk.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+  --color-popover: hsl(var(--popover));
+  --color-popover-foreground: hsl(var(--popover-foreground));
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+/* Round. app-template's 0.5rem is the standard product-page corner and it reads
+   as one; this is a tool with a terminal in it, and the page around it should
+   look approachable rather than like something with a pricing tier. */
+:root {
+  --radius: 1.1rem;
+}
+
+* {
+  border-color: hsl(var(--border));
+}
+
+body {
+  background-color: hsl(var(--background));
+  color: hsl(var(--foreground));
+  -webkit-font-smoothing: antialiased;
+}
+
+/* A soft blob rather than a hairline box. One class, so the whole page's card
+   treatment is dialled in one place. */
+@layer components {
+  .blob {
+    border-radius: var(--radius-lg);
+    background-color: hsl(var(--muted) / 0.55);
+    padding: 1.25rem 1.4rem;
+  }
+  a.blob {
+    text-decoration: none;
+    transition: background-color 120ms ease;
+  }
+  a.blob:hover {
+    background-color: hsl(var(--accent) / 0.55);
+  }
+  /* Section labels, in plain words at a readable size. The uppercase
+     wide-tracked micro-label is the single loudest "product page" tell there
+     is, and it was on every group heading here. */
+  .eyebrow {
+    color: hsl(var(--muted-foreground));
+    font-size: 0.9rem;
+    font-weight: 600;
+  }
+}
+
+::selection {
+  background-color: hsl(var(--primary) / 0.25);
+}
+
+/* ── wisp's own palette ────────────────────────────────────────────────────
+   Every value here is copied out of internal/ui/styles.go, light half then
+   dark half, and none of them are theme tokens. The picker's accent is violet
+   and this site's is rose: a transcript painted in the site's accent would be
+   a picture of a picker nobody has. Same reason the glyphs keep their own
+   hues, a live session being green because it is live. */
+@layer components {
+  .g-acc,
+  .g-acc-b {
+    color: #554cb8; /* colAcc */
+  }
+  .g-ink-b {
+    color: #1b1926; /* colInk */
+  }
+  .g-soft {
+    color: #5a5670; /* colSoft */
+  }
+  .g-faint {
+    color: #86829b; /* colFaint */
+  }
+  .g-rule {
+    color: #cfcadd; /* colRule */
+  }
+  .g-live {
+    color: #2f7d52;
+  }
+  .g-attn {
+    color: #91650e;
+  }
+  .g-folder {
+    color: #7c7891;
+  }
+  .g-remote {
+    color: #41648f;
+  }
+
+  .dark .g-acc,
+  .dark .g-acc-b {
+    color: #a79ef5;
+  }
+  .dark .g-ink-b {
+    color: #e6e3ef;
+  }
+  .dark .g-soft {
+    color: #9d99b0;
+  }
+  .dark .g-faint {
+    color: #736f87;
+  }
+  .dark .g-rule {
+    color: #3a3849;
+  }
+  .dark .g-live {
+    color: #62be8a;
+  }
+  .dark .g-attn {
+    color: #dca845;
+  }
+  .dark .g-folder {
+    color: #8a86a0;
+  }
+  .dark .g-remote {
+    color: #7fa3d6;
+  }
+
+  /* the two lipgloss renders Bold */
+  .g-acc-b,
+  .g-ink-b {
+    font-weight: 600;
+  }
+
+  /* The transcript, inside Terminal's chrome. Every line is exactly 144
+     columns wide because the picker tiles the terminal exactly, so the box is
+     sized to the content rather than the content floating inside a box. */
+  .term-pre {
+    margin: 0;
+    width: max-content;
+    padding: 1rem 1.15rem;
+    font-family: var(--font-mono);
+    /* Small, because terminals are. Presence comes from the window being 144
+       columns wide, not from the type being large; scaling the type up just
+       makes a web page pretending. */
+    font-size: 0.765rem;
+    font-variant-ligatures: none;
+    /* A terminal has no leading, which is why `│` down the pane border is one
+       line and not a dashed one. Anything airier reads as a web page wearing a
+       terminal's clothes. */
+    line-height: 1.2;
+    white-space: pre;
+  }
+}
+
+/* ── Rendered markdown ─────────────────────────────────────────────────────
+   The reference pages are docs/*.md rendered through MarkdownView, so this is
+   what most of the site actually looks like. Token-driven, so it repaints with
+   the switch like everything else. */
+@layer components {
+  .md-prose {
+    color: hsl(var(--foreground));
+    font-size: 0.95rem;
+    line-height: 1.7;
+  }
+  .md-prose > * + * {
+    margin-top: 0.85em;
+  }
+  .md-prose p,
+  .md-prose li {
+    max-width: 68ch;
+    text-wrap: pretty;
+  }
+  .md-prose h2,
+  .md-prose h3,
+  .md-prose h4 {
+    font-weight: 700;
+    line-height: 1.3;
+    scroll-margin-top: 5rem;
+    text-wrap: balance;
+  }
+  .md-prose h2 {
+    margin-top: 2.5em;
+    font-size: 1.4rem;
+  }
+  .md-prose h3 {
+    margin-top: 2em;
+    font-size: 1.05rem;
+  }
+  .md-prose h4 {
+    margin-top: 1.75em;
+    font-size: 0.95rem;
+  }
+  /* The anchor is the heading; the mark only shows on approach. */
+  .md-prose h2 > a.anchor,
+  .md-prose h3 > a.anchor,
+  .md-prose h4 > a.anchor {
+    color: inherit;
+    text-decoration: none;
+  }
+  .md-prose h2 > a.anchor::after,
+  .md-prose h3 > a.anchor::after,
+  .md-prose h4 > a.anchor::after {
+    content: " #";
+    color: hsl(var(--primary));
+    opacity: 0;
+    transition: opacity 120ms ease;
+  }
+  .md-prose h2:hover > a.anchor::after,
+  .md-prose h3:hover > a.anchor::after,
+  .md-prose h4:hover > a.anchor::after,
+  .md-prose a.anchor:focus-visible::after {
+    opacity: 1;
+  }
+  .md-prose a {
+    color: hsl(var(--primary));
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+  .md-prose strong {
+    color: hsl(var(--foreground));
+    font-weight: 600;
+  }
+  .md-prose code {
+    border-radius: 0.45rem;
+    background-color: hsl(var(--muted));
+    padding: 0.1rem 0.35rem;
+    font-family: var(--font-mono);
+    font-size: 0.85em;
+    font-variant-ligatures: none;
+  }
+  .md-prose pre {
+    overflow-x: auto;
+    border-radius: var(--radius-lg);
+    background-color: hsl(var(--muted) / 0.6);
+    padding: 0.9rem 1.1rem;
+    font-size: 0.82rem;
+    line-height: 1.7;
+  }
+  .md-prose pre code {
+    background-color: transparent;
+    padding: 0;
+    font-size: inherit;
+  }
+  .md-prose blockquote {
+    border-left: 2px solid hsl(var(--primary) / 0.55);
+    padding-left: 1rem;
+    color: hsl(var(--muted-foreground));
+  }
+  .md-prose ul {
+    list-style: disc;
+    padding-left: 1.5rem;
+  }
+  .md-prose ol {
+    list-style: decimal;
+    padding-left: 1.5rem;
+  }
+  .md-prose li + li {
+    margin-top: 0.25em;
+  }
+  .md-prose hr {
+    margin: 2.5em 0;
+    border-color: hsl(var(--border));
+  }
+  /* Tables in the reference pages are wide and full of code. They scroll in
+     their own box rather than pushing the page sideways. */
+  .md-prose .table-scroll {
+    overflow-x: auto;
+  }
+  .md-prose table {
+    width: 100%;
+    min-width: 30rem;
+    border-collapse: collapse;
+    font-size: 0.88rem;
+  }
+  .md-prose th,
+  .md-prose td {
+    border-bottom: 1px solid hsl(var(--border));
+    padding: 0.55rem 0.9rem 0.55rem 0;
+    text-align: left;
+    vertical-align: top;
+  }
+  .md-prose th {
+    color: hsl(var(--muted-foreground));
+    font-size: 0.85rem;
+    font-weight: 600;
+  }
+  .md-prose td:first-child {
+    white-space: nowrap;
+  }
+  .md-prose td code {
+    white-space: nowrap;
+  }
+  .md-prose tbody tr:last-child td {
+    border-bottom: none;
+  }
+}
+
+/* No entrance animation and no route fade. Content that rises into place on
+   arrival is a launch-page gesture; a page of reference material should be
+   there when you get there. */

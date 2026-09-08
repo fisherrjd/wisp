@@ -24,6 +24,10 @@ let
       go-tools
       gopls
     ];
+    # docs/site is a vite app; npm comes with it
+    web = [
+      nodejs
+    ];
     scripts = pkgs.lib.attrsets.attrValues scripts;
   };
 

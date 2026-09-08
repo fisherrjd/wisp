@@ -3,6 +3,7 @@ package ui
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -266,11 +267,22 @@ func TestSanitizeLine(t *testing.T) {
 	}
 }
 
-// ctrl-t is the only way back from a mistaken ctrl-d, so it has to be on the footer. It shipped
-// missing from it, discoverable only from the status line ctrl-d prints once.
+// ctrl-t is the only way back from a mistaken ctrl-d, so it has to be on the footer the moment
+// there is something to come back to. It shipped missing from it once, discoverable only from
+// the status line ctrl-d prints one time.
+//
+// The rest of the footer is conditional now, which is exactly the change that could lose this
+// again: ctrl-t is the one hint that cannot wait for the user to already know about it.
 func TestFooterOffersTheWayBackFromDone(t *testing.T) {
-	hidden := strings.Join(itemKeys(false), "  ")
-	shown := strings.Join(itemKeys(true), "  ")
+	one := []wisp.Item{{Name: "repo/1-a", State: wisp.StateFolder}}
+
+	nothingClosed := model{filtered: one}.itemKeys()
+	if strings.Contains(strings.Join(nothingClosed, "  "), "ctrl-t") {
+		t.Errorf("ctrl-t offered with nothing closed out: %v", nothingClosed)
+	}
+
+	hidden := strings.Join(model{filtered: one, hasDone: true}.itemKeys(), "  ")
+	shown := strings.Join(model{filtered: one, hasDone: true, showDone: true}.itemKeys(), "  ")
 	if !strings.Contains(hidden, "ctrl-t") || !strings.Contains(shown, "ctrl-t") {
 		t.Fatalf("ctrl-t missing from the footer:\n  %s\n  %s", hidden, shown)
 	}
@@ -278,11 +290,102 @@ func TestFooterOffersTheWayBackFromDone(t *testing.T) {
 	if !strings.Contains(hidden, "show") || !strings.Contains(shown, "hide") {
 		t.Errorf("ctrl-t does not follow the toggle:\n  hidden: %s\n  shown:  %s", hidden, shown)
 	}
-	// And every other key survived being moved out of the package-level slice.
-	for _, want := range []string{"enter open", "ctrl-n new", "ctrl-d done", "ctrl-w workspaces",
-		"ctrl-x kill", "ctrl-r refresh", "esc quit"} {
-		if !strings.Contains(hidden, want) {
-			t.Errorf("footer lost %q: %s", want, hidden)
+}
+
+// Every binding has to be findable without reading the source. The footer carries the verbs and
+// ctrl-g carries the rest, so what matters is the union: a key in neither is unreachable.
+func TestEveryBindingIsDiscoverable(t *testing.T) {
+	m := model{
+		filtered: []wisp.Item{{Name: "repo/1-a", State: wisp.StateLive}},
+		hasDone:  true,
+		peers:    peers(),
+		width:    120,
+		height:   40,
+	}
+	page := ansi.ReplaceAllString(m.renderHelp(m.listRows()), "")
+	found := strings.Join(m.itemKeys(), "  ") + "\n" + page
+
+	for _, key := range []string{"enter", "ctrl-n", "ctrl-d", "ctrl-t", "ctrl-x", "ctrl-w",
+		"ctrl-r", "ctrl-u", "ctrl-g", "esc"} {
+		if !strings.Contains(found, key) {
+			t.Errorf("%q is bound but appears in neither the footer nor the key page", key)
+		}
+	}
+
+	// ctrl-x and ctrl-r were taken off the footer deliberately, to stop the bar being a
+	// manifest. Taken off it and not put anywhere is a different thing, and the failure would
+	// otherwise be silent.
+	for _, key := range []string{"ctrl-x", "ctrl-w", "ctrl-r"} {
+		if !strings.Contains(page, key) {
+			t.Errorf("%q left the footer without landing on the key page", key)
+		}
+	}
+}
+
+// The point of the change: a plain list on an ordinary machine is a short footer. One
+// workspace, no GitLab, nothing closed out, and the cursor on a folder means four hints, not
+// eight, and no second row stolen from the panes.
+func TestFooterIsShortWhenLittleApplies(t *testing.T) {
+	quiet := model{filtered: []wisp.Item{{Name: "repo/1-a", State: wisp.StateFolder}}}
+	got := quiet.itemKeys()
+	want := []string{"enter open", "ctrl-n new", "ctrl-d done", "ctrl-g keys", "esc quit"}
+	if strings.Join(got, "  ") != strings.Join(want, "  ") {
+		t.Errorf("quiet footer:\n  got  %v\n  want %v", got, want)
+	}
+
+	// And an empty list drops the two that act on a row there is none of.
+	empty := model{}.itemKeys()
+	if strings.Join(empty, "  ") != "ctrl-n new  ctrl-g keys  esc quit" {
+		t.Errorf("empty list footer: %v", empty)
+	}
+}
+
+var ansi = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+// ctrl+g opens the key list and esc closes it. esc quits from the list itself, so the one thing
+// this must not do is fall through to that: reading the bindings should never end the session.
+func TestHelpOpensAndCloses(t *testing.T) {
+	m := model{width: 100, height: 30}
+
+	opened, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlG})
+	if got := opened.(model).mode; got != modeHelp {
+		t.Fatalf("ctrl+g did not open the key list: mode %d", got)
+	}
+
+	closed, cmd := opened.(model).Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if got := closed.(model).mode; got != modeFilter {
+		t.Errorf("esc did not close the key list: mode %d", got)
+	}
+	if cmd != nil {
+		t.Error("esc quit the picker from inside the key list")
+	}
+}
+
+// The footer only lists what applies right now, so the key list is where the rest has to live.
+// A binding in neither is one nobody can find.
+func TestHelpDocumentsWhatTheFooterOmits(t *testing.T) {
+	cfg := wisp.Config{GitLab: wisp.GitLab{Group: "g", Username: "u", RepoPattern: "p"}}
+	m := model{
+		cfg:      cfg,
+		filtered: []wisp.Item{{Name: "repo/1-a", State: wisp.StateLive}},
+		hasDone:  true,
+		peers:    peers(),
+		width:    120,
+		height:   40,
+	}
+	page := ansi.ReplaceAllString(m.renderHelp(m.listRows()), "")
+
+	for _, hint := range m.itemKeys() {
+		key := strings.Fields(hint)[0] // "ctrl-t show closed" -> "ctrl-t"
+		if !strings.Contains(page, key) {
+			t.Errorf("the key list does not mention %q, so it exists only in the footer", key)
+		}
+	}
+	// The tree's plain letters have no footer outside the tree, which is the gap this page was
+	// added to close. Matched on what they do, since single letters match anything.
+	for _, does := range []string{"new workspace on this machine", "add a machine", "forget it"} {
+		if !strings.Contains(page, does) {
+			t.Errorf("the key list does not describe %q", does)
 		}
 	}
 }

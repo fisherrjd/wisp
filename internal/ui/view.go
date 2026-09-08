@@ -83,27 +83,64 @@ func (m model) activeKeys() []string {
 		return newHostKey
 	case modeClose:
 		return closeKeys
+	case modeHelp:
+		// The page is the key list. Repeating it underneath would be the only footer on screen
+		// that says less than the thing above it.
+		return []string{"esc back"}
 	}
-	return itemKeys(m.showDone)
+	return m.itemKeys()
 }
 
 // itemKeys is the item list's hints, worded for what the next press will do rather than for the
-// state the list is in.
+// state the list is in, and listing only the presses that would do anything.
 //
-// ctrl-t sits next to ctrl-d because they are the two halves of one idea: one hides a finished
-// item and the other is the way back. It was missing from the footer entirely, which left the
-// only route back from a mistaken ctrl-d undiscoverable without editing the note by hand.
-func itemKeys(showDone bool) []string {
-	closed := "ctrl-t show closed"
-	if showDone {
-		closed = "ctrl-t hide closed"
+// All eight at once came to 120 columns, wider than an ordinary terminal, so footerLines
+// stacked them onto a second row for most people most of the time. The bar was the busiest
+// thing on a screen whose whole point is a calm list.
+//
+// So the footer carries the three verbs, the way out, and the way to everything else, and
+// nothing else carries it: five hints, 62 columns, which keeps it on one line beside the legend
+// down to a 108-column terminal. ctrl-x, ctrl-w, ctrl-r and the tree's own letters live on the
+// ctrl-g page, which exists precisely so this line does not have to be a manifest.
+//
+// ctrl-w is the one that hurts to drop, since the workspace ring is half of what wisp is. The
+// header above already carries that: it names the other machines and tallies what is waiting on
+// each. A row of hints repeating that the tree exists is not what makes it discoverable.
+//
+// Every key still works when it is not listed. Only the advertising is conditional, and it
+// costs nothing but the hint.
+func (m model) itemKeys() []string {
+	it := m.current()
+	keys := make([]string, 0, 7)
+
+	// enter and ctrl-d both act on the highlighted row, so neither means anything without one.
+	if it != nil {
+		keys = append(keys, "enter open")
 	}
-	return []string{"enter open", "ctrl-n new", "ctrl-d done", closed,
-		"ctrl-w workspaces", "ctrl-x kill", "ctrl-r refresh", "esc quit"}
+	keys = append(keys, "ctrl-n new")
+	if it != nil {
+		keys = append(keys, "ctrl-d done")
+	}
+	// ctrl-t is the way back from a mistaken ctrl-d, so it appears the moment there is something
+	// to come back to and stays while the closed-out items are on screen. This is the one hint
+	// that must never wait for the user to already know about it, which is why it is here and
+	// not only on the ctrl-g page.
+	switch {
+	case m.showDone:
+		keys = append(keys, "ctrl-t hide closed")
+	case m.hasDone:
+		keys = append(keys, "ctrl-t show closed")
+	}
+	// Unconditional, because it is the answer to "what else is there", and a hint that only
+	// appeared once you already knew would be answering nobody.
+	return append(keys, "ctrl-g keys", "esc quit")
 }
 
 // activeLegend is the glyph key for the list currently on screen.
 func (m model) activeLegend() []legendEntry {
+	if m.mode == modeHelp {
+		return nil // the page has its own, spelled out
+	}
 	if m.mode == modeWorkspace || m.mode == modeNewWS || m.mode == modeNewHost {
 		return wsLegend
 	}
@@ -136,6 +173,11 @@ func (m model) footerLines() []string {
 	}
 
 	left, right := strings.Join(legend, "   "), strings.Join(keys, "   ")
+	// With nothing on the left, the keys are the whole bar and start at the margin. Right-
+	// aligning them against an empty line leaves them floating off in the corner.
+	if left == "" {
+		return []string{right}
+	}
 	if gap := m.width - lipgloss.Width(left) - lipgloss.Width(right); gap >= 2 {
 		return []string{left + strings.Repeat(" ", gap) + right}
 	}
@@ -204,6 +246,18 @@ func (m model) View() string {
 	}
 
 	rows := m.listRows()
+
+	// The key list takes the whole body rather than floating over it. Compositing a box on top
+	// of two panes is a layer lipgloss does not have, and a page you are reading does not need
+	// to show you the list you are not reading.
+	if m.mode == modeHelp {
+		return strings.Join([]string{
+			m.renderPrompt(),
+			lipgloss.NewStyle().Width(m.width).Height(rows).Render(m.renderHelp(rows)),
+			m.renderFooter(),
+		}, "\n")
+	}
+
 	left, right := m.renderList(rows), m.renderPreview(rows)
 	if m.mode == modeWorkspace || m.mode == modeNewWS || m.mode == modeNewHost {
 		left, right = m.renderWorkspaces(rows), m.renderWorkspaceDetail(rows)
@@ -237,6 +291,15 @@ func (m model) renderPrompt() string {
 		}
 		left := newLabel.Render(label) + typed
 		right := countStyle.Render(hint)
+		gap := m.width - lipgloss.Width(left) - lipgloss.Width(right)
+		if gap < 1 {
+			gap = 1
+		}
+		return left + strings.Repeat(" ", gap) + right
+	}
+	if m.mode == modeHelp {
+		left := newLabel.Render(" keys ")
+		right := countStyle.Render("esc closes")
 		gap := m.width - lipgloss.Width(left) - lipgloss.Width(right)
 		if gap < 1 {
 			gap = 1
@@ -481,6 +544,91 @@ func (m model) renderWorkspaceDetail(rows int) string {
 		lines = append(lines, "")
 	}
 	return strings.Join(lines[:rows], "\n")
+}
+
+// helpEntry is one binding and what pressing it does, worded the way the footer words things.
+type helpEntry struct{ keys, does string }
+
+type helpSection struct {
+	title   string
+	entries []helpEntry
+}
+
+// The whole vocabulary, including the tree's plain letters, which are otherwise only
+// discoverable by being in the tree. Two columns, because a single one is taller than a short
+// terminal and this is the one screen that must never need scrolling.
+var helpLeft = []helpSection{
+	{"the list", []helpEntry{
+		{"enter", "open it"},
+		{"ctrl-n", "new item, or a gitlab link"},
+		{"ctrl-d", "close it out"},
+		{"ctrl-t", "show or hide closed"},
+		{"ctrl-x", "kill its session"},
+		{"ctrl-r", "refresh gitlab"},
+	}},
+	{"typing", []helpEntry{
+		{"↑ ↓  ctrl-k ctrl-j", "move the cursor"},
+		{"ctrl-u", "clear the filter"},
+		{"ctrl-g", "this page"},
+		{"esc", "quit, leaving it running"},
+	}},
+}
+
+var helpRight = []helpSection{
+	{"machines and workspaces", []helpEntry{
+		{"ctrl-w", "the tree, and back"},
+		{"enter", "go there"},
+		{"← →  h l", "jump a whole machine"},
+		{"n", "new workspace on this machine"},
+		{"a", "add a machine"},
+		{"x", "forget it, touching no files"},
+	}},
+	{"glyphs", []helpEntry{
+		{"● live", "a session is running"},
+		{"? needs input", "the agent is waiting on you"},
+		{"○ folder", "a vault folder, no session"},
+		{"+ gitlab", "on gitlab, nothing local"},
+		{"✓ done", "closed out, under ctrl-t"},
+	}},
+}
+
+// renderHelp lays the sections into two columns that tile the width the same way the panes do.
+func (m model) renderHelp(rows int) string {
+	half := m.width / 2
+	left := renderHelpColumn(helpLeft, half-2, 20)
+	right := renderHelpColumn(helpRight, m.width-half-2, 15)
+
+	body := lipgloss.JoinHorizontal(
+		lipgloss.Top,
+		lipgloss.NewStyle().Width(half).PaddingLeft(2).Render(strings.Join(left, "\n")),
+		lipgloss.NewStyle().Width(m.width-half).PaddingLeft(2).Render(strings.Join(right, "\n")),
+	)
+	// Truncated rather than wrapped, for the same reason the preview is: a wrapped row makes
+	// the block taller than rows and pushes the footer off the bottom.
+	lines := strings.Split(body, "\n")
+	if len(lines) > rows {
+		lines = lines[:rows]
+	}
+	return strings.Join(lines, "\n")
+}
+
+func renderHelpColumn(sections []helpSection, width, keyCol int) []string {
+	var out []string
+	for i, s := range sections {
+		if i > 0 {
+			out = append(out, "")
+		}
+		out = append(out, titleStyle.Render(s.title))
+		for _, e := range s.entries {
+			pad := keyCol - lipgloss.Width(e.keys)
+			if pad < 1 {
+				pad = 1
+			}
+			line := "  " + rowSelected.Render(e.keys) + strings.Repeat(" ", pad) + rowStyle.Render(e.does)
+			out = append(out, truncate(line, width))
+		}
+	}
+	return out
 }
 
 func (m model) renderPreview(rows int) string {
