@@ -108,6 +108,14 @@ type Workflow struct {
 	// Notes are non-fatal problems: a bundle that would not load, a key that was ignored. They
 	// are surfaced rather than raised, because an unusable workflow must still open a session.
 	Notes []string `yaml:"-"`
+	// Unaccepted holds the absolute paths of the hook scripts the script gate refused, in the
+	// order it met them.
+	//
+	// It exists so that `wisp workflow accept` with no argument can offer exactly what the gate
+	// refused rather than working the list out a second time from the layers. Two derivations of
+	// "what would run here" are how a prompt comes to describe something other than what the
+	// record covers, which is the whole of S2.
+	Unaccepted []string `yaml:"-"`
 }
 
 // builtinWorkflow is wisp's own workflow, compiled in. It reproduces the behaviour that used to
@@ -273,9 +281,14 @@ func parseWorkflow(dir string, raw []byte) (Workflow, error) {
 			return w, fmt.Errorf("%s: %w", path, err)
 		}
 		relaxed.Dir, relaxed.Notes = dir, []string{fmt.Sprintf("%s: %v", shortPath(path), err)}
+		relaxed.Notes = append(relaxed.Notes, stripBundleEscapes(dir, &relaxed)...)
 		return relaxed, nil
 	}
 	w.Dir = dir
+	// Here rather than at the point the paths are joined on, so that every reader of a manifest
+	// sees the same bundle: `accept` prints what it is about to authorise out of this, and a
+	// refusal the prompt did not know about would print a script the resolution then ignored.
+	w.Notes = append(w.Notes, stripBundleEscapes(dir, &w)...)
 	return w, nil
 }
 
@@ -549,6 +562,227 @@ func (c Config) acceptedBytes(key string, raw []byte) bool {
 	return c.Accepted[c.acceptKey(key)] == sumOf(raw)
 }
 
+// The script gate. One rule, and it is worth stating on its own line because two holes were
+// closed by writing it down rather than by adding a third mechanism:
+//
+//	Any hook script wisp would run that lives inside the workspace must be accepted by its own
+//	content, whoever named it.
+//
+// Two consequences, and each of them was a hole:
+//
+// **Provenance is irrelevant.** "built-in", your user config, the workspace config, a bundle and
+// an item are all subject to it. The built-in's own `provision:` default is
+// `.claude/scripts/provision-worktree.sh` joined onto the workspace root, so a repo that anchors a
+// workspace and ships that path ships an executable wisp runs, and the file gate never looked at
+// it: that gate only ever inspects what a file *says*, and nothing said this. The asymmetry was
+// the tell. Writing `provision: .claude/scripts/provision-worktree.sh` in .wisp.yaml was gated and
+// the identical default was not.
+//
+// **Location is what matters, not who wrote the line.** A script inside the workspace is
+// workspace-supplied, because the workspace is the thing that arrives with a repository. A script
+// outside it that your own config names is yours: gating `~/bin/brief.sh` would ask every ordinary
+// user about their own setup, and a gate that fires on everything is a gate nobody reads. The
+// awkward corner is deliberate and correct: a hook in your user config pointing at a path inside
+// the workspace IS gated, because the bytes are the workspace's even though the name is yours.
+//
+// The file gate stays, layered on top, because it covers `program:` and `layout[].run`, which are
+// command lines rather than scripts and have no content of their own to hash.
+//
+// It reads up to four small files per resolution, and only ever the ones inside the workspace,
+// which is the same bargain hashBundle takes: resolution is not a rare path, so the walk it
+// refused to do for every bundle is not done here either. A workspace with no hooks in it pays one
+// failed open for the built-in's `provision:` default and nothing else.
+func (c Config) gateScripts(w *Workflow) {
+	root := resolvePath(c.Workspace)
+	for _, h := range []struct {
+		key string
+		dst *string
+	}{
+		{"source", &w.Hooks.Source},
+		{"context", &w.Hooks.Context},
+		{"close", &w.Hooks.Close},
+		{"provision", &w.Hooks.Provision},
+	} {
+		path := *h.dst
+		if path == "" {
+			continue
+		}
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(c.Workspace, path)
+		}
+		if !insideDir(root, path) {
+			continue
+		}
+		key, sum, ok := c.scriptRecord(path)
+		// Not there yet. Stripped, because a script with no content cannot have been accepted by
+		// its content, and "accept the name now, add the bytes in a later commit" is exactly S2
+		// wearing a different hat. Stripped *silently*, because a note says "wisp would have run
+		// this and did not", and that sentence is not true of a file that does not exist: nothing
+		// was kept from you. It also has to be silent, because the built-in's `provision:` names a
+		// path most workspaces do not have, and a workspace that runs nothing must need no
+		// acceptance and produce no notes at all.
+		if !ok {
+			*h.dst = ""
+			delete(w.From, h.key)
+			continue
+		}
+		if c.Accepted[key] == sum {
+			continue
+		}
+		*h.dst = ""
+		delete(w.From, h.key)
+		w.Unaccepted = append(w.Unaccepted, path)
+		w.Notes = append(w.Notes, fmt.Sprintf(
+			"%s names %s, a script this workspace supplies that has not been accepted; run `wisp workflow accept` after reading it",
+			h.key, c.displayPath(path)))
+	}
+}
+
+// scriptRecord is the accept key and the content hash for one hook script: the pair the gate
+// compares and the pair every accept path writes. One function, so the prompt and the record
+// cannot come to describe different bytes, which is the failure this whole file is about.
+//
+// Not ok means there is nothing on disk to hash. A script that does not exist must never be
+// recorded as accepted, or the record would be of a name rather than of a file.
+func (c Config) scriptRecord(path string) (key, sum string, ok bool) {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return "", "", false
+	}
+	return c.acceptKey(c.scriptKey(path)), sumOf(body), true
+}
+
+// scriptKey names a hook script in `accepted:`, resolved and relative to the workspace.
+//
+// Resolved, so two names for one file (a symlink, a route through `..`) are one record rather than
+// two, and relative, so the line in your config reads as the file it is about. acceptKey puts the
+// workspace in front of it, as it does for every other accepted thing: the same relative path in
+// two checkouts is two different scripts. The `script ` prefix keeps it out of the namespace of
+// bundle addresses and item names, which are the other two things keyed here.
+func (c Config) scriptKey(path string) string {
+	root := resolvePath(c.Workspace)
+	rel, err := filepath.Rel(root, resolvePath(path))
+	if err != nil {
+		rel = path
+	}
+	return "script " + filepath.ToSlash(rel)
+}
+
+// gatedScripts is what accepting a file has to record besides the file itself: the hook scripts it
+// names that the gate above will check. base is what a relative path is relative to, the same
+// answer printHookBodies uses, so the prompt and the record are of one list.
+//
+// Only the ones inside the workspace, because those are the only ones the gate checks, and only
+// the ones that exist, because there is nothing else to hash. Recording a script outside the
+// workspace would write a line nothing ever reads.
+func (c Config) gatedScripts(hooks Hooks, base string) []scriptRef {
+	root := resolvePath(c.Workspace)
+	var out []scriptRef
+	seen := map[string]bool{}
+	for _, val := range []string{hooks.Source, hooks.Context, hooks.Close, hooks.Provision} {
+		if val == "" {
+			continue
+		}
+		path := val
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(base, path)
+		}
+		if !insideDir(root, path) || seen[path] {
+			continue
+		}
+		seen[path] = true
+		if key, sum, ok := c.scriptRecord(path); ok {
+			out = append(out, scriptRef{Path: path, Key: key, Sum: sum})
+		}
+	}
+	return out
+}
+
+// scriptRef is one hook script an accept is about to authorise.
+type scriptRef struct {
+	Path string
+	Key  string
+	Sum  string
+}
+
+// insideDir reports whether path lands inside root once every symlink and `..` in both of them is
+// resolved.
+//
+// Resolved on both sides, and that is the whole of the correctness here. An earlier finding on
+// this branch was a containment check that examined the template instead of the result; this is
+// the same mistake one layer down, and it is cheap to make: on macOS a workspace under /var is
+// really under /private/var, so a check that resolved one side and not the other answered "outside"
+// for every path in it. A symlink inside the workspace pointing out of it is the other direction of
+// the same question, and it is the one an attacker would use.
+func insideDir(root, path string) bool {
+	if root == "" || path == "" {
+		return false
+	}
+	target := resolvePath(path)
+	// The directory itself is not a file inside itself, and the separator is what stops
+	// /work-notes from reading as inside /work.
+	return strings.HasPrefix(target, root+string(filepath.Separator))
+}
+
+// resolvePath follows symlinks as far as the filesystem goes and cleans the rest.
+//
+// EvalSymlinks alone is not enough, because the thing most worth deciding about is a script that
+// does not exist yet: it fails outright on a missing leaf, and answering "not inside the
+// workspace" for a path that is plainly inside it would exempt exactly the file an attacker has
+// not committed yet. So the deepest ancestor that does exist is resolved and the rest is joined
+// back on.
+func resolvePath(p string) string {
+	if p == "" {
+		return ""
+	}
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return r
+	}
+	dir, base := filepath.Split(p)
+	if dir == "" || base == "" || filepath.Clean(dir) == filepath.Clean(p) {
+		return filepath.Clean(p)
+	}
+	return filepath.Join(resolvePath(filepath.Clean(dir)), base)
+}
+
+// stripBundleEscapes drops a bundle hook whose path reaches outside the bundle directory.
+//
+// Refused outright rather than gated, because a bundle is hashed as a whole tree and a hook
+// reaching out of it is byte-identical before and after the script it names is rewritten:
+// `hooks: {close: ../../../shared/close.sh}` was accepted once and then free to become anything.
+// The script gate above catches that one when the escape lands back inside the workspace, and this
+// catches it wherever it lands. There is no legitimate use: a bundle is meant to be self-contained
+// and copyable, which is the property a relative path out of it destroys.
+func stripBundleEscapes(dir string, w *Workflow) []string {
+	var notes []string
+	for _, h := range []struct {
+		key string
+		dst *string
+	}{
+		{"source", &w.Hooks.Source},
+		{"context", &w.Hooks.Context},
+		{"close", &w.Hooks.Close},
+		{"provision", &w.Hooks.Provision},
+	} {
+		val := *h.dst
+		// Lexically, before any symlink is followed, because the two are different questions. A
+		// symlink inside the bundle is fine: WalkDir lists it and ReadFile follows it, so its
+		// content is in the tree hash. A `..` is not in the tree hash at all.
+		if val == "" || filepath.IsAbs(val) {
+			continue
+		}
+		rel, err := filepath.Rel(dir, filepath.Join(dir, val))
+		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		notes = append(notes, fmt.Sprintf(
+			"hook `%s: %s` reaches outside the bundle, so it is ignored: a bundle is the unit that gets copied and hashed, and a script outside it is in neither",
+			h.key, val))
+		*h.dst = ""
+	}
+	return notes
+}
+
 // WorkflowFor resolves the workflow in effect, per key, across every layer.
 //
 //	1  built-in                       always complete, so every key has an answer
@@ -695,6 +929,12 @@ func (c Config) resolveWorkflow(item Item, oneShot string) Workflow {
 		w.Program, w.From["program"] = v, "WISP_PROGRAM"
 	}
 
+	// Last, over the answer rather than over any one layer, because the question it asks is about
+	// the path that came out and not about the file that named it. Asking it per layer would have
+	// been the same mistake as gating by provenance: the built-in's provision default is a layer
+	// nobody wrote, and it is the one that had to be caught.
+	c.gateScripts(&w)
+
 	w.Notes = append(w.Notes, w.validate()...)
 	return w
 }
@@ -749,6 +989,7 @@ func (wc *workflowCache) put(key string, w Workflow) {
 func (w Workflow) clone() Workflow {
 	w.Layout = slices.Clone(w.Layout)
 	w.Notes = slices.Clone(w.Notes)
+	w.Unaccepted = slices.Clone(w.Unaccepted)
 	w.From = maps.Clone(w.From)
 	return w
 }

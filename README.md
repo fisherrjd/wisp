@@ -171,15 +171,16 @@ gitlab:
 
 A **workflow** is a directory holding a `workflow.yaml` and its scripts, and it supplies `program`, the branch and worktree templates, the session layout and four hooks: where items come from, what the agent is told, what closing an item out does, and how a worktree is built. A bare name is one of yours under `~/.config/wisp/workflows/`, `./name` is one the workspace ships, and every key a bundle does not set falls back to the built-in, so a workflow that changes one thing is four lines long. A key wisp does not recognise is reported rather than ignored, because a workflow that quietly does nothing is the worst thing that file can be. `wisp open <item> --workflow <name>` uses another one just once, and carries that choice to the background provisioning window on a tmux session option so both halves agree.
 
-Three files can make wisp start a process, and each is read and accepted once before it does: a workspace bundle, the workspace's `.wisp.yaml`, and an item's `orchestration.md`. Accepting covers everything shown to you, so a bundle's hash is over every file in it, and any later change asks again. The gate is on execution, not configuration: `branch:` and `worktree:` apply immediately from any of them, and a session still opens while you decide. See [Workflows](docs/workflows.md#what-the-gate-covers).
+Four things can make wisp start a process, and each is read and accepted once before it does: a workspace bundle, the workspace's `.wisp.yaml`, an item's `orchestration.md`, and **any hook script inside the workspace, whoever named it**. That last one is a rule about location rather than about provenance: a script inside the workspace arrives with the repository, so it is accepted by its own contents even when the line naming it is the built-in's or your own; a script of yours outside the workspace is yours and is never gated. Accepting covers everything shown to you, so a bundle's hash is over every file in it and accepting a config file records the scripts it names too. Any later change asks again. The gate is on execution, not configuration: `branch:` and `worktree:` apply immediately from any of them, and a session still opens while you decide. See [Workflows](docs/workflows.md#the-script-rule).
 
 ```
 wisp workflow              what is in effect, key by key, and which file set each
 wisp workflow list         everything addressable from here
 wisp workflow init solo    a starting point: the built-in, spelled out
 wisp workflow use solo     bind to it; --here binds the workspace instead
+wisp workflow accept       read everything this workspace would run, and allow it
 wisp workflow accept ./ship
-                           read one this workspace ships, and allow it to run
+                           just the one this workspace ships
 wisp workflow push solo bigbox
                            copy one of yours to another machine
 ```

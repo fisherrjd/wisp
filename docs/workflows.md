@@ -4,7 +4,7 @@ A workflow is a directory. It is what turns a handful of loose config keys into 
 
 wisp used to compile one workflow in: branch `feature/<slug>`, one agent window at the workspace root, a shell per worktree, a briefing naming two files in an order somebody chose, and a needs-input signal grepped out of Claude Code's permission dialog. Every one of those is a preference wearing the clothes of a fact. They now live in a bundle, and the bundle wisp ships is one of the ones you can replace.
 
-Status: **built.** The bundle format, the addressing, the five-layer resolution, the declarative layout, all four hooks and the `wisp workflow` commands are in and running. [Where this stands](#where-this-stands) lists what is done, and the five limitations that are real and known. [Hooks](hooks.md) holds the reasoning that picked the hook shape.
+Status: **built.** The bundle format, the addressing, the five-layer resolution, the declarative layout, all four hooks and the `wisp workflow` commands are in and running. [Where this stands](#where-this-stands) lists what is done, and the six limitations that are real and known. [Hooks](hooks.md) holds the reasoning that picked the hook shape.
 
 ---
 
@@ -56,6 +56,14 @@ status:
 ```
 
 **A relative script path in a bundle resolves against the bundle directory.** That single rule is what makes a bundle self-contained: copying the folder copies the workflow, and there are no absolute paths inside it to fix up afterwards. The same key written in a config file instead resolves against the workspace root, because that is what a path in `.wisp.yaml` has always meant.
+
+**A bundle hook that climbs out with `..` is refused rather than resolved**, and named:
+
+```
+  note: hook `close: ../../../shared/close.sh` reaches outside the bundle, so it is ignored: a bundle is the unit that gets copied and hashed, and a script outside it is in neither
+```
+
+A bundle is hashed as a whole tree, so a hook pointing outside it was accepted once and then free to become anything: the sum is byte-identical before and after that script is rewritten. There is no legitimate use for it either, since the same escape is what makes a bundle uncopyable. A symlink inside the bundle is fine and stays fine: the walk lists it and the hash reads through it, so its contents are covered.
 
 Keeping a workflow in git needs nothing from wisp. A workflow is a directory, so `git clone` is the install command and a symlink is the update mechanism: point `~/.config/wisp/workflows/team` at a checkout and `git pull` propagates.
 
@@ -222,7 +230,7 @@ A manifest's `repos[].branch` is explicit and per-repo. A workflow's `branch:` i
 | `program` | `claude` | The command in the agent window. wisp appends the context prompt as one shell-quoted argument, so flags belong here. |
 | `branch` | `feature/{slug}` | The branch an item's repo gets when the manifest does not name one. |
 | `worktree` | `{repo}--{slug}` | The directory name inside `worktrees:` holding one repo's checkout for one item. |
-| `hooks.provision` | `.claude/scripts/provision-worktree.sh` | The script that builds a worktree. The one place wisp has always run code somebody else wrote. |
+| `hooks.provision` | `.claude/scripts/provision-worktree.sh` | The script that builds a worktree. The one place wisp has always run code somebody else wrote, and the default path is inside the workspace, so it is gated like every other script there ([the script rule](#the-script-rule)). |
 | `hooks.source` | none | Where items come from. See [Hooks](hooks.md). |
 | `hooks.context` | none | What the agent is told. See [Hooks](hooks.md). |
 | `hooks.close` | none | What closing an item out does. See [Hooks](hooks.md). |
@@ -321,27 +329,82 @@ Three properties fall out of that, each because the alternative fails silently:
 
 The hash covers every file in the directory, not the manifest alone, and the path and length of each go into it as well as the contents, so renaming a script or moving bytes between two of them changes it. That is what makes printing the scripts worth anything: the prompt shows you `bin/close.sh`, and the record is of the bytes you were shown. Hashing the manifest alone would have left a later commit rewriting `bin/close.sh` running under the acceptance you gave to a different script.
 
-The cost is a prompt after every edit to a workspace bundle you are iterating on yourself. That is the right way round: a workflow of your own belongs under `~/.config/wisp/workflows`, where nothing is gated at all, and `./` is for the ones that arrive with the repository.
+The cost is a prompt after every edit to a workspace bundle you are iterating on yourself. That is the right way round: a workflow of your own belongs under `~/.config/wisp/workflows`, where the directory is not gated, and `./` is for the ones that arrive with the repository.
+
+### The script rule
+
+The file gate above asks about **what a file says**. It was never the whole answer, because two
+of the things wisp runs are not something a file says.
+
+> **Any hook script wisp would run that lives inside the workspace must be accepted by its own
+> content, whoever named it.**
+
+That is one rule and it closes two holes that the file gate could not see.
+
+**Provenance is irrelevant to it.** `built-in`, your user config, the workspace config, a bundle
+and an item are all subject to it. The sharp case is the built-in's own `provision:`, whose
+default is `.claude/scripts/provision-worktree.sh` joined onto the workspace root. Its provenance
+reads `built-in`, so no acceptance was ever consulted, and the whole attack was one clone: a repo
+carrying a `.wisp.yaml` anchors the workspace when you run `wisp` inside it, the same repo ships
+that script with its exec bit, and an `orchestration.md` with `repos:`, which is manifest data and
+deliberately not an executable key, reaches it. The asymmetry was the tell. Writing
+`provision: .claude/scripts/provision-worktree.sh` in `.wisp.yaml` was gated and the identical
+default was not.
+
+**Location is what matters, not who wrote the line.** A script inside the workspace is
+workspace-supplied, because the workspace is the thing that arrives with a repository. A script
+outside it that your own config names is yours and is not gated: prompting about `~/bin/brief.sh`
+would ask every ordinary user about their own setup, and a gate that fires on everything is one
+nobody reads. The corner that follows is deliberate. A hook in **your** user config pointing at a
+path **inside** the workspace is gated, because the bytes are the workspace's even though the name
+is yours.
+
+Containment is decided on the path that comes out, with every symlink and `..` resolved on both
+sides. Deciding it on the template instead is a mistake this codebase has already made once.
+
+Two consequences worth knowing before they surprise you:
+
+- **A script that is not there yet is dropped, silently.** It has no content, so it cannot have
+  been accepted by its content, and "accept the name now, add the bytes in a later commit" is the
+  hole below wearing a different hat. Silently, because a note says "wisp would have run this and
+  did not", which is not true of a file that does not exist: most workspaces have no
+  `.claude/scripts/provision-worktree.sh`, and a workspace that runs nothing must cost nobody a
+  decision. The key shows as `-` in `wisp workflow`, and provisioning says there is no script when
+  you ask it to build something.
+- **Accepting a file now records the scripts it names**, not only the file. `wisp workflow accept
+  .wisp.yaml` printed `scripts/setup.sh` to you and then recorded a hash of the YAML alone, so a
+  later commit could rewrite that script and it stayed accepted and still ran. No race was needed;
+  an ordinary commit did it. The prompt and the record describe the same bytes now, which is the
+  fix bundles got a pass earlier and these two did not.
+
+The file gate stays exactly where it was, layered on top, because it covers `program:` and
+`layout[].run`. Those are command lines rather than scripts, and they have no content of their own
+to hash.
 
 ### What the gate covers
 
-Three files can make wisp start a process, and all three are files that can arrive with a
-repository or be written by something other than you. None of them runs anything until it
-has been read and accepted.
+Four things can make wisp start a process, and all four either arrive with a repository or are
+written by something other than you. None of them runs anything until it has been read and
+accepted.
 
-| file | how it runs something | accept with |
+| what | how it runs something | accept with |
 |---|---|---|
 | `<workspace>/.wisp/workflows/<name>/` | a bundle named by `workflow: ./<name>` | `wisp workflow accept ./<name>` |
 | `<workspace>/.wisp.yaml` | `program:`, `source:`, `context:`, `close:`, `provision:`, or a `layout[].run` | `wisp workflow accept .wisp.yaml` |
 | `<item>/orchestration.md` | the same keys, in its frontmatter | `wisp workflow accept <item>` |
+| any hook script inside the workspace | it is a program wisp executes, whichever layer named it | `wisp workflow accept` |
 
 The gate is on **execution, not on configuration**. `branch:`, `worktree:` and
 `status.needs_input` are strings wisp interprets itself, and they apply from any of these
 files immediately. Only the keys that name something to run wait for an answer.
 
-Until you answer, wisp falls back to the built-in for those keys and says so. The session
-still opens, the list still paints, and nothing is blocked: the note tells you what would
-have run and the one command that allows it.
+Until you answer, wisp falls back to the built-in for those keys, or drops them where the built-in
+is itself the thing being refused, and says so. The session still opens, the list still paints, and
+nothing is blocked: the note tells you what would have run and the one command that allows it.
+
+Nothing here ever prompts on its own. Resolution strips and annotates; the prompt lives in
+`wisp workflow accept` and nowhere else, which is what keeps `wisp board --json` and the remote
+fetches under `BatchMode=yes` silent.
 
 ### Why the item manifest is in that list
 
@@ -356,19 +419,91 @@ wants something unusual, which is exactly when it is worth asking.
 
 ### What acceptance covers
 
-The whole of what was shown to you. For a bundle that is every file in the directory, not
-just `workflow.yaml`: the prompt prints the manifest and each script it names, so recording
-only the manifest would have left a `git pull` that rewrote one script still accepted. For
-the other two it is the file itself.
+The whole of what was shown to you, and that sentence has had to be made true twice.
 
-Any change puts it back to unaccepted. That is the point: accepting once is not a standing
-permission for whatever the file becomes later.
+For a bundle it is every file in the directory, not just `workflow.yaml`. For `.wisp.yaml` and an
+item's `orchestration.md` it is the file **and** every hook script it names that lands inside the
+workspace, each recorded separately under its own contents. Recording only the naming file was the
+second hole: the prompt printed `scripts/setup.sh` in full and the record was of the YAML that
+named it.
+
+Each thing is keyed by itself, so the records read as what they are:
+
+```yaml
+# ~/.config/wisp/config.yaml
+accepted:
+    /Users/you/work .wisp.yaml: aad84643170eb10b6236fc66d75fc3222ba9afe5aa5e0bf6100303c59daaef08
+    /Users/you/work script scripts/close.sh: 022b66ff17bda8bf6d673105cd1db8cc8a59fd6cfe19584bb6c7957c7d840c63
+    /Users/you/work script .claude/scripts/provision-worktree.sh: 8d2b15d4e6fa26ea392e51e17c50e9b91951f638042374bd67821ac328c8339a
+```
+
+Any change puts that one back to unaccepted, and only that one. That is the point: accepting once
+is not a standing permission for whatever the file becomes later.
+
+**Every existing `accepted:` entry was invalidated by this**, and everyone re-accepts once. What is
+hashed changed, so there was no way to carry the old records forward honestly: an entry written
+against the old rule says nothing about the scripts the new rule asks about.
+
+### `wisp workflow accept` with no argument
+
+```
+$ wisp workflow accept
+--- .wisp.yaml
+program: "codex --yolo"
+close: scripts/close.sh
+
+--- /Users/you/work/scripts/close.sh (close hook)
+#!/bin/sh
+echo closing
+
+--- /Users/you/work/.claude/scripts/provision-worktree.sh (hook script)
+#!/bin/sh
+...
+
+that is 3 things wisp would run in work, all of it supplied by this workspace
+rather than by you.
+
+let all of it run in work? [y/N]
+```
+
+Everything this workspace would run, printed in full, in one answer. It exists because the script
+rule refuses a script whoever named it, and the built-in's `provision:` is named by no file at all,
+so there is no address anybody could type for it. A gate with no way to say yes is a gate that only
+ever says no.
+
+It stops at the workspace. Items are still accepted one at a time with `wisp workflow accept
+<item>`, because a vault holds hundreds of them and almost none set an executable key: enumerating
+them would ask you to authorise items you may never open, in a prompt long enough that nobody reads
+the part that mattered.
+
+Asked of a workspace with nothing to decide, it says so and writes nothing:
+
+```
+$ wisp workflow accept
+work runs nothing that has to be accepted
+
+no hook script inside this workspace, no `program:` and no layout command in a file
+that arrived with a repository. There is nothing here to say yes to.
+```
+
+`-y` answers it, and is required rather than assumed when stdin is not a terminal, exactly as it is
+for the three specific forms. Bare `accept` used to be a usage error, so the prompt is written to
+be unmistakable about what is being authorised: somebody will type it expecting usage.
 
 ### What it deliberately does not cover
 
 Your own workflows, under `~/.config/wisp/workflows/`, and your own user config. Those are
 yours by definition. Prompting about a directory you wrote yourself trains people to say yes
 without reading, which costs more than it buys.
+
+The one thing that is not exempt is a **path**. A bundle of yours, or your user config, naming a
+hook script that lands inside the workspace is naming a file the workspace decides the contents of,
+and that script is gated on its own contents like any other. The directory is yours; the bytes at
+the end of that path are not.
+
+It also does not cover `worktrees:` and `vault:`, which may point outside the workspace, and it does
+not follow either of them. That is a known limitation rather than an oversight, and it is listed
+under [the limitations that are real](#the-limitations-that-are-real).
 
 ## When a workflow is broken
 
@@ -379,6 +514,9 @@ without reading, which costs more than it buys.
 | `workflow: typo`, no such directory | the built-in, with the address and the path it looked at |
 | a `workflow.yaml` that will not parse | the built-in, with the parse error |
 | a `./` workflow not yet accepted | the built-in, with the address to accept |
+| a hook script inside the workspace, not accepted | that key dropped, with the command that accepts it |
+| a hook script inside the workspace that is not there | that key dropped, silently: nothing was kept from you |
+| a bundle hook reaching outside the bundle with `..` | that hook ignored, named |
 | **an unknown or misspelled key in `workflow.yaml`** | the rest of the file still loads, and the key is named |
 | a hook set both flat and under `hooks:` | the nested one wins, and the collision is named |
 | `worktree:` with a `/` in it | named, and the checkout path falls back |
@@ -427,8 +565,9 @@ wisp workflow use <name> [--here]
                             bind to a workflow
 wisp workflow edit [<name>]
                             open its workflow.yaml in $EDITOR
+wisp workflow accept [-y]   read everything this workspace would run, and allow it
 wisp workflow accept ./<name> [-y]
-                            read a workflow this workspace ships, and allow it to run
+                            just the workflow this workspace ships
 wisp workflow push <name> <host>
                             copy one of yours to another machine
 wisp workflow list --host <host>
@@ -467,6 +606,10 @@ default: one agent at the workspace root, a shell per worktree
   {repo}       worktree   (a shell)                  [for each-worktree]
   provision    workspace  {wisp} provision {item}    [when provisioning]
 ```
+
+That `provision` row is what an **accepted** script looks like. The default path is inside the
+workspace, so on a machine where that file is absent, or present and not yet accepted, the row
+reads `provision   -   -` instead. See [the script rule](#the-script-rule).
 
 The layout summary in the table names the windows and stops, which is enough to see that the layout changed and not enough to see how, so the detail follows underneath. A key nothing sets prints as `-` rather than as an empty column, so "wisp runs no close hook" is visibly an answer.
 
@@ -676,6 +819,7 @@ All of it is built.
 | the item override, and the `source` and `status.needs_input` refusals | built |
 | `--workflow` on `wisp open`, carried to the provision window on `@wisp_workflow` | built |
 | accept-on-first-use, and the hash re-check | built |
+| the script rule, and `wisp workflow accept` with no argument | built |
 | `program`, `branch`, `worktree`, `hooks.provision`, `status.needs_input` | built, and in use |
 | `layout` | built: it is what the session builder builds from |
 | `hooks.source`, including `--url`, `hooks.context`, `hooks.close` | built, and run |
@@ -686,10 +830,11 @@ The acceptance test for the whole thing was that with no config at all, naming t
 
 ### The limitations that are real
 
-Five, and none of them is a rough edge waiting on a rename. Each is a trade somebody made and could unmake.
+Six, and none of them is a rough edge waiting on a rename. Each is a trade somebody made and could unmake.
 
-- **Acceptance hashes `workflow.yaml` and nothing else.** A script the manifest names can be rewritten afterwards without wisp asking again: you are shown `bin/close.sh` and what gets recorded is a hash of the file that named it. See [Accepting a workspace's workflow](#accepting-a-workspaces-workflow) for what that buys and what it costs.
-- **Acceptance is per file, not per machine.** Each workspace accepts its own `.wisp.yaml`, its own bundles and its own items separately, and the record lives in your user config so a workspace can never accept itself. There is no way to say yes once for everything, which is deliberate.
+- **`worktrees:` and `vault:` may point outside the workspace, and nothing gates what is under them.** The script rule asks whether a hook lands inside the workspace root, and those two keys can move a directory wisp writes into somewhere that root does not reach. A `.wisp.yaml` setting either is not itself an executable key, so it applies immediately. This is known, decided against fixing for now, and named here rather than left to be discovered.
+- **Acceptance is per thing, not per machine.** Each workspace accepts its own `.wisp.yaml`, its own bundles, its own items and its own scripts separately, and the record lives in your user config so a workspace can never accept itself. `wisp workflow accept` with no argument says yes to everything in *one* workspace in one answer; there is still no way to say yes once for every workspace, which is deliberate.
+- **An absolute hook path in a workspace bundle reaches outside the tree hash.** `..` is refused, and an absolute path that lands inside the workspace is caught by the script rule, but `close: /opt/x.sh` in a `./` bundle is covered only by the manifest hash: you read that path at the prompt, and the file behind it can change afterwards. It is one line in a manifest printed in full, which is why it was left as a limitation rather than a refusal.
 - **`gitlab.*` is still a set of top-level config keys, not a bundled source.** The built-in GitLab source is the fallback when no `source` hook is set, and it is configured where it always was, in `gitlab:` in either config file. A `source` hook shipped with a bundle carries its own configuration however it likes; the built-in one does not, so the one tracker wisp knows about is still spelled differently from every other. Its cache TTL is the one piece that has moved out: `cache_ttl_min` is a top-level, source-neutral key, and `gitlab.cache_ttl_min` is read as the older spelling of the same thing.
 - **A hook gets 60 seconds, 8 MB of stdout and 64 kB of stderr, and none of those numbers is yours to set.** stderr is bounded separately and much lower, because nothing consumes it: exactly one line of it ever reaches a person, so wisp keeps the **last** 64 kB and slides the rest out. It was unbounded until a review pass pointed out that the runaway script the stdout ceiling exists to survive could simply write to the other pipe instead, and be read whole into memory and then doubled, since reading the last line copies the buffer. The two stdout bounds are reported, and they cost different things. `source:`, `context:` and `close:` are killed at a minute and reported as `gave up after 1m0s`. More than 8 MB on stdout kills the answer instead of the hook: wisp keeps the first 8 MB, drops the rest without closing the pipe, and the hook writes into the void and exits believing it succeeded, but wisp counts what it dropped and returns that as an error (`printed more than 8.0 MB and was cut, 32.0 MB dropped`). Killing the hook at the ceiling was the first implementation and was worse, since a `SIGPIPE` cost you the first 8 MB as well as the runaway part; keeping the bytes and saying nothing was the second, and it let a short answer be cached and painted as a whole one. `source` and `context` now discard a truncated answer and show the reason, a truncated `source` leaving you on the last good rows rather than on shortened ones; `close` deliberately ignores truncation, since nothing reads its stdout and a chatty script must not be able to veto finishing work. The minute is generous because a `close` hook may be posting to a tracker, and it exists at all because these run where nothing can cancel them: a `source` hook that hangs takes the picker's refresh with it. `provision:` is outside both, deliberately, since it runs in a window of its own where a slow nix build is the normal case. [Hooks](hooks.md) has the detail, including where the deadline does not hold and why the three callers disagree about truncation.
 - **A remote workspace refuses `wisp workflow` entirely.** Not a gap: the files are on the other machine, and the command says which `ssh` line answers.

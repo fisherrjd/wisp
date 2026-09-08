@@ -88,7 +88,7 @@ A relative hook path written **here** resolves against the workspace root, which
 | `default` | string | Which one is the fallback, and which one adopts sessions from before workspaces existed. If unset, the first name in sorted order. |
 | `hosts` | list or map | The machines wisp can reach. |
 | `workspace` | location | The older single-workspace spelling. Still works; folded into `workspaces:` under its directory name. |
-| `accepted` | map of `<workspace> <address>` to hash | Which workspace-supplied workflows have been read and allowed to run. Written by `wisp workflow accept`. |
+| `accepted` | map of `<workspace> <thing>` to hash | Which workspace-supplied things have been read and allowed to run: a bundle address, `.wisp.yaml`, an item name, or `script <path>` for one hook script. Written by `wisp workflow accept`. |
 
 ```yaml
 # ~/.config/wisp/config.yaml
@@ -109,11 +109,14 @@ These five are read from the user config **and nowhere else**. A workspace namin
 # ~/.config/wisp/config.yaml
 accepted:
   /Users/you/work ./ship: 854659096926d77dbfe636122cf24cd7cc39e87426d7a46009cae5bbb6169f8f
+  /Users/you/work script .claude/scripts/provision-worktree.sh: 8d2b15d4e6fa26ea392e51e17c50e9b91951f638042374bd67821ac328c8339a
 ```
 
-The key is the workspace path and the address together, because the same relative address in two workspaces is two different directories. The value is a SHA-256 of what was accepted, re-checked on every load, so editing it puts it back to unaccepted.
+The key is the workspace path and the thing together, because the same relative address in two workspaces is two different directories, and the same relative script path is two different scripts. The value is a SHA-256 of what was accepted, re-checked on every load, so editing it puts it back to unaccepted.
 
-It covers three files, and all three are files that can arrive with a repository or be written by something other than you: a workspace bundle, the workspace's own `.wisp.yaml`, and an item's `orchestration.md`. For a bundle it hashes every file in the directory, not just the manifest that names them. The gate is on execution rather than configuration, so `branch:` and `worktree:` apply from any of them at once and only the keys naming something to run wait for an answer. [Workflows](workflows.md#what-the-gate-covers) is the whole of it.
+A `script <path>` entry is one hook script, hashed by its own contents and recorded whoever named it: the built-in, your user config, the workspace config, a bundle or an item. Location is what decides, not provenance, so only scripts that land inside the workspace appear here. [Workflows](workflows.md#the-script-rule) has the rule and the two holes it closed.
+
+It covers four things, and each of them either arrives with a repository or is written by something other than you: a workspace bundle, the workspace's own `.wisp.yaml`, an item's `orchestration.md`, and any hook script inside the workspace. For a bundle it hashes every file in the directory, not just the manifest that names them; for the two config files it hashes the file and, separately, each script the file names. The gate is on execution rather than configuration, so `branch:` and `worktree:` apply from any of them at once and only the keys naming something to run wait for an answer. [Workflows](workflows.md#what-the-gate-covers) is the whole of it.
 
 ### Location shapes
 

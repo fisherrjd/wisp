@@ -538,19 +538,22 @@ is worth fixing now:
   wisp workflow edit <name>
 ```
 
-### `wisp workflow accept ./<name> [-y]`, `accept .wisp.yaml`, `accept <item>`
+### `wisp workflow accept [-y]`, `accept ./<name>`, `accept .wisp.yaml`, `accept <item>`
 
 Read something that arrived with a repo, and record that it may run. This is the only security decision wisp has, so it prints the file in full, then the body of every script that file names, then asks. A hook naming a file that is not there yet prints as `not there yet` rather than being skipped, because that is still a file the workspace decides the contents of later. Scripts are never truncated.
 
-Three things can be accepted, and they are the three files that arrive from somewhere other than your own config:
+**With no argument it is the whole workspace**: every config file and every hook script wisp would run here, printed in full, counted, and authorised in one answer. It exists because a hook script inside the workspace is gated whoever named it, and the built-in's `provision:` default is named by no file at all, so there is no address anybody could type for it. Asked of a workspace that runs nothing, it says so and writes nothing. It stops at the workspace: items are accepted one at a time, since a vault holds hundreds of them and almost none set an executable key.
 
 | address | what it covers | recorded as |
 |---|---|---|
-| `./<name>` | a bundle under `.wisp/workflows/` | SHA-256 of the whole directory |
-| `.wisp.yaml` | the workspace config's own `program:`, hooks and `layout[].run` | SHA-256 of the file |
-| `<item>` | an item's `orchestration.md`, same keys | SHA-256 of the file |
+| *(none)* | everything above, in one answer | one record per thing |
+| `./<name>` | a bundle under `.wisp/workflows/`, and the scripts it names | SHA-256 of the whole directory, plus one per script |
+| `.wisp.yaml` | the workspace config's own `program:`, hooks and `layout[].run` | SHA-256 of the file, plus one per script it names |
+| `<item>` | an item's `orchestration.md`, same keys | SHA-256 of the file, plus one per script it names |
 
-The gate is on **executable keys only**: `program`, `source`, `context`, `close`, `provision`, and any `layout` entry with a `run:` in it. `branch:`, `worktree:` and `status.needs_input` are strings wisp interprets itself and apply from any file with no ceremony. A file setting none of the executable keys needs no acceptance and says so:
+A hook script is recorded separately from the file that named it, under `script <path>`, because the file and the script are different bytes and only one of them is what runs. Accepting a file used to record the file alone, so a later commit could rewrite a script it named and the acceptance held.
+
+The gate is on **executable keys only**: `program`, `source`, `context`, `close`, `provision`, and any `layout` entry with a `run:` in it, plus the contents of any hook script that lands inside the workspace. `branch:`, `worktree:` and `status.needs_input` are strings wisp interprets itself and apply from any file with no ceremony. A file setting none of the executable keys needs no acceptance and says so:
 
 ```
 .wisp.yaml runs nothing, so there is nothing to accept
@@ -566,6 +569,13 @@ note: .wisp.yaml sets program, layout, which wisp would run; it has not been acc
 `wisp workflow accept .wisp.yaml` after reading it
 ```
 
+A hook script that is inside the workspace and not accepted is dropped the same way, and the note names the command that takes no argument:
+
+```
+note: provision names .claude/scripts/provision-worktree.sh, a script this workspace supplies that
+has not been accepted; run `wisp workflow accept` after reading it
+```
+
 `-y` (or `--yes`) answers yes without the prompt, and is **required rather than assumed** when stdin is not a terminal, because a prompt written to something that cannot answer is either a hang or a silent yes.
 
 The record goes into the user config under `accepted:`, keyed by workspace path and address together. Never into the workspace config: a workspace that could write it would be accepting itself. For a bundle the hash covers every file in the directory, not just the manifest, which is what makes showing you the scripts worth anything: a `git pull` rewriting `bin/close.sh` alone puts it back to unaccepted.
@@ -579,9 +589,6 @@ the bundle becomes later.
 ```
 
 ```
-usage: wisp workflow accept ./<name> [-y]
-
-`wisp workflow list` marks the ones still waiting on this
 no workflow "nope" anywhere: not one of yours under ~/.config/wisp/workflows, and not one this workspace ships
 
   wisp workflow list   what there is to name

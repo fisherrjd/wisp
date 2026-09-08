@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 // Workflows are the layer that decides what a session is: which program runs, which branch gets
@@ -48,6 +50,28 @@ func (f *wfFixture) write(path, body string) string {
 func (f *wfFixture) userConfig(body string)  { f.write(UserConfigPath(), body) }
 func (f *wfFixture) spaceConfig(body string) { f.write(filepath.Join(f.c.Workspace, MarkerFile), body) }
 
+// script writes an executable hook inside the workspace, which is what makes it the workspace's
+// rather than yours, and returns its absolute path.
+func (f *wfFixture) script(rel, body string) string {
+	f.t.Helper()
+	path := f.write(filepath.Join(f.c.Workspace, rel), body)
+	if err := os.Chmod(path, 0o755); err != nil {
+		f.t.Fatal(err)
+	}
+	return path
+}
+
+// acceptScript records one hook script by its own content, which is what every accept path now
+// writes for the scripts a file names.
+func (f *wfFixture) acceptScript(path string) {
+	f.t.Helper()
+	key, sum, ok := f.c.scriptRecord(path)
+	if !ok {
+		f.t.Fatalf("no script at %s to accept", path)
+	}
+	f.c.Accepted[key] = sum
+}
+
 func (f *wfFixture) itemFile(item, body string) {
 	f.write(filepath.Join(f.c.ItemDir(item), "orchestration.md"), body)
 }
@@ -65,6 +89,11 @@ func (f *wfFixture) spaceBundle(name, manifest string) string {
 }
 
 // accept records the bundle as it currently stands, which is what `wisp workflow accept` writes.
+//
+// The scripts as well as the tree hash, because that is what the command writes: a bundle inside
+// the workspace produces hook scripts inside the workspace, and those are gated by their own
+// content like any other. A helper that recorded only the tree hash would leave every test using
+// it exercising a half-accepted bundle.
 func (f *wfFixture) accept(addr string) {
 	f.t.Helper()
 	dir, err := f.c.WorkflowDir(addr)
@@ -76,6 +105,13 @@ func (f *wfFixture) accept(addr string) {
 		f.t.Fatal(err)
 	}
 	f.c.Accepted[f.c.acceptKey(addr)] = sum
+	bundle, err := LoadWorkflowFile(dir)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	for _, s := range f.c.gatedScripts(bundle.Hooks, dir) {
+		f.c.Accepted[s.Key] = s.Sum
+	}
 }
 
 // trustSpaceConfig accepts the workspace file as it currently stands.
@@ -85,6 +121,7 @@ func (f *wfFixture) accept(addr string) {
 // point, and is noise in a test about what a close hook does once it runs.
 func (f *wfFixture) trustSpaceConfig() { trustSpaceConfigIn(f.t, f.c) }
 
+// The file and the scripts it names, which is what `wisp workflow accept .wisp.yaml` records now.
 func trustSpaceConfigIn(t *testing.T, c Config) {
 	t.Helper()
 	raw, err := os.ReadFile(filepath.Join(c.Workspace, MarkerFile))
@@ -92,17 +129,34 @@ func trustSpaceConfigIn(t *testing.T, c Config) {
 		t.Fatal(err)
 	}
 	c.Accepted[c.acceptKey(MarkerFile)] = sumOf(raw)
+	var ov workflowOverlay
+	if err := yaml.Unmarshal(raw, &ov); err != nil {
+		t.Fatal(err)
+	}
+	folded, _ := ov.workflow()
+	for _, s := range c.gatedScripts(folded.Hooks, c.Workspace) {
+		c.Accepted[s.Key] = s.Sum
+	}
 }
 
 // trustItem accepts an item's manifest as it currently stands, for tests whose subject is what
 // an item may override rather than whether it had to ask first.
 func (f *wfFixture) trustItem(name string) {
 	f.t.Helper()
-	raw, err := os.ReadFile(filepath.Join(f.c.ItemDir(name), "orchestration.md"))
+	path := filepath.Join(f.c.ItemDir(name), "orchestration.md")
+	raw, err := os.ReadFile(path)
 	if err != nil {
 		f.t.Fatal(err)
 	}
 	f.c.Accepted[f.c.acceptKey(name)] = sumOf(raw)
+	ov, _, ok := readOverlayFrontmatter(path)
+	if !ok {
+		return
+	}
+	folded, _ := ov.workflow()
+	for _, s := range f.c.gatedScripts(folded.Hooks, f.c.Workspace) {
+		f.c.Accepted[s.Key] = s.Sum
+	}
 }
 
 func hasNote(w Workflow, substr string) bool {
@@ -384,6 +438,11 @@ func TestHookPathsResolveAgainstTheLayerThatSuppliedThem(t *testing.T) {
 	f := newWorkflowFixture(t)
 	dir := f.userBundle("solo", "name: solo\nhooks:\n  source: bin/source.sh\n")
 	f.userConfig("workflow: solo\ncontext: bin/context.sh\n")
+	// Written and accepted, because `context: bin/context.sh` in your own config still resolves to
+	// a path inside the workspace, and a script there is the workspace's whoever named it. That is
+	// the subject of TestAScriptInsideTheWorkspaceIsGatedWhoeverNamedIt; here it is setup, so that
+	// this test stays about which directory a relative path is measured from.
+	f.acceptScript(f.script("bin/context.sh", "#!/bin/sh\n"))
 
 	w := f.c.WorkflowFor(Item{}, "")
 	if want := filepath.Join(dir, "bin/source.sh"); w.Hooks.Source != want {
@@ -499,8 +558,11 @@ func TestOneShotWorkflowBeatsWrittenDownKeys(t *testing.T) {
 func TestItemMayNotSetSource(t *testing.T) {
 	f := newWorkflowFixture(t)
 	f.itemFile(testItem.Name, "---\nsource: bin/mine.sh\ncontext: bin/context.sh\nprogram: aider\n---\n\n# notes\n")
+	f.script("bin/context.sh", "#!/bin/sh\n")
 	// Accepted, because this test is about which keys an item may set, not about whether it had
-	// to be read first. The gate itself is TestItemManifestCannotRunAnythingUnaccepted.
+	// to be read first. The gate itself is TestItemManifestCannotRunAnythingUnaccepted, and
+	// trustItem records the scripts the manifest names as well as the manifest, exactly as
+	// `wisp workflow accept <item>` does.
 	f.trustItem(testItem.Name)
 
 	w := f.c.WorkflowFor(testItem, "")
@@ -536,6 +598,7 @@ func TestSourceIsHonouredEverywhereButTheItem(t *testing.T) {
 	}
 
 	f.spaceConfig("source: bin/space.sh\n")
+	f.script("bin/space.sh", "#!/bin/sh\n")
 	f.trustSpaceConfig()
 	w := f.c.WorkflowFor(testItem, "")
 	if want := filepath.Join(f.c.Workspace, "bin/space.sh"); w.Hooks.Source != want {
@@ -1097,6 +1160,11 @@ func TestWorktreeForRefusesToLeaveTheWorktreeRoot(t *testing.T) {
 func TestBuiltinWorkflowReproducesTodaysBehaviour(t *testing.T) {
 	f := newWorkflowFixture(t)
 	item := Item{Name: "wisp/42-fix-the-thing"}
+	// The one piece of setup, and it is not configuration: the built-in's `provision:` names a
+	// script inside the workspace, so it is workspace-supplied and is gated like every other
+	// script there. Present and accepted is what a machine that has been using wisp looks like.
+	// Absent is the other honest state and is asserted at the end of this test.
+	f.acceptScript(f.script(".claude/scripts/provision-worktree.sh", "#!/bin/sh\n"))
 
 	w := f.c.WorkflowFor(item, "")
 
@@ -1160,6 +1228,20 @@ func TestBuiltinWorkflowReproducesTodaysBehaviour(t *testing.T) {
 	// must be the same thing, minus the workspace-relative hook path resolution.
 	if b := BuiltinWorkflow(); b.Program != w.Program || b.Branch != w.Branch || b.Worktree != w.Worktree {
 		t.Errorf("BuiltinWorkflow disagrees with the resolved built-in: %+v", b)
+	}
+
+	// The other honest state, and the one every fresh machine is in: no provisioning script there
+	// at all. The key is dropped rather than pointed at a file that is not there, and it is dropped
+	// without a note, because a note says "wisp would have run this and did not" and there is
+	// nothing here that wisp would have run. A workspace this empty must cost nobody a decision.
+	bare := newWorkflowFixture(t)
+	empty := bare.c.WorkflowFor(item, "")
+	if empty.Hooks.Provision != "" || empty.From["provision"] != "" {
+		t.Errorf("provision = %q from %q, want both empty with no script on disk",
+			empty.Hooks.Provision, empty.From["provision"])
+	}
+	if len(empty.Notes) != 0 {
+		t.Errorf("a workspace holding nothing at all was asked to accept something: %v", empty.Notes)
 	}
 }
 

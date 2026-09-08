@@ -22,7 +22,11 @@ func sourceCounting(t *testing.T, body string) (wisp.Config, string) {
 	ws := t.TempDir()
 	tally := filepath.Join(ws, "runs")
 
-	hook := filepath.Join(ws, "source.sh")
+	// Outside the workspace on purpose. A hook script inside a workspace is workspace-supplied and
+	// has to be accepted by its own content whoever named it, so one written there would be
+	// stripped and this would be a test of the trust gate rather than of the refresh count. A hook
+	// of your own, named by your own config, living somewhere that is yours, is the ordinary case.
+	hook := filepath.Join(t.TempDir(), "source.sh")
 	if err := os.WriteFile(hook, []byte("#!/bin/sh\necho run >>"+tally+"\n"+body), 0o755); err != nil {
 		t.Fatal(err)
 	}

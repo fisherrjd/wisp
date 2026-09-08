@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -31,12 +32,13 @@ const workflowUsage = `usage:
                               bind to a workflow
   wisp workflow edit [<name>]
                               open its workflow.yaml in $EDITOR
+  wisp workflow accept [-y]   read everything this workspace would run, and allow it
   wisp workflow accept ./<name> [-y]
-                              read a workflow this workspace ships, and allow it to run
+                              just the workflow this workspace ships
   wisp workflow accept .wisp.yaml [-y]
-                              same, for the workspace config's own program and hooks
+                              just the workspace config's own program and hooks
   wisp workflow accept <item> [-y]
-                              same, for an item whose orchestration.md runs something
+                              just an item whose orchestration.md runs something
   wisp workflow push <name> <host>
                               copy one of yours to another machine
   wisp workflow list --host <host>
@@ -147,8 +149,11 @@ func (c Config) WorkflowCommand(args []string) error {
 		if err != nil {
 			return err
 		}
+		// No argument is the whole workspace, not a usage error. The script gate refuses a script
+		// whoever named it, and one of the things it refuses is the built-in's own `provision:`
+		// default, which no file names and so has no address to type.
 		if len(names) == 0 {
-			return fmt.Errorf("usage: wisp workflow accept ./<name> [-y]\n\n`wisp workflow list` marks the ones still waiting on this")
+			return c.acceptEverything(flags["-y"] || flags["--yes"])
 		}
 		return c.workflowAccept(names[0], flags["-y"] || flags["--yes"])
 
@@ -414,6 +419,7 @@ func (c Config) printWorkflow(w Workflow, item string) {
 func (c Config) resolveAddr(addr string) Workflow {
 	w := c.builtinResolved()
 	if addr == "" {
+		c.gateScripts(&w)
 		return w
 	}
 	w.Addr, w.From["workflow"] = addr, "the command line"
@@ -423,9 +429,14 @@ func (c Config) resolveAddr(addr string) Workflow {
 		if !errors.Is(err, errSilentBuiltin) {
 			w.Notes = append(w.Notes, err.Error())
 		}
+		c.gateScripts(&w)
 		return w
 	}
 	w.applyBundle(bundle, addr)
+	// Gated here too, though `show` runs nothing. The command's job is to say what this bundle
+	// would do in this workspace, and a row naming a script the gate will refuse is the command
+	// answering a question nobody asked.
+	c.gateScripts(&w)
 	w.Notes = append(w.Notes, w.validate()...)
 	return w
 }
@@ -721,13 +732,209 @@ func (c Config) printHookBodies(hooks Hooks, base string) {
 		if !filepath.IsAbs(script) {
 			script = filepath.Join(base, script)
 		}
-		body, err := os.ReadFile(script)
-		if err != nil {
-			fmt.Printf("\n--- %s (%s hook): not there yet\n", shortPath(script), hook.key)
+		printScript(script, hook.key+" hook")
+	}
+}
+
+// printScript is the shape every script goes on screen in, wherever the list of them came from.
+// Shared with the whole-workspace accept, which has absolute paths rather than a Hooks to walk.
+func printScript(path, label string) {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		fmt.Printf("\n--- %s (%s): not there yet\n", shortPath(path), label)
+		return
+	}
+	fmt.Printf("\n--- %s (%s)\n%s\n", shortPath(path), label, strings.TrimRight(string(body), "\n"))
+}
+
+// askOnce is the prompt every accept path ends in.
+//
+// One copy. There were three, and a fourth was about to be written for the whole-workspace form:
+// each held its own spelling of "there is no terminal to ask on", and the one thing they must all
+// agree about is that -y is required rather than assumed when stdin cannot answer. A prompt
+// written to something that cannot answer is either a hang or a silent yes, and both are worse
+// than a refusal that names the flag.
+func askOnce(yes bool, question, command, refusal string) error {
+	if yes {
+		return nil
+	}
+	st, err := os.Stdin.Stat()
+	if err != nil || st.Mode()&os.ModeCharDevice == 0 {
+		return fmt.Errorf("this needs an answer and there is no terminal to ask on\n\nread the above and say so outright:\n  %s", command)
+	}
+	fmt.Printf("\n%s [y/N] ", question)
+	line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+	if a := strings.ToLower(strings.TrimSpace(line)); a != "y" && a != "yes" {
+		return errors.New(refusal)
+	}
+	return nil
+}
+
+// recordScripts writes a content hash for every hook script this file names that the script gate
+// will check.
+//
+// This is the other half of the rule, and it is why accepting a file is now accepting more than
+// the file. `wisp workflow accept .wisp.yaml` printed the scripts to you and then recorded only
+// the YAML, so a later commit could rewrite `scripts/setup.sh` and it stayed accepted and still
+// ran: the prompt and the record described different bytes. They describe the same bytes now.
+//
+// Only what the gate checks, which is what is inside the workspace and on disk. A hook pointing at
+// ~/bin/brief.sh is yours and is not gated, so recording it would write a line nothing reads.
+func (c Config) recordScripts(hooks Hooks, base string) error {
+	for _, s := range c.gatedScripts(hooks, base) {
+		if err := c.writeInto("accepted", s.Key, s.Sum); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// acceptEverything is `wisp workflow accept` with no argument: everything this workspace would
+// run, printed in full, authorised in one answer.
+//
+// Bare `accept` used to be a usage error, and changing that is not a convenience. The script gate
+// refuses a script whoever named it, and the sharpest thing it refuses is the built-in's own
+// `provision:` default, which no file names and therefore has no address anybody could type. A
+// gate with no way to say yes is a gate that only ever says no, and the answer to that is not to
+// invent an address for a compiled-in default: it is a command that means "everything here".
+//
+// It stops at the workspace. Items are accepted one at a time, because a vault holds hundreds of
+// them and almost none set an executable key: enumerating them would ask you to authorise items
+// you may never open, in a prompt long enough that nobody reads the part that mattered.
+func (c Config) acceptEverything(yes bool) error {
+	// The two config files are read here rather than taken off a resolution, because a resolution
+	// that has not been allowed to load them cannot say what they hold.
+	path := filepath.Join(c.Workspace, MarkerFile)
+	space, spaceRaw, _ := readOverlayFile(path)
+	spaceFolded, _ := space.workflow()
+	user, _, _ := readOverlayFile(UserConfigPath())
+
+	// probe is this config with the file gates already satisfied, so that resolution can be asked
+	// what the *script* gate then refuses. The alternative was to walk the layers here and work
+	// the hook list out a second time, and two derivations of "what would run" is exactly how a
+	// prompt comes to describe something other than what the record covers.
+	probe := c
+	probe.Accepted = maps.Clone(c.Accepted)
+	if probe.Accepted == nil {
+		probe.Accepted = map[string]string{}
+	}
+	probe.wfCache = nil
+
+	// pending is one file being offered, and the hooks it names: a file and the scripts it points
+	// at are one decision, so they are printed together and recorded together.
+	type pending struct {
+		label, key, sum, body string
+		hooks                 Hooks
+		base                  string
+		notes                 []string
+	}
+	var files []pending
+
+	if len(executableKeys(spaceFolded)) > 0 && !c.acceptedBytes(MarkerFile, spaceRaw) {
+		_, spaceNotes := space.workflow()
+		files = append(files, pending{MarkerFile, c.acceptKey(MarkerFile), sumOf(spaceRaw), string(spaceRaw), spaceFolded.Hooks, c.Workspace, spaceNotes})
+	}
+	// The address the same way resolution picks it: the nearest layer that named one wins, and
+	// only a ./ one is the workspace's to be accepted.
+	addr := normalizeAddr(user.Workflow)
+	if v := normalizeAddr(space.Workflow); v != "" {
+		addr = v
+	}
+	// known is "this workspace has something the gate has an opinion about", accepted or not. It is
+	// what tells "nothing here runs" apart from "all of it is already allowed", and those two must
+	// not share a sentence: telling somebody their workspace runs nothing, about a workspace whose
+	// close hook they authorised last week, is the command lying to make one branch shorter.
+	known := len(executableKeys(spaceFolded)) > 0
+	if IsWorkspaceWorkflow(addr) {
+		if dir, err := c.WorkflowDir(addr); err == nil && isDir(dir) {
+			known = true
+			if sum, manifest, err := hashBundle(dir); err == nil && c.Accepted[c.acceptKey(addr)] != sum {
+				bundle, perr := parseWorkflow(dir, manifest)
+				if perr != nil {
+					return fmt.Errorf("%v\n\nwisp cannot tell you what %s would run, so it will not record that you\nagreed to it. Fix the file, or ask whoever ships it to", perr, addr)
+				}
+				files = append(files, pending{addr, c.acceptKey(addr), sum, string(manifest), bundle.Hooks, dir, bundle.Notes})
+			}
+		}
+	}
+	for _, f := range files {
+		probe.Accepted[f.key] = f.sum
+	}
+
+	w := probe.WorkflowFor(Item{}, "")
+	var scripts []scriptRef
+	seen := map[string]bool{}
+	// A file's own scripts first, so they are printed under the file that named them, and marked as
+	// shown there so the flat list below does not print them twice.
+	shownWithFile := map[string]bool{}
+	for _, f := range files {
+		for _, s := range c.gatedScripts(f.hooks, f.base) {
+			shownWithFile[s.Path] = true
+			if !seen[s.Path] {
+				seen[s.Path], scripts = true, append(scripts, s)
+			}
+		}
+	}
+	// Then what the gate actually refused, which is the list that includes the scripts no file
+	// named at all: the built-in's `provision:` is the whole reason this command exists.
+	for _, p := range w.Unaccepted {
+		if seen[p] {
 			continue
 		}
-		fmt.Printf("\n--- %s (%s hook)\n%s\n", shortPath(script), hook.key, strings.TrimRight(string(body), "\n"))
+		seen[p] = true
+		if key, sum, ok := c.scriptRecord(p); ok {
+			scripts = append(scripts, scriptRef{Path: p, Key: key, Sum: sum})
+		}
 	}
+
+	total := len(files) + len(scripts)
+	if total == 0 {
+		if known || len(c.gatedScripts(w.Hooks, c.Workspace)) > 0 {
+			fmt.Printf("everything %s would run is already accepted, exactly as it stands now\n\neach is recorded by its own contents, so editing any one of them asks again.\n", c.Name)
+			return nil
+		}
+		fmt.Printf("%s runs nothing that has to be accepted\n\nno hook script inside this workspace, no `program:` and no layout command in a file\nthat arrived with a repository. There is nothing here to say yes to.\n", c.Name)
+		return nil
+	}
+
+	for _, f := range files {
+		fmt.Printf("--- %s\n%s\n", f.label, strings.TrimRight(f.body, "\n"))
+		// What the file asked for and is not getting, said here rather than only in `wisp workflow`.
+		// A hook refused for reaching outside its bundle is not on the list you are authorising, and
+		// somebody reading this prompt is entitled to know that before they wonder why it never ran.
+		for _, n := range f.notes {
+			fmt.Printf("  note: %s\n", n)
+		}
+		c.printHookBodies(f.hooks, f.base)
+	}
+	for _, s := range scripts {
+		if shownWithFile[s.Path] {
+			continue
+		}
+		printScript(s.Path, "hook script")
+	}
+
+	fmt.Printf("\nthat is %d %s wisp would run in %s, all of it supplied by this workspace\nrather than by you.\n",
+		total, plural(total, "thing", "things"), c.Name)
+	if err := askOnce(yes,
+		fmt.Sprintf("let all of it run in %s?", c.Name),
+		"wisp workflow accept -y",
+		"not accepted, and nothing was written\n\nuntil then wisp uses the built-in for those keys, and the session still opens"); err != nil {
+		return err
+	}
+	for _, f := range files {
+		if err := c.writeInto("accepted", f.key, f.sum); err != nil {
+			return err
+		}
+	}
+	for _, s := range scripts {
+		if err := c.writeInto("accepted", s.Key, s.Sum); err != nil {
+			return err
+		}
+	}
+	fmt.Printf("\naccepted %d in %s, recorded in %s\n\neach is recorded by its own contents, so editing any one of them puts that one back\nto unaccepted. This is not a standing permission for whatever they become later.\n",
+		total, c.Name, shortPath(UserConfigPath()))
+	return nil
 }
 
 // acceptWorkspaceConfig records that this workspace's own .wisp.yaml has been read and may run
@@ -761,21 +968,21 @@ func (c Config) acceptWorkspaceConfig(yes bool) error {
 	fmt.Printf("\nthis would let %s run: %s\n", MarkerFile, strings.Join(keys, ", "))
 	c.printHookBodies(folded.Hooks, c.Workspace)
 
-	if !yes {
-		st, err := os.Stdin.Stat()
-		if err != nil || st.Mode()&os.ModeCharDevice == 0 {
-			return fmt.Errorf("this needs an answer and there is no terminal to ask on\n\nread the above and say so outright:\n  wisp workflow accept %s -y", MarkerFile)
-		}
-		fmt.Printf("\nlet this run in %s? [y/N] ", c.Name)
-		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
-		if a := strings.ToLower(strings.TrimSpace(line)); a != "y" && a != "yes" {
-			return fmt.Errorf("not accepted, and nothing was written\n\nuntil then wisp uses the built-in for those keys, and the session still opens")
-		}
+	if err := askOnce(yes,
+		fmt.Sprintf("let this run in %s?", c.Name),
+		"wisp workflow accept "+MarkerFile+" -y",
+		"not accepted, and nothing was written\n\nuntil then wisp uses the built-in for those keys, and the session still opens"); err != nil {
+		return err
 	}
 	if err := c.writeInto("accepted", c.acceptKey(MarkerFile), sumOf(raw)); err != nil {
 		return err
 	}
-	fmt.Printf("\naccepted %s in %s, recorded in %s\n\nediting it puts it back to unaccepted, which is the point.\n",
+	// The scripts as well as the file. They were printed above, and a record of only the YAML was
+	// a record of the names rather than of what was read.
+	if err := c.recordScripts(folded.Hooks, c.Workspace); err != nil {
+		return err
+	}
+	fmt.Printf("\naccepted %s in %s, and the scripts it names, recorded in %s\n\nediting it, or any of those scripts, puts it back to unaccepted, which is the point.\n",
 		MarkerFile, c.Name, shortPath(UserConfigPath()))
 	return nil
 }
@@ -810,21 +1017,19 @@ func (c Config) acceptItemManifest(name string, yes bool) error {
 	// at the key list, so it asked you to authorise `provision:` and `close:` scripts it never
 	// showed you, and those paths resolve against the workspace, which is the side that wrote them.
 	c.printHookBodies(folded.Hooks, c.Workspace)
-	if !yes {
-		st, err := os.Stdin.Stat()
-		if err != nil || st.Mode()&os.ModeCharDevice == 0 {
-			return fmt.Errorf("this needs an answer and there is no terminal to ask on\n\nread the above and say so outright:\n  wisp workflow accept %s -y", name)
-		}
-		fmt.Printf("\nlet this run for %s? [y/N] ", name)
-		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
-		if a := strings.ToLower(strings.TrimSpace(line)); a != "y" && a != "yes" {
-			return fmt.Errorf("not accepted, and nothing was written\n\nuntil then the item opens with the workspace's workflow, which is the normal one")
-		}
+	if err := askOnce(yes,
+		fmt.Sprintf("let this run for %s?", name),
+		"wisp workflow accept "+name+" -y",
+		"not accepted, and nothing was written\n\nuntil then the item opens with the workspace's workflow, which is the normal one"); err != nil {
+		return err
 	}
 	if err := c.writeInto("accepted", c.acceptKey(name), sumOf(raw)); err != nil {
 		return err
 	}
-	fmt.Printf("\naccepted %s, recorded in %s\n\nediting its orchestration.md puts it back to unaccepted.\n",
+	if err := c.recordScripts(folded.Hooks, c.Workspace); err != nil {
+		return err
+	}
+	fmt.Printf("\naccepted %s, and the scripts it names, recorded in %s\n\nediting its orchestration.md, or any of those scripts, puts it back to unaccepted.\n",
 		name, shortPath(UserConfigPath()))
 	return nil
 }
@@ -890,25 +1095,29 @@ func (c Config) workflowAccept(addr string, yes bool) error {
 	fmt.Printf("--- %s\n%s\n", shortPath(path), strings.TrimRight(string(raw), "\n"))
 	// Relative to the bundle here, rather than to the workspace: that is what makes a bundle
 	// copyable, and it is the one thing that differs between the three things you can accept.
+	for _, n := range bundle.Notes {
+		fmt.Printf("  note: %s\n", n)
+	}
 	c.printHookBodies(bundle.Hooks, dir)
 
-	if !yes {
-		// A prompt written to something that cannot answer is a hang or a silent yes, and both are
-		// worse than a refusal that names the flag.
-		st, err := os.Stdin.Stat()
-		if err != nil || st.Mode()&os.ModeCharDevice == 0 {
-			return fmt.Errorf("this needs an answer and there is no terminal to ask on\n\nread the above and say so outright:\n  wisp workflow accept %s -y", addr)
-		}
-		fmt.Printf("\nlet this run in %s? [y/N] ", c.Name)
-		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
-		if a := strings.ToLower(strings.TrimSpace(line)); a != "y" && a != "yes" {
-			return fmt.Errorf("not accepted, and nothing was written\n\nrun it again once you have read it:\n  wisp workflow accept %s", addr)
-		}
+	if err := askOnce(yes,
+		fmt.Sprintf("let this run in %s?", c.Name),
+		"wisp workflow accept "+addr+" -y",
+		"not accepted, and nothing was written\n\nrun it again once you have read it:\n  wisp workflow accept "+addr); err != nil {
+		return err
 	}
 
 	// The user config, never the workspace one: a workspace that could write this would be
 	// accepting itself. writeInto owns that file's shape and keeps the comments in it.
 	if err := c.writeInto("accepted", c.acceptKey(addr), sum); err != nil {
+		return err
+	}
+	// The tree hash already covers every file in the bundle, so this looks redundant and is not.
+	// The script gate asks its question of the path that came out, and a bundle inside the
+	// workspace produces scripts inside the workspace: they are gated like any other, which is what
+	// "whoever named it" means. Recording them here is what keeps `accept ./ship` a single answer
+	// rather than one answer followed by four more.
+	if err := c.recordScripts(bundle.Hooks, dir); err != nil {
 		return err
 	}
 	// "anything in it", not "the manifest": the hash covers the whole directory, which is what

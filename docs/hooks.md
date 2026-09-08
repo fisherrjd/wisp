@@ -6,6 +6,19 @@ Three of its decisions were changed on purpose. Each is marked where it is made,
 
 **`source:`, `context:` and `close:` are run the same way**, through one function. The command is the script path, with no shell around it, so the file has to be executable and carry its own `#!` line. Its working directory is the workspace root, never wherever wisp was invoked from, and `WISP_WORKSPACE` is set to the same path. stdout is captured, because for all three it is the answer. stderr is captured rather than inherited, and on a non-zero exit its **last line** becomes what the hook gets to say, prefixed with the script's basename: one line, because it goes somewhere with room for one.
 
+**A hook script inside the workspace does not run until it has been accepted by its own content**,
+whoever named it: the built-in, your user config, the workspace config, a bundle or an item. A hook
+outside the workspace is yours and is not gated. That is one rule and it is stated in full under
+[the script rule](workflows.md#the-script-rule); what matters here is the shape of the failure,
+which is the shape every other failure on this page has. The key is dropped, a note names the
+script and `wisp workflow accept`, and everything downstream behaves as it does for a hook nobody
+set: the built-in briefing is written, the built-in GitLab source runs, a close-out closes, and
+provisioning says there is nothing it is allowed to build with. The session still opens.
+
+It catches `provision:` hardest, and that is the point rather than a side effect. Its default is
+`.claude/scripts/provision-worktree.sh` under the workspace root, so the one hook wisp has always
+run without being asked to is a file a repository decides the contents of.
+
 `provision:` is the odd one, and it is odd because it is older than the rest. It is invoked directly rather than through that function: same working directory, but **no `WISP_WORKSPACE`**, a fixed argument list instead of stdin, and neither stream captured, because it runs in a window of its own where a live build log is the point. Both of its streams go to wisp's stderr, which is that window. A failure is logged there and the other repos are still attempted, rather than the whole open being abandoned. Do not write a `provision` script that reads `WISP_WORKSPACE`; it gets `<repo-path>` as its first argument instead.
 
 ## What a hook is allowed to cost
@@ -88,6 +101,10 @@ So: a small set of named hooks, each a script path in `.wisp.yaml`, each with a 
 Hooks live in `<workspace>/.wisp.yaml` rather than the user config, for the same reason the GitLab keys do: the workspace is the unit that owns a vault, a tracker and a set of conventions, and its config should travel with it.
 
 > **Changed.** That is right for the tracker and wrong for everything else. A hook may now be set in a bundle, in either config file, or in an item, and it resolves per key across all of them. See [What changed, and why](#what-changed-and-why).
+
+That change is what makes the script rule about **where the script is** rather than about which
+file named it. Once any of five layers can set a hook, "which file said so" stops being a useful
+question to ask about trust: the same script is equally executable whichever line points at it.
 
 ---
 

