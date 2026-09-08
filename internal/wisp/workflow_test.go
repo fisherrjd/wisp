@@ -671,6 +671,88 @@ func TestOnlyGatedBundlesAreReadWhole(t *testing.T) {
 	}
 }
 
+// The gate has to hash the bytes that were applied, not a second read of the same path.
+//
+// Both gated files used to be read twice: once by the resolver, to find out what they say, and once
+// again inside the gate, to hash them. Between those two reads the file may be a different file, so
+// what was checked and what was applied were the same bytes only by luck. The writer this design is
+// actually worried about is an agent that has read something hostile and can write into the vault,
+// and swapping a file back and forth in a loop is the cheapest thing such a writer can do: against
+// the two-read version the loop below lands EVIL in a resolution within milliseconds.
+//
+// Renamed rather than rewritten in place, so every read sees one whole body or the other. A torn
+// read would fail to parse, produce no keys, and prove nothing about which bytes were hashed.
+//
+// The assertion is one-sided and cannot flake into a false failure: only one of the two bodies is
+// accepted, so EVIL reaching a resolution is the gate having answered about bytes the resolver did
+// not apply. Losing the race is the only way to see it.
+func TestTheTrustGateHashesTheBytesItApplied(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		file       func(f *wfFixture) string
+		key        func(f *wfFixture) string
+		good, evil string
+		item       Item
+	}{
+		{
+			name: MarkerFile,
+			file: func(f *wfFixture) string { return filepath.Join(f.c.Workspace, MarkerFile) },
+			key:  func(*wfFixture) string { return MarkerFile },
+			good: "program: GOOD\n", evil: "program: EVIL\n",
+			item: Item{},
+		},
+		{
+			name: "orchestration.md",
+			file: func(f *wfFixture) string { return filepath.Join(f.c.ItemDir(testItem.Name), "orchestration.md") },
+			key:  func(*wfFixture) string { return testItem.Name },
+			good: "---\nprogram: GOOD\n---\n", evil: "---\nprogram: EVIL\n---\n",
+			item: testItem,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newWorkflowFixture(t)
+			path := tc.file(f)
+			f.write(path, tc.good)
+			f.c.Accepted[f.c.acceptKey(tc.key(f))] = sumOf([]byte(tc.good))
+
+			done := make(chan struct{})
+			swapped := make(chan struct{})
+			go func() {
+				defer close(swapped)
+				staged := path + ".staged"
+				for i := 0; ; i++ {
+					select {
+					case <-done:
+						return
+					default:
+					}
+					body := tc.good
+					if i%2 == 1 {
+						body = tc.evil
+					}
+					if os.WriteFile(staged, []byte(body), 0o644) != nil {
+						return
+					}
+					if os.Rename(staged, path) != nil {
+						return
+					}
+				}
+			}()
+
+			var applied string
+			for i := 0; i < 3000 && applied != "EVIL"; i++ {
+				applied = f.c.WorkflowFor(tc.item, "").Program
+			}
+			close(done)
+			<-swapped
+
+			if applied == "EVIL" {
+				t.Errorf("%s ran a program out of a body that was never accepted: the hash was of a different read", tc.name)
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------------------------
 // 6. Degradation
 // ---------------------------------------------------------------------------------------------
@@ -890,15 +972,45 @@ func TestExpand(t *testing.T) {
 // nothing in it used to expand to claude with an empty quoted argument, which is not the same
 // thing as no argument at all for most agent CLIs. Delete this and the token comes back as a hole
 // in the middle of a command line.
+//
+// The table used to say `x={prompt}` for the backward case, and that was the one input where
+// eating backwards and not eating backwards produce the same string, so it passed against a
+// version that ate a byte it had no business touching. Every backward case below is one where the
+// two answers differ.
 func TestExpandCollapsesEmptyValues(t *testing.T) {
-	vars := map[string]string{"program": "claude", "prompt": "", "flags": ""}
+	// spaced is a value that ends in a space. Run lines never produce one, since every value is
+	// shell-quoted and ends in a quote, but `window:`, `branch:` and `worktree:` substitute raw.
+	vars := map[string]string{"program": "claude", "prompt": "", "flags": "", "base": "", "spaced": "hello "}
 	for _, tc := range []struct{ in, want, why string }{
-		{"{program} {prompt}", "claude", "the separator goes with the value it separated"},
+		{"{program} {prompt}", "claude", "the token ends the line, so the separator goes with it"},
+		{"{prompt} rest", "rest", "at the front, the space after it goes instead"},
 		{"{program} {flags} run", "claude run", "one side only: eating both would join the words either side"},
+		{"git log {base}..HEAD", "git log ..HEAD", "nothing after it is whitespace, so nothing is eaten: git log..HEAD is a different command, and {base} is empty for every item whose manifest omits it"},
+		{"a {flags}{prompt} b", "a b", "two empty tokens in a row still collapse one gap, not the words either side"},
+		{"{spaced}{prompt}", "hello ", "the trailing space arrived inside a value, and an empty token says nothing about how the value before it ends"},
+		{"{spaced}{prompt}tail", "hello tail", "the same, with the token not ending the line either"},
 		{"{prompt}", "", "nothing left is nothing at all"},
-		{"{prompt} {program}", "claude", "a token at the front takes the space after it instead"},
 		{"x={prompt}", "x=", "no whitespace to take, and what is around it is left alone"},
 		{"{program}  {prompt}", "claude", "however much whitespace there was"},
+		{"{program} {prompt}\nsecond {flags}\n", "claude\nsecond\n", "the end of a line counts as the end, since there is nothing after it to absorb the separator either"},
+	} {
+		if got := Expand(tc.in, vars); got != tc.want {
+			t.Errorf("Expand(%q) = %q, want %q (%s)", tc.in, got, tc.want, tc.why)
+		}
+	}
+}
+
+// Expand runs once over the template and never over what it has produced. The text a value happens
+// to contain is data: {prompt} carries the item's own notes, and a run line is shell-quoted before
+// substitution, so a second expansion inside an already-quoted string breaks the quoting it was
+// relying on. Sequential ReplaceAll per key had exactly this fault, which is why there is a scanner
+// here instead.
+func TestExpandNeverRescansItsOwnOutput(t *testing.T) {
+	vars := map[string]string{"prompt": "read {repo} first", "repo": "wisp", "empty": "", "carrier": "{empty} kept"}
+	for _, tc := range []struct{ in, want, why string }{
+		{"{prompt}", "read {repo} first", "a token inside a value is text the item wrote, not a token"},
+		{"{prompt} {repo}", "read {repo} first wisp", "and the template's own token beside it still expands"},
+		{"{carrier}", "{empty} kept", "including a token whose value is empty, which would otherwise collapse and take the space with it"},
 	} {
 		if got := Expand(tc.in, vars); got != tc.want {
 			t.Errorf("Expand(%q) = %q, want %q (%s)", tc.in, got, tc.want, tc.why)

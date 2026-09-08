@@ -156,16 +156,26 @@ func bundleContents(dir string) (int, int64) {
 	return files, size
 }
 
-// Stops at MB because that is where the things it measures stop: a bundle is scripts and a
-// manifest, and the hook ceiling is 8 MB. It used to stop at kB, which printed that ceiling as
-// "8192.0 kB" in the one message whose whole job is telling you what the limit was.
+// Goes to GB, and the reason is the second thing this measures rather than the first. A bundle is
+// scripts and a manifest, so kB was enough for `push`, and stopping there printed the 8 MB hook
+// ceiling as "8192.0 kB" in the one message whose whole job is naming that limit. Adding one tier
+// fixed the message and left the same bug one tier up: what the truncation reports is the amount a
+// runaway hook DROPPED, and a `yes` loop inside the sixty second deadline drops tens of gigabytes,
+// which read as "40960.0 MB". A ceiling is a small number by construction; the overrun is not.
 func humanBytes(n int64) string {
+	const (
+		kB = 1 << 10
+		MB = 1 << 20
+		GB = 1 << 30
+	)
 	switch {
-	case n < 1024:
+	case n < kB:
 		return fmt.Sprintf("%d B", n)
-	case n < 1024*1024:
-		return fmt.Sprintf("%.1f kB", float64(n)/1024)
+	case n < MB:
+		return fmt.Sprintf("%.1f kB", float64(n)/kB)
+	case n < GB:
+		return fmt.Sprintf("%.1f MB", float64(n)/MB)
 	default:
-		return fmt.Sprintf("%.1f MB", float64(n)/(1024*1024))
+		return fmt.Sprintf("%.1f GB", float64(n)/GB)
 	}
 }

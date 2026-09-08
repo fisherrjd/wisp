@@ -1,6 +1,8 @@
 package wisp
 
 import (
+	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -278,4 +280,79 @@ func TestTheHeaderDoesNotClaimTheBuiltinWhenAConfigOverrodeIt(t *testing.T) {
 	if w.Name != "solo" || w.From["name"] != "solo" {
 		t.Errorf("name = %q from %q, want solo from the bundle", w.Name, w.From["name"])
 	}
+}
+
+// humanBytes measures two different things and they are orders of magnitude apart. `push` reports
+// a bundle, which is scripts and a manifest; the hook ceiling reports what a runaway script
+// DROPPED, and a `yes` loop inside the sixty second deadline drops tens of gigabytes. Stopping a
+// tier too early is a message that is technically true and unreadable, which is how "8192.0 kB"
+// and then "40960.0 MB" each shipped.
+func TestHumanBytesReachesTheSizesItIsAskedAbout(t *testing.T) {
+	for _, tc := range []struct {
+		n    int64
+		want string
+	}{
+		{512, "512 B"},
+		{1 << 10, "1.0 kB"},
+		{8 << 20, "8.0 MB"},   // the hook ceiling, named in the truncation message
+		{40 << 30, "40.0 GB"}, // what a `yes` loop drops inside the deadline
+	} {
+		if got := humanBytes(tc.n); got != tc.want {
+			t.Errorf("humanBytes(%d) = %q, want %q", tc.n, got, tc.want)
+		}
+	}
+}
+
+// Accepting an item's orchestration.md has to show the scripts it names, for the same reason the
+// other two accept paths do: the decision is about what runs, and the manifest only says where to
+// look. This one printed the key list and stopped, so it asked you to authorise a `provision:`
+// script it never showed you, resolved against the workspace, which is the side that wrote it.
+func TestAcceptingAnItemShowsTheScriptsItWouldRun(t *testing.T) {
+	c := newWorkflowConfig(t)
+	item := "repo/1-thing"
+	body := "#!/bin/sh\necho the line nobody was shown\n"
+	if err := os.MkdirAll(filepath.Join(c.Workspace, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(c.Workspace, "bin", "harvest.sh"), []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(c.ItemDir(item), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(c.ItemDir(item), "orchestration.md"),
+		[]byte("---\nclose: bin/harvest.sh\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() { _ = c.acceptItemManifest(item, true) })
+	if !strings.Contains(out, "the line nobody was shown") {
+		t.Errorf("the prompt authorised a script without printing it:\n%s", out)
+	}
+	if !strings.Contains(out, "close hook") {
+		t.Errorf("the script is not labelled with the hook it answers for:\n%s", out)
+	}
+}
+
+// captureStdout runs fn with stdout redirected and returns what it printed. The accept prompts
+// write to stdout directly rather than through a writer, because they are a conversation with a
+// person rather than a value returned to a caller, so this is what it takes to assert on them.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := os.Stdout
+	os.Stdout = w
+	done := make(chan string, 1)
+	go func() {
+		var b bytes.Buffer
+		_, _ = io.Copy(&b, r)
+		done <- b.String()
+	}()
+	fn()
+	w.Close()
+	os.Stdout = saved
+	return <-done
 }

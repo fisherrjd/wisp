@@ -450,34 +450,41 @@ func (o workflowOverlay) workflow() (Workflow, []string) {
 }
 
 // readOverlayFile pulls the workflow keys out of a YAML config file. Absent file, absent keys.
-func readOverlayFile(path string) (workflowOverlay, bool) {
+//
+// It hands back the bytes it parsed as well as the keys, because two of these files are gated on
+// a hash and the hash has to be of the bytes that were applied. See acceptedBytes.
+func readOverlayFile(path string) (workflowOverlay, []byte, bool) {
 	var o workflowOverlay
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return o, false
+		return o, nil, false
 	}
 	if err := yaml.Unmarshal(raw, &o); err != nil {
-		return o, false
+		return o, nil, false
 	}
-	return o, true
+	return o, raw, true
 }
 
 // readOverlayFrontmatter pulls the same keys out of an item's orchestration.md, which is where
 // per-item intent already lives, beside repos and branches.
-func readOverlayFrontmatter(path string) (workflowOverlay, bool) {
+//
+// The bytes it returns are the whole file's, not the frontmatter's. That is what acceptance
+// records and what the accept prompt printed, and hashing only the half the keys came out of
+// would leave the rest of the file free to change under an acceptance somebody gave to all of it.
+func readOverlayFrontmatter(path string) (workflowOverlay, []byte, bool) {
 	var o workflowOverlay
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return o, false
+		return o, nil, false
 	}
 	fm, err := extractFrontmatter(raw)
 	if err != nil || len(fm) == 0 {
-		return o, false
+		return o, nil, false
 	}
 	if err := yaml.Unmarshal(fm, &o); err != nil {
-		return o, false
+		return o, nil, false
 	}
-	return o, true
+	return o, raw, true
 }
 
 // executableKeys names the keys in an overlay that cause wisp to run something someone else
@@ -527,38 +534,19 @@ func stripExecutable(w Workflow) Workflow {
 	return w
 }
 
-// WorkspaceConfigAccepted reports whether this workspace's own .wisp.yaml has been read and
-// allowed to run things, as it currently stands.
+// acceptedBytes reports whether these exact bytes are the ones recorded against this key.
 //
-// The file is gated for the same reason a workspace-supplied bundle is, and it is the sharper
-// case: a bundle has to be named before it does anything, and this file can set `provision:`,
-// `program:` or a `layout[].run` on its own. An attacker was never going to write
-// `workflow: ./ship` when the same repo could simply set the keys directly.
-func (c Config) WorkspaceConfigAccepted() (bool, bool, error) {
-	raw, err := os.ReadFile(filepath.Join(c.Workspace, MarkerFile))
-	if err != nil {
-		return false, false, err
-	}
-	var ov workflowOverlay
-	if yaml.Unmarshal(raw, &ov) != nil {
-		return false, false, nil
-	}
-	folded, _ := ov.workflow()
-	if len(executableKeys(folded)) == 0 {
-		// Nothing in it runs anything, so there is nothing to accept.
-		return true, false, nil
-	}
-	return c.Accepted[c.acceptKey(MarkerFile)] == sumOf(raw), true, nil
-}
-
-// itemManifestAccepted reports whether an item's orchestration.md has been read and allowed to
-// run the programs it names, as it currently stands.
-func (c Config) itemManifestAccepted(item Item) (bool, error) {
-	raw, err := os.ReadFile(filepath.Join(c.ItemDir(item.Name), "orchestration.md"))
-	if err != nil {
-		return false, err
-	}
-	return c.Accepted[c.acceptKey(item.Name)] == sumOf(raw), nil
+// The bytes rather than the path, and that is the whole of the point. Both gates used to take a
+// path and read it for themselves, a second read of a file resolution had already read to find
+// out what it says, so the bytes that were checked and the bytes that were applied were only the
+// same bytes as long as nobody wrote to the file in between. A writer flipping .wisp.yaml between
+// an accepted body and `program: EVIL` in a loop wins that race in milliseconds, and the writer
+// this design is worried about is an agent that has read something hostile and can write into the
+// vault, which is exactly the thing a loop like that is cheap for. loadBundle has said "one walk,
+// used for both the gate and the parse" since it was written; this is that discipline for the two
+// files that had not got it.
+func (c Config) acceptedBytes(key string, raw []byte) bool {
+	return c.Accepted[c.acceptKey(key)] == sumOf(raw)
 }
 
 // WorkflowFor resolves the workflow in effect, per key, across every layer.
@@ -596,11 +584,15 @@ func (c Config) WorkflowFor(item Item, oneShot string) Workflow {
 func (c Config) resolveWorkflow(item Item, oneShot string) Workflow {
 	w := c.builtinResolved()
 
-	user, _ := readOverlayFile(UserConfigPath())
-	space, _ := readOverlayFile(filepath.Join(c.Workspace, MarkerFile))
+	// The bytes are kept alongside the keys for the two layers that are gated on a hash of them.
+	// A gate that re-read the file would be hashing whatever it holds now and applying what it
+	// held a moment ago, which is a window a hostile writer can simply sit in a loop and hit.
+	user, _, _ := readOverlayFile(UserConfigPath())
+	space, spaceRaw, _ := readOverlayFile(filepath.Join(c.Workspace, MarkerFile))
 	var itemOv workflowOverlay
+	var itemRaw []byte
 	if item.Name != "" {
-		itemOv, _ = readOverlayFrontmatter(filepath.Join(c.ItemDir(item.Name), "orchestration.md"))
+		itemOv, itemRaw, _ = readOverlayFrontmatter(filepath.Join(c.ItemDir(item.Name), "orchestration.md"))
 	}
 
 	// The address: the nearest layer that named one wins outright. A bundle is selected, not
@@ -648,7 +640,7 @@ func (c Config) resolveWorkflow(item Item, oneShot string) Workflow {
 	spaceFolded, spaceNotes := space.workflow()
 	w.Notes = append(w.Notes, spaceNotes...)
 	if keys := executableKeys(spaceFolded); len(keys) > 0 {
-		if ok, _, err := c.WorkspaceConfigAccepted(); err != nil || !ok {
+		if !c.acceptedBytes(MarkerFile, spaceRaw) {
 			spaceFolded = stripExecutable(spaceFolded)
 			w.Notes = append(w.Notes, fmt.Sprintf(
 				"%s sets %s, which wisp would run; it has not been accepted, so run `wisp workflow accept %s` after reading it",
@@ -681,7 +673,7 @@ func (c Config) resolveWorkflow(item Item, oneShot string) Workflow {
 	// of these, so the question is only ever asked about an item that wants something unusual,
 	// which is exactly when it is worth asking.
 	if keys := executableKeys(iw); len(keys) > 0 {
-		if ok, err := c.itemManifestAccepted(item); err != nil || !ok {
+		if !c.acceptedBytes(item.Name, itemRaw) {
 			iw = stripExecutable(iw)
 			w.Notes = append(w.Notes, fmt.Sprintf(
 				"orchestration.md sets %s, which wisp would run; it has not been accepted, so run `wisp workflow accept %s` after reading it",
@@ -860,16 +852,36 @@ func (w *Workflow) validate() []string {
 // Expand substitutes a workflow's template vocabulary. It is deliberately tiny and closed:
 // {item} {slug} {repo} {branch} {base} {worktree} {workspace} {program} {prompt} {wisp}, plain
 // substitution and nothing else.
-// A token whose value is empty collapses, taking the whitespace on one side with it, rather than
+//
+// A token whose value is empty collapses, taking the whitespace after it with it, rather than
 // leaving a gap where a word was. That is a run line's requirement rather than a nicety: the
 // values are quoted before they are substituted, so an empty one arriving as a gap between two
 // spaces became an empty argument, and an empty argument is not the same thing as no argument.
+// When there is no whitespace after it because the token ends the line, the whitespace before it
+// goes instead, which is the case `{program} {prompt}` is: nothing after the token to absorb the
+// separator, so the separator itself has to go.
+//
+// It is one side or the other, never both, and never on any other grounds. An earlier version
+// ate backwards whenever the next byte was not a space, which is the same condition as "the token
+// is followed by a word", so `git log {base}..HEAD` became `git log..HEAD` and ran. {base} is
+// empty for every item whose manifest omits it, so that was reachable from an ordinary bundle
+// rather than a contrived one.
+//
+// The backward eat also stops at the last byte this template supplied, tracked as lit below.
+// Whitespace that arrived inside a substituted value belongs to the value: `{a}{b}` with a
+// ending in a space and b empty must keep that space, because nothing about b says anything
+// about how a ends. The `window:`, `branch:` and `worktree:` templates substitute raw values
+// throughout, so this is real there in a way it is not on a run line, where the quoting happens to
+// end every value in a quote character and hide it.
+//
 // One pass, scanning for tokens, rather than a ReplaceAll per key. The difference is not
 // efficiency: sequential replacement rescans what it has already substituted, so a value
 // containing {repo} would be expanded again by a later key. That is reachable, because {prompt}
 // carries the item's own notes, and the run line is shell-quoted before substitution, so a
 // second expansion inside an already-quoted string breaks the quoting it was relying on. The
-// text a value happens to contain must never be treated as template.
+// text a value happens to contain must never be treated as template. The scan below only ever
+// reads tmpl. The one thing that looks at b at all is the backward eat, and it is looking for a
+// space to drop rather than for a token, which is what keeps that true.
 func Expand(tmpl string, vars map[string]string) string {
 	if tmpl == "" || !strings.ContainsRune(tmpl, '{') {
 		return tmpl
@@ -877,6 +889,11 @@ func Expand(tmpl string, vars map[string]string) string {
 	// A byte slice rather than a strings.Builder, which cannot give anything back once written: an
 	// empty value has to be able to take the space before it with it.
 	b := make([]byte, 0, len(tmpl))
+	// lit is where the current run of bytes copied straight out of the template begins. It is the
+	// floor the backward eat may not go below, and it moves up to the end of every value that is
+	// substituted, since past that point the bytes are somebody's data rather than the template's
+	// spacing.
+	lit := 0
 	for i := 0; i < len(tmpl); {
 		if tmpl[i] != '{' {
 			b = append(b, tmpl[i])
@@ -893,27 +910,32 @@ func Expand(tmpl string, vars map[string]string) string {
 		switch {
 		case !known:
 			// An unknown token is left alone rather than blanked, so a typo is visible in the
-			// window it produced instead of silently becoming nothing.
+			// window it produced instead of silently becoming nothing. It is still template text,
+			// so lit stays where it is.
 			b = append(b, tmpl[i:i+end+1]...)
 		case v == "":
-			// An empty value takes the whitespace beside it with it, so the token collapses rather
-			// than leaving a hole. The tokens are mostly arguments in a run line, and `{program}
-			// {prompt}` with nothing to say would otherwise hand the shell a trailing separator to
-			// make an argument out of. One side only, never both: eating both would run the words
-			// either side of the token together.
 			i += end + 1
 			gap := i
 			for i < len(tmpl) && (tmpl[i] == ' ' || tmpl[i] == '\t') {
 				i++
 			}
-			if i == gap {
-				for len(b) > 0 && (b[len(b)-1] == ' ' || b[len(b)-1] == '\t') {
-					b = b[:len(b)-1]
-				}
+			if i > gap {
+				// The whitespace after it went with it, so the whitespace before it stays.
+				continue
+			}
+			// Only the end of a line has nothing after it to absorb the separator. Anything else
+			// following the token, a word, a `.`, another token, means the two sides were meant to
+			// touch and there is nothing to collapse.
+			if i < len(tmpl) && tmpl[i] != '\n' && tmpl[i] != '\r' {
+				continue
+			}
+			for len(b) > lit && (b[len(b)-1] == ' ' || b[len(b)-1] == '\t') {
+				b = b[:len(b)-1]
 			}
 			continue
 		default:
 			b = append(b, v...)
+			lit = len(b)
 		}
 		i += end + 1
 	}

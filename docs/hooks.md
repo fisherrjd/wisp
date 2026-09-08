@@ -10,7 +10,9 @@ Three of its decisions were changed on purpose. Each is marked where it is made,
 
 ## What a hook is allowed to cost
 
-**60 seconds, and 8 MB on stdout.** Both apply to `source:`, `context:` and `close:`, the three that go through the shared runner. `provision:` is outside both, for the reason above: it runs in its own window, a cold nix build is a normal thing for it to be doing, and there is a person watching it.
+**60 seconds, 8 MB on stdout, and 64 kB of stderr.** All three apply to `source:`, `context:` and `close:`, the three that go through the shared runner. `provision:` is outside all of them, for the reason above: it runs in its own window, a cold nix build is a normal thing for it to be doing, and there is a person watching it.
+
+The stderr bound arrived late and is worth its own sentence, because its absence made the stdout ceiling decorative. A runaway script that wrote to stderr instead was read whole into memory, and then doubled, because taking the last line copies the buffer it is handed: 60 MB on stderr took the heap from 3 MB to 131 MB, which is exactly the outcome `maxHookOutput` exists to prevent, reached by using the other pipe. It is bounded far lower than stdout because nothing consumes it. Exactly one line ever reaches a person, so wisp keeps the **last** 64 kB rather than the first, on the grounds that a script's complaint is at the end of its output and not the start.
 
 **The two bounds do not behave alike, and that is the thing to take away from this section.** They are both reported now, so what separates them is what each one costs you. The deadline kills the hook: the run ends where it stood, and the error names the bound. The ceiling kills the answer and leaves the hook alive: wisp keeps the first 8 MB, accepts and throws away the rest, and the hook exits zero none the wiser, but wisp counts what it dropped and says so. One bound costs you the hook, the other costs you the end of its answer, and neither costs you the reason.
 

@@ -693,6 +693,43 @@ func (c Config) workflowEdit(addr string) error {
 	return nil
 }
 
+// printHookBodies prints every hook script a file names, in full, above the prompt that asks about
+// it. base is what a relative path is relative to: the bundle for a bundle, the workspace for the
+// two config files.
+//
+// One copy, shared by all three things that can be accepted. It was two copies and an omission:
+// the bundle path and the workspace-config path each had their own loop, and the item path had
+// none at all, so accepting an item authorised scripts it never showed you. The printing is not
+// decoration here, it is the entire content of the decision, and a version of it that one caller
+// can forget to do is a gate that quietly asks you to agree to nothing in particular.
+//
+// A script that is not there yet is said rather than skipped: a hook naming a file that does not
+// exist is still a file whoever ships this decides the contents of later. Never truncated, because
+// the interesting line in a script somebody else wrote is exactly as likely to be the last one as
+// the first.
+func (c Config) printHookBodies(hooks Hooks, base string) {
+	for _, hook := range []struct{ key, val string }{
+		{"source", hooks.Source},
+		{"context", hooks.Context},
+		{"close", hooks.Close},
+		{"provision", hooks.Provision},
+	} {
+		if hook.val == "" {
+			continue
+		}
+		script := hook.val
+		if !filepath.IsAbs(script) {
+			script = filepath.Join(base, script)
+		}
+		body, err := os.ReadFile(script)
+		if err != nil {
+			fmt.Printf("\n--- %s (%s hook): not there yet\n", shortPath(script), hook.key)
+			continue
+		}
+		fmt.Printf("\n--- %s (%s hook)\n%s\n", shortPath(script), hook.key, strings.TrimRight(string(body), "\n"))
+	}
+}
+
 // acceptWorkspaceConfig records that this workspace's own .wisp.yaml has been read and may run
 // the programs it names.
 //
@@ -715,33 +752,14 @@ func (c Config) acceptWorkspaceConfig(yes bool) error {
 		fmt.Printf("%s runs nothing, so there is nothing to accept\n\nit sets no program, no hooks and no layout command, and every other key in it\nalready applies.\n", MarkerFile)
 		return nil
 	}
-	if c.Accepted[c.acceptKey(MarkerFile)] == sumOf(raw) {
+	if c.acceptedBytes(MarkerFile, raw) {
 		fmt.Printf("%s is already accepted, exactly as it stands now\n", MarkerFile)
 		return nil
 	}
 
 	fmt.Printf("--- %s\n%s\n", shortPath(path), strings.TrimRight(string(raw), "\n"))
 	fmt.Printf("\nthis would let %s run: %s\n", MarkerFile, strings.Join(keys, ", "))
-	// The scripts it names, in full, for the same reason a bundle's are shown: the decision is
-	// about what runs, and the file only says where to look.
-	for _, hook := range []struct{ key, val string }{
-		{"source", folded.Hooks.Source}, {"context", folded.Hooks.Context},
-		{"close", folded.Hooks.Close}, {"provision", folded.Hooks.Provision},
-	} {
-		if hook.val == "" {
-			continue
-		}
-		script := hook.val
-		if !filepath.IsAbs(script) {
-			script = filepath.Join(c.Workspace, script)
-		}
-		body, err := os.ReadFile(script)
-		if err != nil {
-			fmt.Printf("\n--- %s (%s hook): not there yet\n", shortPath(script), hook.key)
-			continue
-		}
-		fmt.Printf("\n--- %s (%s hook)\n%s\n", shortPath(script), hook.key, strings.TrimRight(string(body), "\n"))
-	}
+	c.printHookBodies(folded.Hooks, c.Workspace)
 
 	if !yes {
 		st, err := os.Stdin.Stat()
@@ -780,13 +798,18 @@ func (c Config) acceptItemManifest(name string, yes bool) error {
 		fmt.Printf("%s runs nothing, so there is nothing to accept\n", name)
 		return nil
 	}
-	if c.Accepted[c.acceptKey(name)] == sumOf(raw) {
+	if c.acceptedBytes(name, raw) {
 		fmt.Printf("%s is already accepted, exactly as it stands now\n", name)
 		return nil
 	}
 
 	fmt.Printf("--- %s\n%s\n", shortPath(path), strings.TrimRight(string(raw), "\n"))
 	fmt.Printf("\nthis would let %s run: %s\n", name, strings.Join(keys, ", "))
+	// The scripts, in full, for the same reason the other two accept paths print theirs: the
+	// decision is about what runs, and the manifest only says where to look. This one used to stop
+	// at the key list, so it asked you to authorise `provision:` and `close:` scripts it never
+	// showed you, and those paths resolve against the workspace, which is the side that wrote them.
+	c.printHookBodies(folded.Hooks, c.Workspace)
 	if !yes {
 		st, err := os.Stdin.Stat()
 		if err != nil || st.Mode()&os.ModeCharDevice == 0 {
@@ -865,30 +888,9 @@ func (c Config) workflowAccept(addr string, yes bool) error {
 	}
 
 	fmt.Printf("--- %s\n%s\n", shortPath(path), strings.TrimRight(string(raw), "\n"))
-	for _, hook := range []struct{ key, val string }{
-		{"source", bundle.Hooks.Source},
-		{"context", bundle.Hooks.Context},
-		{"close", bundle.Hooks.Close},
-		{"provision", bundle.Hooks.Provision},
-	} {
-		if hook.val == "" {
-			continue
-		}
-		script := hook.val
-		if !filepath.IsAbs(script) {
-			script = filepath.Join(dir, script)
-		}
-		body, err := os.ReadFile(script)
-		if err != nil {
-			// Worth saying rather than skipping: a hook naming a file that is not there yet is
-			// still a file this workspace decides the contents of later.
-			fmt.Printf("\n--- %s (%s hook): not there yet\n", shortPath(script), hook.key)
-			continue
-		}
-		// In full, never truncated. The interesting line in a script somebody else wrote is
-		// exactly as likely to be the last one as the first.
-		fmt.Printf("\n--- %s (%s hook)\n%s\n", shortPath(script), hook.key, strings.TrimRight(string(body), "\n"))
-	}
+	// Relative to the bundle here, rather than to the workspace: that is what makes a bundle
+	// copyable, and it is the one thing that differs between the three things you can accept.
+	c.printHookBodies(bundle.Hooks, dir)
 
 	if !yes {
 		// A prompt written to something that cannot answer is a hang or a silent yes, and both are

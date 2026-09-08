@@ -1,8 +1,10 @@
 package wisp
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -129,21 +131,85 @@ func TestWindowName(t *testing.T) {
 	}
 }
 
-// A layout that expands to nothing still has to produce a session. The case is real: a workflow
-// whose only entry is per-worktree, opened before any checkout exists.
-func TestEmptyLayoutStillLeavesSomewhereToWork(t *testing.T) {
+// stubTmux puts a fake tmux on PATH and hands back a transcript of everything it was given, one
+// argument per line, so a run line holding newlines is still in there verbatim to be looked for.
+//
+// Being tmux is the only way to test what the two halves of an open actually create. The check the
+// provisioning half makes, "does the session already have a window by this name", is meaningful
+// only against something that remembers the names the first half handed it, so this remembers
+// them: list-windows answers out of what new-session and new-window were told. Optional session
+// lines are what `tmux ls` reports, for the paths that go looking for the session they are in.
+func stubTmux(t *testing.T, sessions ...string) func() string {
+	t.Helper()
+	dir := t.TempDir()
+	argv, windows, ls := filepath.Join(dir, "argv"), filepath.Join(dir, "windows"), filepath.Join(dir, "sessions")
+	if len(sessions) > 0 {
+		if err := os.WriteFile(ls, []byte(strings.Join(sessions, "\n")+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	script(t, dir, "tmux", `
+printf '%s\n' "$@" >> `+argv+`
+name=""; prev=""
+for a in "$@"; do
+  if [ "$prev" = "-n" ]; then name=$a; fi
+  prev=$a
+done
+case "$1" in
+  new-session|new-window) printf '%s\n' "$name" >> `+windows+` ;;
+  list-windows) cat `+windows+` 2>/dev/null ;;
+  ls) cat `+ls+` 2>/dev/null ;;
+esac
+exit 0
+`)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return func() string {
+		raw, err := os.ReadFile(argv)
+		if err != nil {
+			t.Fatal("tmux was never run")
+		}
+		return string(raw)
+	}
+}
+
+// A layout that expands to nothing still has to produce a session, and the window it produces is
+// still a window with a name a repo could have. The case is real on both counts: a workflow whose
+// only entry is per-worktree, opened before any checkout exists, for a repo called `agent`.
+//
+// The fallback's name used to be written out by hand in buildLayout, so `unique` never claimed it.
+// The provisioning half then computed `agent` for the repo, found that name already in the session,
+// and skipped it as already made: one shell at the workspace root, no window for the repo, and
+// nothing logged. Delete this and that comes back. The test that stood here asserted nothing at all
+// (it compared a literal to itself), which is how the same silent-no-window failure the rest of
+// this file is about survived four reviews inside the fallback that was added to fix it.
+func TestTheFallbackWindowCannotTakeARepoName(t *testing.T) {
 	c := hookWorkspace(t, "repo/1-thing")
 	item := Item{Name: "repo/1-thing"}
 	w := c.WorkflowFor(item, "")
 	w.Layout = []Window{{Window: "{repo}", For: "each-worktree", Cwd: "worktree"}}
+	entries := []Entry{{Repo: "agent"}}
+	transcript := stubTmux(t)
 
-	if panes := c.expandLayout(w, item, []Entry{{Repo: "repo"}}, ""); len(panes) != 0 {
-		t.Fatalf("expected no windows before the checkout exists, got %+v", panes)
+	// Cold, which is the whole reason the fallback exists: nothing to build, so a shell at the root.
+	if err := c.buildLayout(w, "wisp_test", item, entries, ""); err != nil {
+		t.Fatal(err)
 	}
-	// buildLayout is what turns that into a shell rather than a failure; it needs tmux, so the
-	// assertion here is on the fallback it uses.
-	if got := (pane{name: "agent", dir: c.Workspace}); got.name != "agent" {
-		t.Fatal("unreachable")
+	if !strings.Contains(transcript(), "new-session\n") {
+		t.Fatalf("no session was created, so there is nowhere to work at all:\n%s", transcript())
+	}
+
+	// And the provisioning half, once the checkout lands.
+	wt := c.WorktreeFor(w, "agent", item)
+	if err := os.MkdirAll(wt, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.addWorktreeWindows(w, "wisp_test", item, entries); got != 1 {
+		t.Fatalf("the provisioning half counted %d checkouts, want 1", got)
+	}
+	// The repo's own window, in the repo's own checkout. The two arguments together, because a
+	// transcript that merely mentions the path proves only that tmux was told the path exists.
+	if want := "\n-n\nagent\n-c\n" + wt + "\n"; !strings.Contains(transcript(), want) {
+		t.Errorf("the repo called agent never got a window of its own:\n%s", transcript())
 	}
 }
 
@@ -397,17 +463,7 @@ func TestProvisionIsToldWhereTheWorktreeGoes(t *testing.T) {
 	}
 	tmp := t.TempDir()
 	argv := filepath.Join(tmp, "argv")
-	// A script on the new contract: it records what it was handed, and builds the directory it was
-	// given, falling back to deriving one the way the old contract makes it.
-	honours := script(t, tmp, "provision.sh", `printf '%s\n' "$@" > `+argv+`
-repo=$(basename "$1"); slug=$2; wt=""
-while [ $# -gt 0 ]; do
-  if [ "$1" = "--worktree" ]; then wt=$2; fi
-  shift
-done
-[ -n "$wt" ] || wt=".worktrees/$repo--$slug"
-mkdir -p "$wt"
-`)
+	honours := provisionScript(t, tmp, "provision.sh", argv)
 	args := func(t *testing.T) []string {
 		t.Helper()
 		raw, err := os.ReadFile(argv)
@@ -464,6 +520,158 @@ mkdir -p "$wt"
 		if !strings.Contains(err.Error(), shortPath(want)) {
 			t.Errorf("the error does not name %s: %v", want, err)
 		}
+	}
+}
+
+// provisionScript is a script on the current contract: it records what it was handed, builds the
+// directory it was given, and falls back to deriving one the way the old contract makes it.
+func provisionScript(t *testing.T, dir, name, argv string) string {
+	t.Helper()
+	return script(t, dir, name, `printf '%s\n' "$@" > `+argv+`
+repo=$(basename "$1"); slug=$2; wt=""
+while [ $# -gt 0 ]; do
+  if [ "$1" = "--worktree" ]; then wt=$2; fi
+  shift
+done
+[ -n "$wt" ] || wt=".worktrees/$repo--$slug"
+mkdir -p "$wt"
+`)
+}
+
+// Whether the flag is needed is decided by what the script derives, `basename($1)--$2`, and not by
+// wisp's rendering of the template that describes it. Those coincide only where the name needs no
+// sanitising, and the case where they come apart is an ordinary one: a repo written `platform/api`,
+// which the manifest accepts and which is a real nested checkout on disk. wisp's rendering has a
+// `/` in it, so wisp falls back to a hashed directory; modelling the default the same way made both
+// sides agree, so no flag was sent, the script built `.worktrees/api--<slug>`, and the item waited
+// on the hash forever. Delete this and the flag is withheld in exactly the case it was added for.
+// TestProvisionIsToldWhereTheWorktreeGoes is the other half: a plain repo must still send the argv
+// every script in the field was written against, byte for byte.
+func TestTheDefaultWorktreeIsTheOneTheScriptDerives(t *testing.T) {
+	c := hookWorkspace(t, "repo/1-thing")
+	item := Item{Name: "repo/1-thing"}
+	entries := []Entry{{Repo: "platform/api", Branch: "feature/1-thing"}}
+	if err := os.MkdirAll(filepath.Join(c.Workspace, "platform", "api"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tmp := t.TempDir()
+	argv := filepath.Join(tmp, "argv")
+	w := c.WorkflowFor(item, "")
+	w.Hooks.Provision = provisionScript(t, tmp, "provision.sh", argv)
+
+	var logged []string
+	if err := c.EnsureWorktrees(w, item, entries, func(m string) { logged = append(logged, m) }); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(argv)
+	if err != nil {
+		t.Fatal("the script did not run")
+	}
+	wt := c.WorktreeFor(w, "platform/api", item)
+	got := strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n")
+	if len(got) < 2 || got[len(got)-2] != "--worktree" || got[len(got)-1] != wt {
+		t.Errorf("argv was %v, want it ending in --worktree %s", got, wt)
+	}
+	if !isDir(wt) {
+		t.Errorf("%s is not there, so every open would report it as still provisioning", wt)
+	}
+	// "provisioning platform/api (branch)" is the announcement; anything else is a complaint, and
+	// the complaint this used to make was also false: the script did build a worktree, elsewhere.
+	for _, m := range logged {
+		if !strings.HasPrefix(m, "provisioning platform/api (") {
+			t.Errorf("logged: %s", m)
+		}
+	}
+}
+
+// Two repos of one item that resolve to the same checkout is a `worktree:` template with no {repo}
+// in it, and it used to be invisible from every angle: the first repo was provisioned, the second
+// found the directory already there and was skipped by the same isDir check that makes a re-open a
+// no-op, so it was never built, never logged, and its window opened inside the first repo's
+// checkout. Delete this and one repo of a pair silently becomes the other.
+func TestTwoReposCannotShareOneWorktree(t *testing.T) {
+	c := hookWorkspace(t, "repo/1-thing")
+	item := Item{Name: "repo/1-thing"}
+	for _, repo := range []string{"api", "web"} {
+		if err := os.MkdirAll(filepath.Join(c.Workspace, repo), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tmp := t.TempDir()
+	w := c.WorkflowFor(item, "")
+	w.Hooks.Provision = provisionScript(t, tmp, "provision.sh", filepath.Join(tmp, "argv"))
+	w.Worktree = "api--{slug}"
+
+	err := c.EnsureWorktrees(w, item, []Entry{{Repo: "api"}, {Repo: "web"}}, func(string) {})
+	if err == nil {
+		t.Fatal("web resolved onto api's checkout and was skipped without a word")
+	}
+	for _, want := range []string{"api", "web", "worktree:"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error does not name %s: %v", want, err)
+		}
+	}
+}
+
+// What could not be built says nothing about what could. The contract mismatch used to be returned
+// on the spot, which meant returning out of ProvisionItem before it adds the windows for the
+// checkouts that did land and before it rewrites the briefing: a repo that provisioned perfectly
+// ended up with no window in front of it and a context file saying it was still on the way, which
+// is the failure the mismatch is raised to prevent, produced by the code raising it. Delete this
+// and one bad repo takes its siblings' session down with it.
+func TestOneRepoThatCouldNotBeBuiltDoesNotDiscardTheRest(t *testing.T) {
+	c := hookWorkspace(t, "repo/1-thing")
+	item := Item{Name: "repo/1-thing"}
+	for _, repo := range []string{"good", "bad"} {
+		if err := os.MkdirAll(filepath.Join(c.Workspace, repo), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(c.ItemDir(item.Name), "orchestration.md"),
+		[]byte("---\nrepos:\n    - repo: good\n    - repo: bad\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A checkout somewhere the old contract would not derive, so both repos are handed --worktree,
+	// and a script that honours it for one of them and not the other.
+	tmp := t.TempDir()
+	half := script(t, tmp, "provision.sh", `
+repo=$(basename "$1"); slug=$2; wt=""
+while [ $# -gt 0 ]; do
+  if [ "$1" = "--worktree" ]; then wt=$2; fi
+  shift
+done
+if [ "$repo" = "good" ] && [ -n "$wt" ]; then mkdir -p "$wt"; else mkdir -p ".worktrees/$repo--$slug"; fi
+`)
+	if err := os.WriteFile(filepath.Join(c.Workspace, MarkerFile),
+		[]byte("worktree: \"{slug}-{repo}\"\nprovision: "+half+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	trustSpaceConfigIn(t, c)
+
+	transcript := stubTmux(t, "wisp_test\trepo/1-thing\ttest")
+	err := c.ProvisionItem(item, "", func(string) {})
+	if err == nil {
+		t.Fatal("a script that ignored --worktree was accepted, which is the silent forever-provisioning case")
+	}
+	if !strings.Contains(err.Error(), "bad") {
+		t.Errorf("the error does not name the repo that failed: %v", err)
+	}
+
+	w := c.WorkflowFor(item, "")
+	wt := c.WorktreeFor(w, "good", item)
+	if !isDir(wt) {
+		t.Fatalf("%s was never built, so this test is not about what it says it is", wt)
+	}
+	if !strings.Contains(transcript(), "\n-c\n"+wt+"\n") {
+		t.Errorf("the repo that provisioned got no window:\n%s", transcript())
+	}
+	body, readErr := os.ReadFile(c.ContextFile(item))
+	if readErr != nil {
+		t.Fatalf("the briefing was never written: %v", readErr)
+	}
+	rel, _ := filepath.Rel(c.Workspace, wt)
+	if !strings.Contains(string(body), "`"+rel+"`\n") {
+		t.Errorf("the briefing still describes a checkout that exists as on its way:\n%s", body)
 	}
 }
 
@@ -586,6 +794,105 @@ func TestAnEmptyPromptLeavesNoArgument(t *testing.T) {
 	panes = c.expandLayout(w, item, entries, ctx)
 	if !strings.HasPrefix(panes[0].run, "claude '") || !strings.HasSuffix(panes[0].run, "'") {
 		t.Errorf("the prompt is not one quoted argument: %q", panes[0].run)
+	}
+}
+
+// A per-worktree window has to come out the same whichever half created it, and it used not to.
+// The provisioning half expanded the layout with no context at all, so `{prompt}` collapsed: a
+// checkout that happened to exist at open ran `claude '<the whole briefing>'` and the same entry
+// created once the checkout landed, which is the common case, ran a bare `claude`. The name goes
+// the same way, since a `window:` template may hold {prompt} too, and a name that moves between the
+// halves shifts every window after it on the unique ladder. Delete this and the agent in a worktree
+// window is told nothing about the item it is in.
+func TestBothHalvesGiveAWorktreeWindowTheSameLine(t *testing.T) {
+	c := hookWorkspace(t, "repo/1-thing")
+	item := Item{Name: "repo/1-thing"}
+	w := c.WorkflowFor(item, "")
+	w.Layout = []Window{{Window: "w-{prompt}", For: "each-worktree", Cwd: "worktree", Run: "{program} {prompt}"}}
+	entries := []Entry{{Repo: "repo", Branch: "feature/1-thing"}}
+
+	ctx, err := c.WriteContext(w, item, entries)
+	if err != nil || ctx == "" {
+		t.Fatalf("no context file to inline: %v", err)
+	}
+	if err := os.MkdirAll(c.WorktreeFor(w, "repo", item), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The half that runs at open, with the checkout already there.
+	warm := c.expandLayout(w, item, entries, ctx)
+	if len(warm) != 1 || !strings.Contains(warm[0].run, "Session context") {
+		t.Fatalf("the warm expansion is not the briefing this test is about: %+v", warm)
+	}
+
+	// And the half that creates the window when the checkout lands.
+	transcript := stubTmux(t)
+	c.addWorktreeWindows(w, "wisp_test", item, entries)
+	if !strings.Contains(transcript(), warm[0].run) {
+		t.Errorf("the provisioning half ran a different command from the one an open would have:\nwant %q in\n%s", warm[0].run, transcript())
+	}
+	if !strings.Contains(transcript(), "\n-n\n"+warm[0].name+"\n") {
+		t.Errorf("the window is called something else in the provisioning half; want %q in\n%s", warm[0].name, transcript())
+	}
+}
+
+// A window name may never be handed out twice, and the dedup used to give up. It stopped at 99 and
+// returned the colliding name, so a hundred and five repos sharing the twelve runes tmux keeps put
+// six of them on a window belonging to another repo: the provisioning half finds the name in the
+// session and skips the repo as already made, which is the silent no-window failure this whole
+// scheme exists to prevent, reached through the function that prevents it. Delete this and the
+// ceiling can come back.
+func TestNoWindowNameIsHandedOutTwice(t *testing.T) {
+	c := hookWorkspace(t, "repo/1-thing")
+	item := Item{Name: "repo/1-thing"}
+	w := c.WorkflowFor(item, "")
+
+	var entries []Entry
+	for i := 0; i < 105; i++ {
+		e := Entry{Repo: fmt.Sprintf("shared-prefix-%03d", i)}
+		entries = append(entries, e)
+		if err := os.MkdirAll(c.WorktreeFor(w, e.Repo, item), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seen := map[string]string{}
+	for _, p := range c.expandLayout(w, item, entries, "") {
+		if first, dup := seen[p.name]; dup {
+			t.Fatalf("%s and %s were both given the window %q, so one of them gets none", first, p.dir, p.name)
+		}
+		seen[p.name] = p.dir
+	}
+	if len(seen) != len(entries)+1 {
+		t.Errorf("got %d windows, want one per repo plus the agent", len(seen))
+	}
+}
+
+// The cap covered one pipe. stderr was a plain buffer with no ceiling at all, and its only consumer
+// copies the whole of it to take the last line, so a hook printing to the wrong pipe was read into
+// memory entire and then doubled: sixty megabytes of stderr took the heap from 3 MB to 131 MB,
+// which is precisely the runaway maxHookOutput was added to bound. Delete this and the ceiling is
+// back to being half a ceiling.
+func TestHookStderrIsBoundedToo(t *testing.T) {
+	c := hookWorkspace(t, "repo/1-thing")
+	const volume = 32 << 20
+	loud := script(t, t.TempDir(), "loud.sh", fmt.Sprintf(
+		"yes 'noise noise noise' | head -c %d >&2\necho >&2\necho 'the real reason' >&2\nexit 1\n", volume))
+
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	_, err := c.runHook(loud, nil)
+	runtime.ReadMemStats(&after)
+
+	if err == nil {
+		t.Fatal("no error from a hook that exited 1")
+	}
+	// The end of it, not the beginning: keeping the first bytes is right for stdout, where they are
+	// the start of an answer, and useless here, where the only line anyone reads is the last one.
+	if !strings.Contains(err.Error(), "the real reason") {
+		t.Errorf("want the last stderr line, got %v", err)
+	}
+	if grew := after.TotalAlloc - before.TotalAlloc; grew > volume/4 {
+		t.Errorf("%d bytes of stderr allocated %d bytes; the bound is what stops a hook deciding how much memory wisp uses", volume, grew)
 	}
 }
 
