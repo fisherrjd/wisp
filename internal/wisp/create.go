@@ -16,6 +16,16 @@ import (
 // the README.
 const wispYAMLTemplate = `# wisp workspace config. Everything here is optional.
 #
+# Which workflow this workspace runs: how a session is laid out, what the
+# agent is told, where work comes from, what finishing means. A bare name is
+# one of yours under ~/.config/wisp/workflows; a leading ./ is one this
+# workspace ships, in .wisp/workflows. Unset is wisp's built-in.
+#
+# workflow: solo
+#
+# Any workflow key can also be set directly here, overriding just that key.
+# Run "wisp workflow" to see what is in effect and where each key came from.
+#
 # Defaults, uncomment to change:
 #
 # program: claude
@@ -347,7 +357,11 @@ func (c Config) writeInto(section, name, value string) error {
 	// one wisp is most likely to have written itself, and the encoder path below takes over.
 	existing := mapValue(root, section)
 	if existing == nil {
-		block := fmt.Sprintf("%s:\n  %s: %s\n", section, name, quoteYAML(value))
+		// The key is quoted as well as the value. Workspace names and host names never needed it,
+		// but the accept record is keyed by a workspace path and an address, and a path holding
+		// ": " or a leading # would otherwise be written as YAML that reads back as something
+		// else. This block is hand-assembled rather than encoded, so nothing else would catch it.
+		block := fmt.Sprintf("%s:\n  %s: %s\n", section, quoteYAML(name), quoteYAML(value))
 		if needsDefault {
 			block += fmt.Sprintf("default: %s\n", name)
 		}

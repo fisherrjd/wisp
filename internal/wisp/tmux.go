@@ -18,6 +18,13 @@ const SessionPrefix = "wisp_"
 const (
 	ItemOption = "@wisp_item"
 	WSOption   = "@wisp_ws"
+	// WorkflowOption carries a one-shot --workflow for the life of the session.
+	//
+	// A one-shot is written to no file, which is the point of it, but the background provisioning
+	// half is a separate process that would otherwise re-resolve from the written-down layers and
+	// build the worktree somewhere the session is not looking. The tmux server is where session
+	// state already lives, and dying with it is correct here: the flag's lifetime is the session's.
+	WorkflowOption = "@wisp_workflow"
 )
 
 // lastOption prefixes a server-level option per workspace, holding the session you were last in
@@ -94,7 +101,7 @@ func AllSessions() []Session {
 // Sessions is this workspace's live sessions, with the needs-input check already done.
 func (c Config) Sessions() []Session {
 	live := c.claim(AllSessions())
-	resolveStates(live)
+	resolveStates(live, c.NeedsInputMarker())
 	return live
 }
 
@@ -116,19 +123,36 @@ func (c Config) claim(all []Session) []Session {
 
 // resolveStates fills in each session's state. The needs-input check is a capture-pane per
 // session, so they run together rather than each in turn.
-func resolveStates(sessions []Session) {
+// The marker comes from the workflow rather than being compiled in, so a workspace driving
+// aider, codex or a bare shell gets a "?" state that can actually fire. It is the workspace's
+// answer, not the item's: this runs over every live session at once, and resolving a workflow
+// per session would read three files per row on every repaint.
+func resolveStates(sessions []Session, marker string) {
 	var wg sync.WaitGroup
 	for i := range sessions {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
 			sessions[i].State = StateLive
-			if NeedsInput(sessions[i].Name) {
+			if NeedsInput(sessions[i].Name, marker) {
 				sessions[i].State = StateNeedsInput
 			}
 		}(i)
 	}
 	wg.Wait()
+}
+
+// SessionWorkflow is the one-shot workflow a session was opened with, or "" for the common case
+// of one that came from a config file.
+func (c Config) SessionWorkflow(session string) string {
+	if session == "" {
+		return ""
+	}
+	out, err := tmux("show-option", "-qv", "-t", session, WorkflowOption)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
 }
 
 // FindSession is the live session for an item, matched on identity rather than on the session
@@ -228,12 +252,18 @@ func CapturePane(session string, ansi bool) string {
 }
 
 // needsInputMarker is a string from Claude Code's permission dialog, borrowed from
-// claude-squad. It is best-effort by construction: if that copy is reworded, the "?" state
-// silently stops appearing. The preview pane is the reliable signal.
+// claude-squad. It is the built-in workflow's default rather than a constant everyone is stuck
+// with: it is best-effort by construction, and if that copy is reworded, or you drive something
+// else entirely, the "?" state silently stops appearing. The preview pane is the reliable signal.
 const needsInputMarker = "No, and tell Claude what to do differently"
 
-func NeedsInput(session string) bool {
-	return strings.Contains(CapturePane(session, false), needsInputMarker)
+// NeedsInput reports whether a pane is showing the workflow's needs-input marker. An empty
+// marker means the workflow has no such signal, which is a live session rather than an error.
+func NeedsInput(session, marker string) bool {
+	if marker == "" {
+		return false
+	}
+	return strings.Contains(CapturePane(session, false), marker)
 }
 
 // InsideTmux reports whether wisp itself was launched from within tmux, which decides between

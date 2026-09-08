@@ -47,7 +47,7 @@ The picker has seven, and each one owns every key while it is open. For the line
 | `ctrl-t` | show the closed-out ones again |
 | `ctrl-x` | kill the highlighted item's session |
 | `ctrl-w` | open the workspace tree |
-| `ctrl-r` | drop the GitLab cache and re-query |
+| `ctrl-r` | re-ask the remote source, whichever one this workspace has, and re-read the workflow |
 | `ctrl-g` | the key list, every binding in one page |
 | `esc` `ctrl-c` | quit, leaving everything running |
 
@@ -184,6 +184,8 @@ With no `notes.md`, it falls back to the first `.md` in the item folder.
 Lines are truncated rather than wrapped, and the block is padded to a fixed height. A wrapped line would make the preview taller than the pane and shove it out of alignment with the list beside it; a variable height would make the layout visibly shift as you move down the list. Tabs are expanded to four spaces before measuring, because a terminal renders a tab as up to eight cells while the width calculation counts it as one, which is what used to make the layout jump while scrolling.
 
 Previews are fetched on every cursor move with no debounce. Over ssh that is cheap because the connection is multiplexed and held open for a minute, but it is one request per keystroke.
+
+The workflow behind that summary is resolved once and remembered for as long as the picker is open, because resolution reads two to five files and the answer does not change between keystrokes. `ctrl-r` and an edit to the workspace set are what drop it: those are the moments the files may have moved. Everywhere outside the picker, a workflow is resolved fresh every time.
 
 ---
 

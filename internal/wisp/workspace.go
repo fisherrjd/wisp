@@ -1,6 +1,8 @@
 package wisp
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -134,8 +136,46 @@ func (c Config) itemInVault(name string) bool {
 
 // WorktreeFor is the checkout path for one repo of one item. It is a cache: deleting it is
 // safe, and reopening the item recreates it from the branch, which is the durable state.
-func (c Config) WorktreeFor(repo string, item Item) string {
-	return filepath.Join(c.WorktreeRoot(), repo+"--"+item.Slug())
+//
+// The directory name comes from the workflow's `worktree:` template, which is why the workflow
+// is a parameter rather than something resolved in here: the caller almost always has one
+// already, and resolving it per repo would read the same three files in a loop.
+func (c Config) WorktreeFor(w Workflow, repo string, item Item) string {
+	// Checked after substitution, not before. The template is the workflow's, but the values are
+	// not: `repo` is whatever an item's orchestration.md says, so even the built-in
+	// `{repo}--{slug}` puts the checkout outside the root for `repo: ../../evil`. The guard has
+	// to be on the name that comes out.
+	name := safeSegment(w.WorktreeName(item, repo))
+	if name == "" {
+		name = safeSegment(repo + "--" + item.Slug())
+	}
+	if name == "" {
+		// Both the template and the fallback produced something unusable. A hash of the two is
+		// still a stable directory for this repo and item, and it is inside the root.
+		sum := sha256.Sum256([]byte(repo + "\x00" + item.Name))
+		name = "wt-" + hex.EncodeToString(sum[:])[:12]
+	}
+	return filepath.Join(c.WorktreeRoot(), name)
+}
+
+// safeSegment returns the name if it is one ordinary directory name, or "" if it is anything
+// that could reach outside the directory it is about to be joined onto.
+//
+// One predicate, because there are two places where a string somebody else wrote becomes a path:
+// a workflow address out of a checked-in .wisp.yaml, and a worktree name out of an item's
+// orchestration.md. They had a copy each, differing only in whether they trimmed first, and that
+// exact asymmetry is what let a leading space walk past the workflow trust gate once already.
+func safeSegment(name string) string {
+	name = strings.TrimSpace(name)
+	switch {
+	case name == "", name == ".", name == "..":
+		return ""
+	case strings.ContainsRune(name, filepath.Separator), strings.Contains(name, "/"):
+		return ""
+	case name != filepath.Clean(name):
+		return ""
+	}
+	return name
 }
 
 func exists(path string) bool {

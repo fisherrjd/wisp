@@ -33,12 +33,15 @@ var ErrNoManifest = errors.New("no manifest")
 // The bash version parsed this with hand-rolled awk that understood exactly one layout and
 // silently returned nothing for anything else. This is a real YAML parse, so a malformed file
 // reports why.
-func (c Config) Manifest(item Item) ([]Entry, error) {
+// The branch an entry gets when it does not name one comes from the workflow's `branch:`
+// template rather than being spelled out here. An explicit repos[].branch still wins, which it
+// always did: this only fills a branch the entry left empty.
+func (c Config) Manifest(w Workflow, item Item) ([]Entry, error) {
 	path := filepath.Join(c.ItemDir(item.Name), "orchestration.md")
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return c.inferManifest(item), nil
+			return c.inferManifest(w, item), nil
 		}
 		return nil, err
 	}
@@ -56,12 +59,12 @@ func (c Config) Manifest(item Item) ([]Entry, error) {
 			continue
 		}
 		if e.Branch == "" {
-			e.Branch = "feature/" + item.Slug()
+			e.Branch = w.BranchFor(item, e.Repo)
 		}
 		out = append(out, e)
 	}
 	if len(out) == 0 {
-		return c.inferManifest(item), nil
+		return c.inferManifest(w, item), nil
 	}
 	return out, nil
 }
@@ -69,12 +72,12 @@ func (c Config) Manifest(item Item) ([]Entry, error) {
 // inferManifest handles the common single-repo item that never needed an orchestration.md: the
 // repo is the folder's parent and the branch follows the slug. _adhoc items get nothing, which
 // is correct: there is no repo to infer, and the session is notes-only.
-func (c Config) inferManifest(item Item) []Entry {
+func (c Config) inferManifest(w Workflow, item Item) []Entry {
 	repo := item.Repo()
 	if repo == "" {
 		return nil
 	}
-	return []Entry{{Repo: repo, Branch: "feature/" + item.Slug()}}
+	return []Entry{{Repo: repo, Branch: w.BranchFor(item, repo)}}
 }
 
 var fence = []byte("---")

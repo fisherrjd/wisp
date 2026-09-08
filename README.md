@@ -7,15 +7,15 @@ wisp turns a unit of work into a running workspace: it finds the item (locally o
 **wisp has no concept of a supported agent.** `program:` is a command line, run by tmux with the context appended as one argument, so there is no adapter layer and nothing to add your agent to. Anything that takes a prompt as an argument already works; anything that does not is a wrapper script away.
 
 ```
-› ledger                                  airbook ●3 · eldo ?1      2/8
-▌ ? ledger-service/318-double-entry-audit  │  Edit file src/reconcile.ts
-  + ledger-service/327-backfill-entries    │
-                                           │  Do you want to make this edit?
-──────────────────────────────────────────────────────────────────────
-● live  ? needs input  ○ folder  + gitlab     enter open  ctrl-n new
+› ledger                                          airbook ●3 · eldo ?1   2/8
+▌ ? ledger-service/318-double-entry-audit │ Edit file src/reconcile.ts
+  + ledger-service/327-backfill-entries   │
+  ○ payments-api/1042-retry-backoff       │ Do you want to make this edit?
+────────────────────────────────────────────────────────────────────────────
+● live  ? needs input  ○ folder  + gitlab            enter open   ctrl-n new
 ```
 
-**Documentation:** [Commands](docs/commands.md) · [Configuration](docs/configuration.md) · [The picker](docs/picker.md) · [Sessions and worktrees](docs/sessions.md) · [Items](docs/items.md) · [Remote workspaces](docs/remote-workspaces.md) · [Hooks](docs/hooks.md) *(design)*
+**Documentation:** [Commands](docs/commands.md) · [Configuration](docs/configuration.md) · [The picker](docs/picker.md) · [Sessions and worktrees](docs/sessions.md) · [Items](docs/items.md) · [Remote workspaces](docs/remote-workspaces.md) · [Workflows](docs/workflows.md) · [Hooks](docs/hooks.md) *(the reasoning behind them)*
 
 ## The model
 
@@ -27,7 +27,7 @@ Five nouns, and everything else follows from them.
 | **Workspace** | The container. Every repo checkout, `docs/`, `.worktrees/` and the vault sit side by side inside it. Agents start here, so one cwd sees all of them. You can have several, and not everything you work on belongs in the same one. |
 | **Item** | A folder in the vault, `<repo>/<iid>-<slug>` or `_adhoc/<name>`. The unit of work. Its stable identity is only `<repo>/<iid>`, because slugs drift between what you typed locally and what GitLab derives from the title. |
 | **Worktree** | A cache, deliberately. Branches are the real state. Delete a worktree and reopening the item reprovisions it. |
-| **Session** | A tmux session tagged `@wisp_item`. The `agent` window runs at the workspace root; one further window per worktree, for builds and dev servers, plus a transient `provision` window while any are still being built. |
+| **Session** | A tmux session tagged `@wisp_item`. Its windows come from the workflow's `layout:`, and the built-in one is: an `agent` window at the workspace root, one further window per worktree for builds and dev servers, plus a transient `provision` window while any are still being built. |
 
 Nothing wisp does destroys work. Killing a session leaves worktrees and branches; deleting a worktree leaves the branch; closing an item out leaves every file it holds.
 
@@ -60,6 +60,9 @@ wisp done <item> [-m <line>]
                            --list shows what has been closed out
 wisp kill <item>           kill an item's session
 wisp ls                    list live sessions, every workspace
+wisp workflow [<item>]     the workflow in effect, key by key, and where each
+                           key came from; list, show, init, use, edit, accept
+                           and push live under it
 wisp repos                 list workspace repos
 wisp ws                    list workspaces
 wisp ws new [-p] <name> [path]
@@ -128,6 +131,7 @@ wisp reads and writes exactly these paths.
 ```
 $WS/
 ├── .wisp.yaml                     this workspace's config
+├── .wisp/workflows/<name>/        workflows this workspace ships, addressed ./<name>
 ├── <repo>/                        any dir with a .git
 ├── docs/<repo>.md                 workspace doc
 ├── .worktrees/<repo>--<slug>/     the cache, safe to delete
@@ -149,11 +153,13 @@ With no `notes.md`, the preview falls back to the first `.md` in the item folder
 `<workspace>/.wisp.yaml` wins over `~/.config/wisp/config.yaml`, and the environment wins over both.
 
 ```yaml
+workflow: default                        # the bundle below supplies the rest
 program: claude                          # runs in the agent window (default: claude)
 install: false                           # install deps when provisioning
 vault: working_items                     # where items live
 worktrees: .worktrees                    # where the worktree cache goes
 provision: .claude/scripts/provision-worktree.sh
+cache_ttl_min: 15                        # how long any source's answer is reused
 gitlab:
   group: your-group/subgroup
   username: you
@@ -161,10 +167,29 @@ gitlab:
   # group, which must be the repo. GitLab nests projects arbitrarily, so there
   # is no generic form for this.
   repo_pattern: '/subgroup/([^/]+)/-/'
-  cache_ttl_min: 15
 ```
 
-`program:` is the whole of wisp's agent support. It is passed to tmux as a shell command line with the context file appended as one shell-quoted argument, so flags, environment prefixes and wrapper scripts all belong in it, and there is no list of agents wisp knows about because there is nothing for such a list to gate. Two workspaces can run two different agents; the environment override changes one session without touching either file.
+`cache_ttl_min` is top-level because it times whichever source a workspace has, not just GitLab. `gitlab.cache_ttl_min` still works as the older spelling of the same key, and is where the default of 15 lives.
+
+A **workflow** is a directory holding a `workflow.yaml` and its scripts, and it supplies `program`, the branch and worktree templates, the session layout and four hooks: where items come from, what the agent is told, what closing an item out does, and how a worktree is built. A bare name is one of yours under `~/.config/wisp/workflows/`, `./name` is one the workspace ships, and every key a bundle does not set falls back to the built-in, so a workflow that changes one thing is four lines long. A key wisp does not recognise is reported rather than ignored, because a workflow that quietly does nothing is the worst thing that file can be. `wisp open <item> --workflow <name>` uses another one just once, and carries that choice to the background provisioning window on a tmux session option so both halves agree.
+
+Four things can make wisp start a process, and each is read and accepted once before it does: a workspace bundle, the workspace's `.wisp.yaml`, an item's `orchestration.md`, and **any hook script inside the workspace, whoever named it**. That last one is a rule about location rather than about provenance: a script inside the workspace arrives with the repository, so it is accepted by its own contents even when the line naming it is the built-in's or your own; a script of yours outside the workspace is yours and is never gated. Accepting covers everything shown to you, so a bundle's hash is over every file in it and accepting a config file records the scripts it names too. Any later change asks again. The gate is on execution, not configuration: `branch:` and `worktree:` apply immediately from any of them, and a session still opens while you decide. See [Workflows](docs/workflows.md#the-script-rule).
+
+```
+wisp workflow              what is in effect, key by key, and which file set each
+wisp workflow list         everything addressable from here
+wisp workflow init solo    a starting point: the built-in, spelled out
+wisp workflow use solo     bind to it; --here binds the workspace instead
+wisp workflow accept       read everything this workspace would run, and allow it
+wisp workflow accept ./ship
+                           just the one this workspace ships
+wisp workflow push solo bigbox
+                           copy one of yours to another machine
+```
+
+[docs/workflows.md](docs/workflows.md) has the addressing rule, the five layers and the limitations; [docs/hooks.md](docs/hooks.md) has each hook's contract.
+
+`program:` is a workflow key now rather than a config key, and it is still the whole of wisp's agent support. It is passed to tmux as a shell command line with the context file appended as one shell-quoted argument, so flags, environment prefixes and wrapper scripts all belong in it, and there is no list of agents wisp knows about because there is nothing for such a list to gate. Two workspaces can run two different agents; `WISP_PROGRAM` changes one session without touching any file.
 
 ```yaml
 program: claude
@@ -173,7 +198,7 @@ program: aider --model sonnet
 program: my-agent-wrapper.sh
 ```
 
-The one contract is the argument: an agent that only reads its prompt from stdin or from an interactive prompt needs a wrapper that does the reading. That is the trade for not having adapters.
+The one contract is the argument: an agent that only reads its prompt from stdin or from an interactive prompt needs a wrapper that does the reading. That is the trade for not having adapters. It is also why `status.needs_input` is a workflow key: the needs-input glyph used to match a line out of Claude Code's own dialog, so every one of the agents above had a state that could never fire.
 
 The user config, and only the user config, owns `workspaces:`, `hosts:` and `default:`. A workspace does not get to name its neighbours or its machines.
 
@@ -231,11 +256,15 @@ It records intent, and deliberately not worktree paths: a path would be a cache 
 
 Without an `orchestration.md`, a single-repo item is inferred from the folder's parent with branch `feature/<slug>`. `_adhoc` items get no repos at all, which is correct: no repo can be inferred, and the session is notes-only.
 
-Provisioning shells out to your workspace's own script, with a fixed contract:
+Provisioning shells out to the workflow's `provision` hook, which by default is your workspace's own `.claude/scripts/provision-worktree.sh`, with a fixed contract:
 
 ```
-provision-worktree.sh <repo-path> <slug> <branch> --attach [--base <base>] [--no-install]
+provision-worktree.sh <repo-path> <slug> <branch> --attach [--base <base>] [--no-install] [--worktree <path>]
 ```
+
+`--worktree` appears only when the workflow's `worktree:` is not the default, and it names the directory the checkout must end up in. A script that ignores it builds the right worktree in the wrong place, and wisp says so rather than looping on "still provisioning".
+
+It does not block the session opening. The agent window runs at the workspace root and reads the context file, so the session appears at once and any missing worktrees are built in a side window that adds their windows and rewrites the context file when it is done.
 
 ## Remote workspaces
 
@@ -285,10 +314,11 @@ Attaching stacks two tmux servers, so the prefix key means two things. The wrapp
 |---|---|
 | **tmux** | Required for everything. |
 | **ssh** | Required for remote workspaces. Purely local use never invokes it. |
-| **glab** | Optional. Without it the GitLab source is empty and pasting a link into `wisp new` fails; everything else is unaffected. |
+| **glab** | Optional, and only for the built-in GitLab source. Without it that source is empty and pasting a link into `wisp new` fails; a workflow with its own `source` hook never invokes it, and everything else is unaffected. |
 | **git** | Not invoked by wisp itself. Your provisioning script needs it, and `wisp repos` looks for `.git` directories. |
+| **tar** | Only for `wisp workflow push`, on both ends. |
 
-Provisioning shells out to a `provision-worktree.sh` in the workspace, which owns branching, env file copying and dependency installation; wisp does not duplicate that.
+Provisioning shells out to a script, by default a `provision-worktree.sh` in the workspace, which owns branching, env file copying and dependency installation; wisp does not duplicate that.
 
 ## Install
 

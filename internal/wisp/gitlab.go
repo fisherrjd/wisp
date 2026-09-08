@@ -110,7 +110,12 @@ func fetchTitle(project, kind, iid string) (string, error) {
 // GitLabItems returns open work items assigned to the configured user. It is entirely optional:
 // with no group configured, no glab on PATH, or no network, it returns nothing and the picker
 // simply shows local items only.
-func (c Config) GitLabItems() ([]Item, error) {
+func (c Config) GitLabItems() ([]Item, error) { return c.gitLabItems(false) }
+
+// gitLabItems is GitLabItems plus the one thing a forced refresh has to say: that the query is
+// being re-asked rather than read. The flag stops at the far side, whose board is a live request
+// with no cache of ours in front of it, so there is nothing there for a refresh to skip.
+func (c Config) gitLabItems(force bool) ([]Item, error) {
 	// The far side owns its own remote source: the group, the credentials and the cache are all
 	// over there. Asking for its board with gitlab folded in is the whole of this end's job.
 	if c.IsRemote() {
@@ -139,9 +144,11 @@ func (c Config) GitLabItems() ([]Item, error) {
 		return nil, fmt.Errorf("gitlab.repo_pattern needs one capturing group for the repo name")
 	}
 
-	raw, err := c.cachedResponse()
-	if err != nil {
-		return nil, err
+	// Stale rows survive the error that stopped them being refreshed, for the same reason the
+	// source hook's do: an old list with a note beats no list at all, and the caller decides.
+	raw, cacheErr := c.cachedResponse(force)
+	if len(raw) == 0 {
+		return nil, cacheErr
 	}
 	var parsed glabResponse
 	if err := json.Unmarshal(raw, &parsed); err != nil {
@@ -165,7 +172,7 @@ func (c Config) GitLabItems() ([]Item, error) {
 			Title: n.Title,
 		})
 	}
-	return out, nil
+	return out, cacheErr
 }
 
 // gitlabMissing names the config keys the remote source still needs, so the message can point
@@ -187,27 +194,83 @@ func (c Config) gitlabMissing() []string {
 // cachedResponse returns the cached GraphQL response, refreshing it if it is missing or older
 // than the configured TTL. A refresh failure falls back to a stale cache rather than emptying
 // the picker.
-func (c Config) cachedResponse() ([]byte, error) {
-	path := c.CachePath()
-	fresh := false
-	if fi, err := os.Stat(path); err == nil {
-		age := time.Since(fi.ModTime())
-		fresh = age < time.Duration(c.GitLab.CacheTTLMin)*time.Minute
-	}
-	if !fresh {
-		if err := c.refreshCache(); err != nil && !exists(path) {
-			return nil, err
-		}
-	}
-	return os.ReadFile(path)
+func (c Config) cachedResponse(force bool) ([]byte, error) {
+	return c.cached(c.CachePath(), c.refreshCache, force)
 }
 
-// RefreshCache drops the cache so the next read re-queries. Bound to ctrl-r in the picker.
-func (c Config) RefreshCache() error {
-	if err := os.Remove(c.CachePath()); err != nil && !os.IsNotExist(err) {
+// cached is the one read-or-refresh policy both sources share.
+//
+// Four things it decides, and they are the same four whichever source is behind it. A file
+// younger than the TTL is used as is, unless the caller forced the refresh, which is what ctrl-r
+// means and the only thing that overrides a warm cache. A refresh failure with a usable file
+// returns the stale rows *and* the reason, because serving an old list silently is how a broken
+// source comes to look exactly like a quiet one, which is the failure that cost a real debugging
+// session. A refresh failure with nothing to fall back on is the error alone. And a refresh that
+// reported success while leaving nothing readable behind is the read error, which used to be
+// dropped on the floor: `return nil, refreshErr` with a nil refreshErr handed the caller an empty
+// list and no reason at all, the exact state the paragraph above exists to prevent, arrived at
+// from the one direction nobody was watching.
+//
+// The refresh is called from here and only from here, so a forced refresh costs exactly one run
+// of it. The alternative, refreshing and then reading as two calls, ran the source twice: a failed
+// refresh leaves the file's mtime where it was, so the read that followed found the cache stale
+// and asked again.
+//
+// Written once because it was written twice: the source cache and the GitLab cache drifted apart
+// on exactly this policy, and fixing one of them meant fixing the other afterwards.
+func (c Config) cached(path string, refresh func() error, force bool) ([]byte, error) {
+	if !force {
+		if fi, err := os.Stat(path); err == nil {
+			if time.Since(fi.ModTime()) < c.cacheTTL() {
+				return os.ReadFile(path)
+			}
+		}
+	}
+	refreshErr := refresh()
+	raw, readErr := os.ReadFile(path)
+	if readErr != nil {
+		// The refresh error wins when there is one: it is the cause, and an unreadable cache is
+		// only its symptom. With no refresh error the read failure is the whole of what happened,
+		// and saying which half went wrong beats naming neither.
+		if refreshErr != nil {
+			return nil, refreshErr
+		}
+		return nil, fmt.Errorf("refreshed, but the cache could not be read back: %w", readErr)
+	}
+	return raw, refreshErr
+}
+
+// writeCache replaces a cache file in one step, so a failed or partial write never leaves a
+// corrupt one behind.
+func writeCache(path string, body []byte) error {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, body, 0o644); err != nil {
 		return err
 	}
-	return c.refreshCache()
+	return os.Rename(tmp, path)
+}
+
+// RefreshRemoteItems re-asks whichever source this workspace has and returns what came back. It
+// is what ctrl-r in the picker calls.
+//
+// ctrl-r has to mean the same thing whatever the workspace's source is, which is the reason
+// caching stayed wisp's job rather than moving into each hook.
+//
+// It refreshes rather than deleting. Dropping the cache first meant a ctrl-r against a source
+// that had since broken emptied the list outright, which is exactly the state every other path
+// here goes out of its way to avoid: a broken source has to annotate the rows, not remove them.
+//
+// One call rather than two, and that is the whole point of it existing. The picker used to refresh
+// and then ask for the items separately, and the ask went through the ordinary TTL check: a failed
+// refresh leaves the cache file's mtime alone, so the read decided the cache was still stale and
+// ran the hook a second time. A source hook gets sixty seconds, so one keypress could stall for
+// two minutes against a document promising one, and `cache_ttl_min: 0`, which is a supported
+// setting meaning "ask on every load", did it on every press whether the source worked or not.
+// Discarding the refresh error would also have collapsed the two calls into one, and it is the
+// wrong fix twice over: that error is what the status line shows, and losing errors is the other
+// bug this file has already been through.
+func (c Config) RefreshRemoteItems() ([]Item, error) {
+	return c.sourcedItems(true)
 }
 
 func (c Config) refreshCache() error {
@@ -219,12 +282,7 @@ func (c Config) refreshCache() error {
 	if err != nil {
 		return fmt.Errorf("glab query failed: %w", err)
 	}
-	// Write via a temp file so a failed or partial write never leaves a corrupt cache.
-	tmp := c.CachePath() + ".tmp"
-	if err := os.WriteFile(tmp, out, 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, c.CachePath())
+	return writeCache(c.CachePath(), out)
 }
 
 // slugify derives a folder-style slug from a work item title: lowercase, non-alphanumerics to

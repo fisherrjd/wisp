@@ -2,6 +2,7 @@ package wisp
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -109,8 +110,18 @@ func (c Config) makeItemDir(item Item) error {
 	return os.WriteFile(notes, []byte(fmt.Sprintf("# %s\n\n", item.Slug())), 0o644)
 }
 
-// itemFromURL builds <repo>/<iid>-<slug> from a pasted GitLab link.
+// itemFromURL turns a pasted link into <repo>/<iid>-<slug>.
+//
+// The workflow's source hook gets first refusal, in its --url mode. Listing your work and
+// starting an item by pasting its link are two code paths, and replacing only the first would
+// leave someone on GitHub able to see their tickets and unable to open one, which is the most
+// used way to start an item. With no source hook this is the built-in GitLab handling, unchanged.
 func (c Config) itemFromURL(url string) (string, error) {
+	if it, err := c.ResolveURL(url); err == nil && it.Name != "" {
+		return it.Name, nil
+	} else if err != nil && !errors.Is(err, ErrNoURLSource) {
+		return "", err
+	}
 	if c.GitLab.RepoPattern == "" {
 		return "", fmt.Errorf("set gitlab.repo_pattern in %s before pasting links", MarkerFile)
 	}

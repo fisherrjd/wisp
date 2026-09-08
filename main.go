@@ -44,6 +44,9 @@ usage:
                           joins the ring
   wisp host rm <name>     forget a machine and everything it holds
   wisp kill <item>        kill an item's session
+  wisp workflow [<item>]  the workflow in effect, key by key, and where each
+                          key came from. list, show, init, use, edit and
+                          accept live under it
   wisp repos              list workspace repos
   wisp version            print the version
 
@@ -150,15 +153,20 @@ func run(args []string) error {
 		if err := cfg.RequireItem(it); err != nil {
 			return err
 		}
-		return cfg.Open(it, func(msg string) {
+		// --workflow is the one-shot: it sits above every configured layer and is written
+		// nowhere, for "open this one differently, just this once".
+		return cfg.Open(it, flagStr(args, "--workflow", ""), func(msg string) {
 			fmt.Fprintf(os.Stderr, "--- %s\n", msg)
 		})
 
 	case "provision":
 		if len(args) < 2 {
-			return fmt.Errorf("usage: wisp provision <item>")
+			return fmt.Errorf("usage: wisp provision <item> [--workflow <name>]")
 		}
-		err := cfg.ProvisionItem(wisp.Item{Name: args[1]}, func(msg string) { fmt.Printf("--- %s\n", msg) })
+		// --workflow is passed on by the session that started this window, so both halves of an
+		// open resolve the same workflow.
+		err := cfg.ProvisionItem(wisp.Item{Name: args[1]}, flagStr(args, "--workflow", ""),
+			func(msg string) { fmt.Printf("--- %s\n", msg) })
 		if err != nil {
 			// Stay on screen. This runs in its own tmux window, which closes the moment the
 			// command returns, and a failure that vanishes is one nobody can read.
@@ -238,6 +246,12 @@ func run(args []string) error {
 	case "host", "hosts":
 		return hostCommand(cfg, args[1:])
 
+	// The workflow is resolved per key across five layers, which is what makes a four line
+	// workflow useful and also what makes "why did my session open like that" unanswerable from
+	// any one file. This command is where that is readable.
+	case "workflow", "wf":
+		return cfg.WorkflowCommand(args[1:])
+
 	case "repos":
 		repos, err := cfg.Repos()
 		if err != nil {
@@ -296,12 +310,23 @@ func run(args []string) error {
 				"Or close it out bare, for work there is nothing to say about:\n"+
 				"  wisp done %s --anyway", item, item, item)
 		}
+		// Asked before the close, because afterwards every item looks the same and the flag is
+		// the only thing CloseOut reports back. Closing an item that is already closed is not an
+		// error: with a line it is someone adding to the write-up, without one it is someone who
+		// had forgotten it was finished. What gets printed has to tell those apart, or it claims
+		// a write-up that never happened, which is how this was found.
+		already := cfg.ItemDone(item)
 		if err := cfg.CloseOut(item, true, note); err != nil {
 			return err
 		}
-		if note != "" {
+		switch {
+		case already && note != "":
+			fmt.Printf("%s was already closed out; added your line to %s\n", item, cfg.NotesPath(item))
+		case already:
+			fmt.Printf("%s was already closed out; nothing to do\n", item)
+		case note != "":
 			fmt.Printf("closed out %s, and wrote it up in %s\n", item, cfg.NotesPath(item))
-		} else {
+		default:
 			fmt.Printf("closed out %s; it is out of the picker, nothing on disk was touched\n", item)
 		}
 		return nil
@@ -344,7 +369,7 @@ func emitBoard(cfg wisp.Config, gitlab bool) error {
 			out.Note = err.Error()
 		}
 		if gitlab {
-			remote, err := cfg.GitLabItems()
+			remote, err := cfg.RemoteItems()
 			if err != nil && out.Note == "" {
 				out.Note = err.Error()
 			}

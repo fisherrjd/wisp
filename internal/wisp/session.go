@@ -1,11 +1,17 @@
 package wisp
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // ContextFile is written on open and handed to the agent as its first read. It is regenerated
@@ -19,10 +25,24 @@ func (c Config) ContextFile(item Item) string {
 // two repo contexts, not one per repo in the workspace.
 //
 // Every line is conditional. What it omits is what the agent will not know about.
-func (c Config) WriteContext(item Item, entries []Entry) (string, error) {
+func (c Config) WriteContext(w Workflow, item Item, entries []Entry) (string, error) {
 	dir := c.ItemDir(item.Name)
 	if !isDir(dir) {
 		return "", nil
+	}
+	if w.Hooks.Context != "" {
+		body, err := c.runContextHook(w, item, entries)
+		if err == nil {
+			out := c.ContextFile(item)
+			if werr := os.WriteFile(out, body, 0o644); werr != nil {
+				return "", werr
+			}
+			return out, nil
+		}
+		// Falling back is the requirement, not a compromise. A session that will not open
+		// because a docs script has a syntax error is a worse outcome than one that opens with
+		// a generic briefing, and the error goes where a provisioning failure already goes.
+		fmt.Fprintf(os.Stderr, "wisp: context hook failed, using the built-in briefing: %v\n", err)
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Session context: %s\n\n", item.Name)
@@ -46,7 +66,7 @@ func (c Config) WriteContext(item Item, entries []Entry) (string, error) {
 		// The worktree is listed whether or not it exists yet. Provisioning runs in the
 		// background so the session opens immediately, and the agent needs to know where the
 		// checkout is going to be, not just where it already is.
-		wt := c.WorktreeFor(e.Repo, item)
+		wt := c.WorktreeFor(w, e.Repo, item)
 		rel, _ := filepath.Rel(c.Workspace, wt)
 		if isDir(wt) {
 			fmt.Fprintf(&b, "- worktree `%s`\n", rel)
@@ -69,15 +89,253 @@ func (c Config) WriteContext(item Item, entries []Entry) (string, error) {
 	return out, nil
 }
 
+// contextRepo is one repo as the context hook sees it.
+type contextRepo struct {
+	Repo     string `json:"repo"`
+	Branch   string `json:"branch"`
+	Base     string `json:"base"`
+	Worktree string `json:"worktree"`
+	// Ready is the field a naive implementation forgets. Provisioning runs in the background, so
+	// a worktree is described whether or not it exists yet and the hook has to be able to say
+	// "this is where the checkout is going to be" rather than pointing at nothing.
+	Ready bool `json:"ready"`
+}
+
+type contextInput struct {
+	Item      string        `json:"item"`
+	Workspace string        `json:"workspace"`
+	Vault     string        `json:"vault"`
+	Dir       string        `json:"dir"`
+	Repos     []contextRepo `json:"repos"`
+}
+
+// runContextHook hands the item to the workflow's context script and takes its stdout as the
+// briefing. Everything wisp already knows is on stdin, so the script does not have to re-derive
+// any of it from the filesystem.
+func (c Config) runContextHook(w Workflow, item Item, entries []Entry) ([]byte, error) {
+	in := contextInput{
+		Item:      item.Name,
+		Workspace: c.Workspace,
+		Vault:     c.Vault,
+		Dir:       filepath.Join(c.Vault, item.Name),
+	}
+	for _, e := range entries {
+		wt := c.WorktreeFor(w, e.Repo, item)
+		rel, err := filepath.Rel(c.Workspace, wt)
+		if err != nil {
+			rel = wt
+		}
+		in.Repos = append(in.Repos, contextRepo{
+			Repo: e.Repo, Branch: e.Branch, Base: e.Base, Worktree: rel, Ready: isDir(wt),
+		})
+	}
+	payload, err := json.Marshal(in)
+	if err != nil {
+		return nil, err
+	}
+	body, err := c.runHook(w.Hooks.Context, payload)
+	if err != nil {
+		return nil, err
+	}
+	if len(bytes.TrimSpace(body)) == 0 {
+		return nil, fmt.Errorf("%s printed nothing", w.Hooks.Context)
+	}
+	return body, nil
+}
+
+// hookTimeout bounds a hook. Generous, because a close hook may be posting to a tracker, and
+// bounded at all because these run where nothing can cancel them: a source hook that hangs takes
+// the picker's remote section with it, and a context hook that hangs takes an open.
+const hookTimeout = 60 * time.Second
+
+// maxHookOutput bounds what a hook can hand back. A context hook's stdout becomes a file and a
+// source hook's becomes the cache, and neither had a ceiling: a runaway script was read whole
+// into memory and then written to disk.
+const maxHookOutput = 8 << 20
+
+// maxHookStderr bounds the other pipe. stdout had a ceiling and stderr did not, so the runaway
+// script maxHookOutput exists to survive could still be read whole into memory by writing to the
+// wrong one, and then doubled, because lastLine copies the buffer it is handed. Far smaller than
+// the stdout cap because nothing consumes this: exactly one line of it ever reaches a person, and
+// a line that will not fit in this much is not going somewhere with room for it either.
+const maxHookStderr = 64 << 10
+
+// ErrHookTruncated marks the one failure that is about the answer's completeness rather than the
+// hook's success. Sentinel rather than a string match, because the callers disagree about whether
+// it matters: `source` and `context` consume the output, so a cut answer is a bad answer, while
+// `close` has its stdout read by nobody and must not be able to veto a close-out by being chatty.
+var ErrHookTruncated = errors.New("hook output was truncated")
+
+// runHook is the one place a workflow's script is executed.
+//
+// cwd is the workspace root and WISP_WORKSPACE is set, because that is the contract and because
+// wisp's own cwd is wherever it was invoked from. stderr is captured rather than inherited so a
+// failure can be reported as one line beside whatever wisp was doing, which is the difference
+// between an annotated list and a mysteriously empty one. lastLine, shared with the ssh
+// diagnosis in remote.go, is what a failing script gets to say: one line, because it goes
+// somewhere with room for one.
+func (c Config) runHook(script string, stdin []byte, args ...string) ([]byte, error) {
+	if script == "" {
+		return nil, errors.New("no hook")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), hookTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, script, args...)
+	cmd.Dir = c.Workspace
+	cmd.Env = append(os.Environ(), "WISP_WORKSPACE="+c.Workspace)
+	if stdin != nil {
+		cmd.Stdin = bytes.NewReader(stdin)
+	}
+	var out bytes.Buffer
+	lid := &capped{w: &out, left: maxHookOutput}
+	errBuf := &tailed{max: maxHookStderr}
+	cmd.Stdout, cmd.Stderr = lid, errBuf
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return out.Bytes(), fmt.Errorf("%s: gave up after %s", filepath.Base(script), hookTimeout)
+		}
+		if line := lastLine(errBuf.String()); line != "" {
+			return out.Bytes(), fmt.Errorf("%s: %s", filepath.Base(script), line)
+		}
+		return out.Bytes(), fmt.Errorf("%s: %w", filepath.Base(script), err)
+	}
+	// A hook that overran the ceiling exited zero and believes it answered. Reported as an error
+	// carrying the output, which is the shape every other partial answer here takes: the caller
+	// decides whether truncated rows are worth painting, and gets to say why they are short. The
+	// alternative, returning the first 8 MB with a nil error, is how a shortened board was painted
+	// as a complete one and nothing anywhere said otherwise.
+	if lid.dropped > 0 {
+		return out.Bytes(), fmt.Errorf("%s: printed more than %s and was cut, %s dropped: %w",
+			filepath.Base(script), humanBytes(maxHookOutput), humanBytes(int64(lid.dropped)), ErrHookTruncated)
+	}
+	return out.Bytes(), nil
+}
+
+// capped is a writer that stops at a limit rather than growing without one. The hook is left to
+// finish writing into the void rather than being killed, so a script that prints too much is
+// truncated instead of failing, which is the same bargain everything else here makes.
+type capped struct {
+	w    *bytes.Buffer
+	left int
+	// dropped counts the bytes thrown away, so the truncation can be reported. Silently keeping
+	// the first 8 MB made a source that answered most of the question indistinguishable from one
+	// that answered all of it, which is the same "broken looks like quiet" failure this file
+	// works hard to avoid everywhere else, wearing a third face: partial.
+	dropped int
+}
+
+// Always the length it was handed, never the length it kept. Reporting the truncated length is
+// a short write, which closes the pipe and kills the hook with SIGPIPE: exactly the failure the
+// cap exists to avoid, and it produced no output at all rather than the first 8 MB of it.
+func (c *capped) Write(p []byte) (int, error) {
+	full := len(p)
+	if c.left <= 0 {
+		c.dropped += full
+		return full, nil
+	}
+	if len(p) > c.left {
+		c.dropped += len(p) - c.left
+		p = p[:c.left]
+	}
+	n, err := c.w.Write(p)
+	c.left -= n
+	return full, err
+}
+
+// tailed is capped's mirror image: a writer that keeps the end of what it is given rather than the
+// beginning, in a fixed amount of memory.
+//
+// Both ends are worth keeping, for different pipes. The first 8 MB of a hook's stdout is the start
+// of an answer somebody wanted; the first 64 KB of its stderr is the start of a stack trace, and
+// the line that says why it failed is the last one. So capped could not simply be pointed at
+// stderr, and stderr could not simply be left to grow.
+//
+// Like capped, it reports back the full length it was handed and never a short write, because a
+// short write closes the pipe and kills the hook with SIGPIPE: the failure the bound exists to
+// avoid, arriving in place of the output it was protecting.
+type tailed struct {
+	buf []byte
+	max int
+}
+
+func (t *tailed) Write(p []byte) (int, error) {
+	full := len(p)
+	if len(p) >= t.max {
+		// This write alone overruns, so nothing kept so far can survive it.
+		t.buf = append(t.buf[:0], p[len(p)-t.max:]...)
+		return full, nil
+	}
+	if len(t.buf)+len(p) > t.max {
+		// Slide the oldest bytes off the front. In place, into the same array, so a hook printing
+		// megabytes a line at a time does not allocate a buffer per line.
+		drop := len(t.buf) + len(p) - t.max
+		t.buf = append(t.buf[:0], t.buf[drop:]...)
+	}
+	t.buf = append(t.buf, p...)
+	return full, nil
+}
+
+// String is what was kept. It may begin mid-line, and mid-rune: the only consumer takes the last
+// line, so the one that is cut is the one nobody was going to read.
+func (t *tailed) String() string { return string(t.buf) }
+
+// defaultWorktree is the directory a provisioning script derives on its own, out of the repo path
+// and the slug it is handed: `basename($1)--$2` under the worktree root. That derivation is the
+// old contract and it only knows the one shape, so this is the test for "does this workflow want
+// the checkout somewhere the arguments cannot say". Compared as paths rather than as template
+// strings on purpose: a bundle that spells `{repo}--{slug}` out in full is asking for exactly what
+// the script already builds, and sending it a flag it may not understand would be a regression
+// bought for nothing.
+//
+// The script's arithmetic, deliberately, and not wisp's rendering of the same template. Asking
+// WorktreeFor with the built-in `{repo}--{slug}` looked equivalent and was not: WorktreeFor
+// sanitises the name that comes out, so a repo written `platform/api`, which the manifest accepts
+// and which is an ordinary nested checkout on disk, sent wisp to a hashed directory while the
+// script went on building `api--<slug>`. Both sides of the comparison did the same sanitising, so
+// they agreed, so no flag was sent, and the repo got no window and a briefing that said "still
+// provisioning" forever: precisely the failure the flag was added to fix.
+func (c Config) defaultWorktree(repo string, item Item) string {
+	// basename of the path wisp actually passes as $1, rather than of the repo as written, because
+	// those differ for exactly the names worth being careful about: `repo: ..` hands the script the
+	// workspace's parent directory, and basename sees its name and not the dots.
+	name := safeSegment(filepath.Base(filepath.Join(c.Workspace, repo)) + "--" + item.Slug())
+	if name == "" {
+		// The derivation produced nothing wisp is willing to name, so there is no path to claim the
+		// script will build. Returning something no worktree path can equal means the flag is sent,
+		// which is the safe way round: the cost is telling a script where to put a checkout it may
+		// have put there anyway, against a session that waits on a directory nothing will create.
+		return ""
+	}
+	return filepath.Join(c.WorktreeRoot(), name)
+}
+
 // EnsureWorktrees reprovisions anything the manifest declares but disk lacks. Existing
 // worktrees are skipped, so this is a no-op on re-open.
 //
 // It shells out rather than driving git directly: provision-worktree.sh already handles
 // branching from the remote default, copying default.nix and .envrc, direnv allow and the
 // dependency install, and duplicating that here would be a second source of truth.
-func (c Config) EnsureWorktrees(item Item, entries []Entry, log func(string)) error {
+func (c Config) EnsureWorktrees(w Workflow, item Item, entries []Entry, log func(string)) error {
+	script := w.Hooks.Provision
+	// Which repo claimed each path, so a `worktree:` template that never mentions {repo} is caught
+	// rather than acted on. Two repos resolving to one directory was invisible in every direction:
+	// the first was provisioned, the second found the directory already there and was skipped by
+	// the isDir check below, so it was never built, never logged, and its window opened inside the
+	// first repo's checkout.
+	claimed := map[string]string{}
+	// Collected rather than returned at the first one. The caller does more after this than report:
+	// it adds the windows for the checkouts that did land and rewrites the briefing. Returning here
+	// threw both away, so one repo with a contract mismatch left a sibling that had provisioned
+	// perfectly with no window at all and a briefing still saying it was on the way.
+	var problems []error
 	for _, e := range entries {
-		wt := c.WorktreeFor(e.Repo, item)
+		wt := c.WorktreeFor(w, e.Repo, item)
+		if first, dup := claimed[wt]; dup {
+			problems = append(problems, fmt.Errorf("%s and %s both resolve to %s\n\nthis workflow's `worktree:` template does not tell two repos of one item apart, and one checkout cannot stand in for both. Give it a `{repo}`",
+				first, e.Repo, shortPath(wt)))
+			continue
+		}
+		claimed[wt] = e.Repo
 		if isDir(wt) {
 			continue
 		}
@@ -85,8 +343,16 @@ func (c Config) EnsureWorktrees(item Item, entries []Entry, log func(string)) er
 			log(fmt.Sprintf("no such repo: %s", e.Repo))
 			continue
 		}
-		if !exists(c.ProvisionPath()) {
-			return fmt.Errorf("provisioning script missing: %s", c.ProvisionPath())
+		// Nothing to run, which is true of every repo left, so the loop stops rather than saying it
+		// once per entry. Broken out rather than returned so anything already collected is still
+		// reported: a caller that sees one error and not the other cannot act on both.
+		if script == "" {
+			problems = append(problems, fmt.Errorf("this workflow has no provisioning script, so there is nothing to build %s with", e.Repo))
+			break
+		}
+		if !exists(script) {
+			problems = append(problems, fmt.Errorf("provisioning script missing: %s", script))
+			break
 		}
 		log(fmt.Sprintf("provisioning %s (%s)", e.Repo, e.Branch))
 
@@ -102,13 +368,48 @@ func (c Config) EnsureWorktrees(item Item, entries []Entry, log func(string)) er
 		if !c.Install {
 			args = append(args, "--no-install")
 		}
-		cmd := exec.Command(c.ProvisionPath(), args...)
+		// Where wisp is going to look, said out loud, when that is not where the script would put
+		// it anyway. The script derives the directory itself, so a workflow whose `worktree:`
+		// template says anything else had the two halves disagreeing: the script built
+		// <repo>--<slug>, wisp went on looking for the name the template asked for, no window ever
+		// appeared for the repo and the briefing said "still provisioning" forever. Appended only
+		// when the paths differ, because the arguments a default workspace sends are the contract
+		// every script in the field was written against.
+		derived := c.defaultWorktree(e.Repo, item)
+		if wt != derived {
+			args = append(args, "--worktree", wt)
+		}
+		cmd := exec.Command(script, args...)
+		// Named rather than inherited: the contract says a hook runs at the workspace root, and
+		// wisp's own cwd is wherever it was invoked from, which for the provision window is the
+		// workspace but for a hand-run `wisp provision` is anywhere at all.
+		cmd.Dir = c.Workspace
 		cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
 		if err := cmd.Run(); err != nil {
 			log(fmt.Sprintf("provisioning %s failed: %v", e.Repo, err))
+			continue
 		}
+		// Checked rather than trusted. A script that exits 0 having built the checkout somewhere
+		// else looks exactly like one that is merely slow, and the cost of not noticing is the
+		// worst failure this file has: a session that waits on a directory nothing will ever
+		// create, saying only that it is still provisioning.
+		if isDir(wt) {
+			continue
+		}
+		if wt == derived {
+			// The name the script picks on its own, so this is a script that succeeded without
+			// building anything. Logged rather than raised, because the other repos may be fine.
+			log(fmt.Sprintf("provisioning %s reported success but %s is not there", e.Repo, shortPath(wt)))
+			continue
+		}
+		// A contract mismatch, so it is raised rather than logged: the provision window stays on
+		// screen for an error and closes on a log line, and this is precisely the message nobody can
+		// afford to miss. Raised at the end rather than here, because the repos after this one are
+		// not implicated by it and the ones before it have work that is already done.
+		problems = append(problems, fmt.Errorf("%s exited without creating %s, which is where this workflow's `worktree:` template puts %s\n\nwisp passed that path as `--worktree <path>` and the script did not use it. Either teach it that flag or drop the `worktree:` override",
+			filepath.Base(script), shortPath(wt), e.Repo))
 	}
-	return nil
+	return errors.Join(problems...)
 }
 
 // Open builds the session if it is missing, then attaches.
@@ -118,7 +419,9 @@ func (c Config) EnsureWorktrees(item Item, entries []Entry, log func(string)) er
 // before showing the session felt like the tool had hung. The agent window needs none of it:
 // it runs at the workspace root and reads the context file. So the session opens straight away
 // and any missing worktrees are built in a side window that adds its own windows when done.
-func (c Config) Open(item Item, log func(string)) error {
+// oneShot is a --workflow given on the command line: it sits above every configured layer and
+// is written nowhere, for "open this one with the review workflow, just this once".
+func (c Config) Open(item Item, oneShot string, log func(string)) error {
 	if c.IsRemote() {
 		return c.openRemote(item)
 	}
@@ -137,45 +440,29 @@ func (c Config) Open(item Item, log func(string)) error {
 				return fmt.Errorf("could not create the item folder: %w", err)
 			}
 		}
-		entries, err := c.Manifest(item)
+		// Resolved once, here, and threaded through: every layer below reads three files, and
+		// resolving per repo in a loop would read them again for each one.
+		w := c.WorkflowFor(item, oneShot)
+		for _, note := range w.Notes {
+			log(note)
+		}
+		entries, err := c.Manifest(w, item)
 		if err != nil {
 			return err
 		}
-		ctx, err := c.WriteContext(item, entries)
+		ctx, err := c.WriteContext(w, item, entries)
 		if err != nil {
 			return err
 		}
 
-		// Window 0 is the agent, at the workspace root. One cwd sees the vault, docs, every
-		// repo and every worktree, which is the whole point of the container model.
-		program := c.Program
-		if prompt := c.startupPrompt(item, ctx); prompt != "" {
-			program = c.Program + " " + shellQuote(prompt)
-		}
-		if err := exec.Command("tmux", "new-session", "-d", "-s", session,
-			"-n", "agent", "-c", c.Workspace, program).Run(); err != nil {
-			return fmt.Errorf("could not create session: %w", err)
+		if err := c.buildLayout(w, session, item, entries, ctx); err != nil {
+			return err
 		}
 		_ = exec.Command("tmux", "set-option", "-t", session, "history-limit", "10000").Run()
 		_ = exec.Command("tmux", "set-option", "-t", session, ItemOption, item.Name).Run()
 		// Which workspace this belongs to, so the other workspaces' pickers do not list it and
 		// the tally in the header can attribute it.
 		_ = exec.Command("tmux", "set-option", "-t", session, WSOption, c.Name).Run()
-
-		// One shell window per worktree that already exists, for builds and dev servers.
-		if c.addWorktreeWindows(session, item, entries) < len(entries) {
-			// Something still needs provisioning. Do it in its own window so the work is
-			// visible and interruptible rather than hidden behind a frozen picker. The window
-			// closes itself when the command finishes.
-			if self, err := os.Executable(); err == nil {
-				// shellQuote, not %q: this line goes to /bin/sh, where Go's quoting leaves $,
-				// backtick and backslash live inside the double quotes it produces.
-				_ = exec.Command("tmux", "new-window", "-t", session, "-n", "provision",
-					"-c", c.Workspace, shellQuote(self)+" provision "+shellQuote(item.Name)).Run()
-			}
-		}
-		// By name, not index: base-index may be 1, so session:0 is not reliably the first window.
-		_ = exec.Command("tmux", "select-window", "-t", session+":agent").Run()
 	}
 
 	// Recorded before attaching, so a hop out of this workspace and back returns to this item.
@@ -256,31 +543,332 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-// addWorktreeWindows creates one window per existing worktree, skipping any that already have
-// one, and returns how many worktrees are present. Safe to call twice: Provision calls it again
-// once the checkouts exist.
-func (c Config) addWorktreeWindows(session string, item Item, entries []Entry) int {
+// pane is one concrete window: a layout entry with its templates expanded and its worktree, if
+// it had one, decided.
+type pane struct {
+	name  string
+	dir   string
+	run   string
+	focus bool
+	// perWorktree records that this window came from a `for: each-worktree` entry, which is what
+	// addWorktreeWindows creates and what it must not create twice. Carried on the pane rather
+	// than recovered by filtering the layout, because filtering the layout is what broke the
+	// naming: the names only come out right when the whole layout is expanded at once.
+	perWorktree bool
+}
+
+// expandLayout turns the workflow's layout into the windows this particular open will create.
+//
+// Two entries are conditional and everything else is unconditional: `for: each-worktree` becomes
+// one window per worktree that exists, and `when: provisioning` appears only while one does not.
+// That is the whole control flow, deliberately: anything wanting more should be a script.
+func (c Config) expandLayout(w Workflow, item Item, entries []Entry, ctx string) []pane {
+	prompt := c.startupPrompt(item, ctx)
+	self, _ := os.Executable()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = "/"
+	}
+
+	// Stated once per repo and reused. The presence of a checkout decides both whether the
+	// provision window appears and whether that repo gets a window of its own, and asking the
+	// filesystem twice for the same answer is the kind of thing that adds up in a loop.
+	type checkout struct {
+		entry Entry
+		path  string
+		ready bool
+	}
+	trees := make([]checkout, 0, len(entries))
+	present := 0
+	for _, e := range entries {
+		wt := c.WorktreeFor(w, e.Repo, item)
+		ready := isDir(wt)
+		if ready {
+			present++
+		}
+		trees = append(trees, checkout{entry: e, path: wt, ready: ready})
+	}
+	provisioning := present < len(entries)
+
+	base := map[string]string{
+		"item":      item.Name,
+		"slug":      item.Slug(),
+		"workspace": c.Workspace,
+		"program":   w.Program,
+		"prompt":    prompt,
+		"wisp":      self,
+	}
+	dirFor := func(kind, worktree string) string {
+		switch kind {
+		case "worktree":
+			if worktree != "" {
+				return worktree
+			}
+			// A layout entry asking for a worktree outside a per-worktree window has no
+			// checkout to mean. The workspace root is the honest answer rather than an error.
+			return c.Workspace
+		case "home":
+			return home
+		default:
+			return c.Workspace
+		}
+	}
+
+	var out []pane
+	taken := map[string]bool{}
+	// Names are truncated to what tmux takes, so two repos sharing the first twelve characters
+	// collide. Deduped here rather than at creation, because addWorktreeWindows also skips on
+	// name and would otherwise decide the second repo already had its window.
+	unique := func(name string) string {
+		if !taken[name] {
+			taken[name] = true
+			return name
+		}
+		// No ceiling on n, because the only thing a ceiling can do here is hand out a name twice.
+		// It stopped at 99 and returned the colliding name, so a hundred repos sharing a twelve-rune
+		// prefix put six of them on a window belonging to another repo, which is the one outcome
+		// this function exists to rule out. The loop terminates on its own: for a fixed suffix width
+		// the prefix is fixed and the suffixes are distinct, so the candidates never repeat, and
+		// taken is finite.
+		for n := 2; ; n++ {
+			suffix := fmt.Sprintf("~%d", n)
+			// Cut by runes, the same way windowName cuts, and by calling the same thing rather
+			// than open-coding a second rule. A byte cut here undoes that care exactly where it is
+			// most needed: two repos collide only when they share a prefix, so the name being cut
+			// is the one whose twelfth byte is most likely to be mid-character.
+			cand := truncRunes(name, maxWindowName-len(suffix)) + suffix
+			if !taken[cand] {
+				taken[cand] = true
+				return cand
+			}
+		}
+	}
+	// One construction for both branches: they differ only in which variables are in scope and
+	// which directory a `cwd: worktree` resolves to.
+	mk := func(win Window, vars map[string]string, worktree string) pane {
+		run := ""
+		if win.Run != "" {
+			// Only when there is something to substitute into. The built-in's per-worktree entry
+			// is a plain shell, so building its quoted variable map was work thrown away once per
+			// repo.
+			run = Expand(win.Run, shellVars(vars))
+		}
+		return pane{
+			name:  unique(windowName(Expand(win.Window, vars))),
+			dir:   dirFor(win.Cwd, worktree),
+			run:   run,
+			focus: win.Focus,
+		}
+	}
+	// Every window the layout describes is named, including the ones this particular expansion
+	// will not build: a per-worktree window whose checkout has not landed yet, and a provisioning
+	// window when there is nothing left to provision. Naming them costs an expansion each and buys
+	// the property the whole scheme rests on, that a window's name is a function of the layout and
+	// the manifest and of nothing else. addWorktreeWindows expands the same layout again once the
+	// checkouts exist and skips what the session already has by name, so a name that moved between
+	// the two calls is a repo either given a window that belongs to something else or, worse,
+	// silently given none at all.
+	for _, win := range w.Layout {
+		if win.For == "each-worktree" {
+			for _, t := range trees {
+				vars := maps.Clone(base)
+				vars["repo"], vars["branch"], vars["base"], vars["worktree"] =
+					t.entry.Repo, t.entry.Branch, t.entry.Base, t.path
+				p := mk(win, vars, t.path)
+				p.perWorktree = true
+				if t.ready {
+					out = append(out, p)
+				}
+				// Otherwise the provisioning half adds it, under this name, once it lands.
+			}
+			continue
+		}
+		// Named before the `when:` is read, for the same reason: whether there is anything left to
+		// provision must not decide what the windows after it in the layout are called.
+		p := mk(win, base, "")
+		if win.When == "provisioning" && !provisioning {
+			continue
+		}
+		out = append(out, p)
+	}
+	// A layout that produced nothing still has to leave somewhere to work, since a tmux session
+	// with no windows cannot exist. The usual cause is a layout of nothing but per-worktree entries
+	// opened before any checkout landed.
+	//
+	// Named through unique like every other window, and here rather than in buildLayout, which is
+	// the whole point of moving it. The per-worktree entries above have already claimed their repos'
+	// names, missing checkouts included, so a repo actually called `agent` was handed the name this
+	// window had been given by hand; the provisioning half then found it in the session and skipped
+	// the repo as already made. One window, a plain shell at the workspace root, and no window for
+	// the repo, with nothing logged.
+	if len(out) == 0 {
+		out = append(out, pane{name: unique("agent"), dir: c.Workspace})
+	}
+	return out
+}
+
+// shellVars is the substitution set for `run:`, which is handed to /bin/sh.
+//
+// Every value is quoted except the program, because a run line is a shell command and these are
+// data going into it. It matters more than it looks: an item name can come from a source hook,
+// which is a program somebody else wrote, and before this every one of these was substituted
+// raw, so a name holding a semicolon was a command wisp would run for you.
+//
+// `program` stays unquoted on purpose. It has always been a command line rather than a path, so
+// `claude --permission-mode auto` has to keep working, and quoting it would look for a binary
+// with a space in its name.
+func shellVars(vars map[string]string) map[string]string {
+	out := make(map[string]string, len(vars))
+	for k, v := range vars {
+		// program is a command line rather than a path. Everything else is data going into a
+		// shell, and there is deliberately only the one exception.
+		if k == "program" {
+			out[k] = v
+			continue
+		}
+		// An empty value stays empty rather than becoming ''. An empty positional argument is not
+		// the same thing as no argument for most agent CLIs, and the built-in's agent window is
+		// `{program} {prompt}`: an item with no context file to inline had it running `claude ''`,
+		// which is a request to work on nothing rather than a request with nothing attached.
+		// Expand is what drops the token and the gap it leaves; there is nothing in an empty string
+		// for a shell to interpret, so nothing is given up by not quoting it.
+		if v == "" {
+			out[k] = ""
+			continue
+		}
+		out[k] = shellQuote(v)
+	}
+	return out
+}
+
+// maxWindowName is what tmux window names have always been here. Named because two places have to
+// agree on it: the truncation and the suffix a collision gets.
+const maxWindowName = 12
+
+// truncRunes cuts a string to n runes.
+//
+// By runes and not bytes, which is the whole reason it exists. A window name can be anything a
+// repo is called, and cutting a multibyte name at byte twelve lands mid-character and hands tmux a
+// broken sequence.
+//
+// n may be zero or less, and that is not a caller being careless: the collision suffix grows
+// without bound and eats the room the name had, so "no room left at all" is a real answer rather
+// than a panic on a slice bound.
+func truncRunes(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	if r := []rune(s); len(r) > n {
+		return string(r[:n])
+	}
+	return s
+}
+
+// windowName trims a name to what tmux window names have always been here. An expanded template
+// can produce anything, including nothing, and a window with no name is not creatable.
+func windowName(s string) string {
+	s = truncRunes(strings.TrimSpace(s), maxWindowName)
+	if s == "" {
+		s = "window"
+	}
+	return s
+}
+
+// buildLayout creates the session and its windows from the expanded layout.
+//
+// The first window has to come from new-session, because that is the only way tmux makes one, so
+// the layout's order decides which window the session is built around rather than a compiled-in
+// assumption that window 0 is the agent.
+func (c Config) buildLayout(w Workflow, session string, item Item, entries []Entry, ctx string) error {
+	// Never empty: expandLayout falls back to a shell at the workspace root when a layout produces
+	// no windows. The fallback used to be built here, with its name written out by hand, and that
+	// is what let it take a name a repo was going to be given.
+	panes := c.expandLayout(w, item, entries, ctx)
+	first := panes[0]
+	args := []string{"new-session", "-d", "-s", session, "-n", first.name, "-c", first.dir}
+	if first.run != "" {
+		args = append(args, first.run)
+	}
+	if err := exec.Command("tmux", args...).Run(); err != nil {
+		return fmt.Errorf("could not create session: %w", err)
+	}
+	// Recorded before the other windows, because one of them is the provisioning half and it
+	// reads this to resolve the same workflow the session was built from.
+	if w.OneShot && w.Addr != "" {
+		_ = exec.Command("tmux", "set-option", "-t", session, WorkflowOption, w.Addr).Run()
+	}
+	for _, p := range panes[1:] {
+		newWindow(session, p)
+	}
+
+	// By name, not index: base-index may be 1, so session:0 is not reliably the first window.
+	focus := first.name
+	for _, p := range panes {
+		if p.focus {
+			focus = p.name
+			break
+		}
+	}
+	_ = exec.Command("tmux", "select-window", "-t", session+":"+focus).Run()
+	return nil
+}
+
+// newWindow adds one window to a session. Detached, so building a session does not walk the
+// client's focus through every window on the way.
+func newWindow(session string, p pane) {
+	args := []string{"new-window", "-t", session, "-d", "-n", p.name, "-c", p.dir}
+	if p.run != "" {
+		args = append(args, p.run)
+	}
+	_ = exec.Command("tmux", args...).Run()
+}
+
+// addWorktreeWindows creates the windows a layout's per-worktree entries want, skipping any that
+// already exist, and returns how many worktrees are present. Safe to call twice: ProvisionItem
+// calls it again once the checkouts exist, which is the whole reason it is separate from
+// buildLayout.
+func (c Config) addWorktreeWindows(w Workflow, session string, item Item, entries []Entry) int {
 	existing := map[string]bool{}
 	if out, err := tmux("list-windows", "-t", session, "-F", "#{window_name}"); err == nil {
-		for _, w := range strings.Split(out, "\n") {
-			existing[w] = true
+		for _, name := range strings.Split(out, "\n") {
+			existing[name] = true
 		}
 	}
 	present := 0
 	for _, e := range entries {
-		wt := c.WorktreeFor(e.Repo, item)
-		if !isDir(wt) {
+		if isDir(c.WorktreeFor(w, e.Repo, item)) {
+			present++
+		}
+	}
+	// The briefing the session was built with, rather than none. Expanding with an empty ctx
+	// collapsed {prompt}, so a per-worktree entry running `{program} {prompt}` got the whole
+	// briefing when the checkout happened to exist at open and a bare `claude` when this half
+	// created the window, which is the common one. Nothing was relying on the empty string:
+	// ContextFile is a pure function of the item and the file is on disk by the time this runs.
+	// Absent still means no prompt, which is what WriteContext hands back for an item with no
+	// folder, so the two halves agree about that case too. It decides the window's name as much as
+	// its command, since a `window:` template may hold {prompt}, and a name that moves between the
+	// halves shifts every window after it on the ladder below.
+	ctx := c.ContextFile(item)
+	if !exists(ctx) {
+		ctx = ""
+	}
+	// The whole layout, and then everything that is not a per-worktree window thrown away.
+	//
+	// Expanding a layout stripped to its per-worktree entries is what made the dedup come apart:
+	// the names are handed out in layout order, so a stripped layout starts with nothing claimed
+	// and a repo whose name a fixed window had already taken at open got that name back here. It
+	// was then in the session, so it was skipped as already made, and the repo got no window at
+	// all with nothing saying why. Expanding the whole thing reproduces the names the session was
+	// built with, which is what makes the check below mean "this repo's own window is already
+	// there" rather than "something is called that".
+	for _, p := range c.expandLayout(w, item, entries, ctx) {
+		// Everything else was created when the session was, and making it again would put a second
+		// agent window beside the one already running.
+		if !p.perWorktree || existing[p.name] {
 			continue
 		}
-		present++
-		name := e.Repo
-		if len(name) > 12 {
-			name = name[:12]
-		}
-		if existing[name] {
-			continue
-		}
-		_ = exec.Command("tmux", "new-window", "-t", session, "-d", "-n", name, "-c", wt).Run()
+		newWindow(session, p)
 	}
 	return present
 }
@@ -288,19 +876,38 @@ func (c Config) addWorktreeWindows(session string, item Item, entries []Entry) i
 // ProvisionItem is the background half of Open: build the missing worktrees, then add their windows
 // and refresh the context file so it no longer says "still provisioning". Run in its own tmux
 // window by Open; also useful by hand after deleting a worktree.
-func (c Config) ProvisionItem(item Item, log func(string)) error {
-	entries, err := c.Manifest(item)
+func (c Config) ProvisionItem(item Item, oneShot string, log func(string)) error {
+	session := c.FindSession(item.Name)
+	if oneShot == "" {
+		// Asked of the session rather than required on the command line, so a hand-written layout
+		// gets this right without knowing it had to. Without it this half re-resolves from the
+		// written-down layers and builds the worktree somewhere the session is not looking.
+		oneShot = c.SessionWorkflow(session)
+	}
+	w := c.WorkflowFor(item, oneShot)
+	for _, note := range w.Notes {
+		log(note)
+	}
+	entries, err := c.Manifest(w, item)
 	if err != nil {
 		return err
 	}
-	if err := c.EnsureWorktrees(item, entries, log); err != nil {
-		return err
-	}
-	if session := c.FindSession(item.Name); session != "" {
-		c.addWorktreeWindows(session, item, entries)
+	// Held rather than returned on the spot. What EnsureWorktrees could not build says nothing about
+	// what it could, and the repos that landed are still owed their windows and a briefing that no
+	// longer describes them as on the way. Returning here left a checkout that exists with no window
+	// in front of it and a context file saying "still provisioning" until the next open, which is
+	// the failure this whole file works to avoid, produced by the code reporting it.
+	provisioned := c.EnsureWorktrees(w, item, entries, log)
+	if session != "" {
+		c.addWorktreeWindows(w, session, item, entries)
 	}
 	// Rewritten now that the checkouts exist, so an agent re-reading it sees real paths.
-	_, err = c.WriteContext(item, entries)
+	_, err = c.WriteContext(w, item, entries)
+	// The provisioning failure first: it is the one somebody has to act on, and the window stays on
+	// screen for it.
+	if provisioned != nil {
+		return provisioned
+	}
 	return err
 }
 
