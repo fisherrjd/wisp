@@ -2,6 +2,7 @@ package wisp
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -80,20 +81,24 @@ func (c Config) CloseOut(item string, done bool, note string) error {
 		}
 		return err
 	}
-	// Already closed out is nothing to do, and it is answered before the hook rather than after
-	// the write: a hook that harvests an item, or refuses until it has, must not be asked twice
-	// about work that finished the first time.
-	if done && doneIn(raw) {
-		return nil
-	}
 	// The hook runs first, and it may refuse. The other order would leave an item marked
 	// finished whose harvest failed, which is the exact state the flag is supposed to rule out.
 	//
 	// Only on the way out. Reopening an item is undoing a decision, and a hook that could block
 	// that would make a mistake permanent.
-	if done {
+	//
+	// And only the first time out: a hook that harvests an item, or refuses until it has, must
+	// not be asked twice about work that finished the first time. The guard sits on the hook call
+	// rather than on the whole function, which is where it was first written. Returning early
+	// there skipped the write as well, so a second close carrying a new line silently threw the
+	// line away and reported success. A note accumulates, and adding to the write-up of work that
+	// is already finished is an ordinary thing to want; only the hook has to be asked once.
+	if done && !doneIn(raw) {
 		if w := c.WorkflowFor(Item{Name: item}, ""); w.Hooks.Close != "" {
-			if _, err := c.runHook(w.Hooks.Close, nil, closeArgs(item, note)...); err != nil {
+			// Truncation is not a refusal here. Nothing reads a close hook's stdout, so a hook
+			// that printed its way past the ceiling and exited zero did its job; letting that
+			// block the close would make a chatty script a veto over finishing work.
+			if _, err := c.runHook(w.Hooks.Close, nil, closeArgs(item, note)...); err != nil && !errors.Is(err, ErrHookTruncated) {
 				return fmt.Errorf("close-out refused: %w", err)
 			}
 		}
@@ -106,6 +111,10 @@ func (c Config) CloseOut(item string, done bool, note string) error {
 	if err != nil {
 		return fmt.Errorf("%s: %w", path, err)
 	}
+	// Nothing changed is not an error, and it is what a bare close of an already closed item comes
+	// to: the flag is the flag it already had and there was no line to add. Falling through to the
+	// write would cost the note a modification time it did not earn, which is a real loss in a
+	// vault where recency is how you find what you were last working on.
 	if bytes.Equal(next, raw) {
 		return nil
 	}

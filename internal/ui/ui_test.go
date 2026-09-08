@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -8,6 +10,98 @@ import (
 
 	"github.com/fisherrjd/wisp/internal/wisp"
 )
+
+// sourceCounting builds a workspace whose source hook records every run, and returns the config
+// and the tally file. The hook is named in the user config rather than in the workspace's
+// .wisp.yaml because that layer is yours by definition and needs no acceptance, which keeps this
+// test about how often the hook runs rather than about trust.
+func sourceCounting(t *testing.T, body string) (wisp.Config, string) {
+	t.Helper()
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("WISP_PROGRAM", "")
+	ws := t.TempDir()
+	tally := filepath.Join(ws, "runs")
+
+	hook := filepath.Join(ws, "source.sh")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\necho run >>"+tally+"\n"+body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := wisp.UserConfigPath()
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, []byte("source: "+hook+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	zero := 0
+	return wisp.Config{
+		Workspace:   ws,
+		Vault:       "working_items",
+		Worktrees:   ".worktrees",
+		Name:        "test",
+		Accepted:    map[string]string{},
+		CacheTTLMin: &zero, // "ask on every load", which is where the double call was worst
+	}, tally
+}
+
+func hookRuns(t *testing.T, tally string) int {
+	t.Helper()
+	raw, err := os.ReadFile(tally)
+	if os.IsNotExist(err) {
+		return 0
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(strings.Fields(string(raw)))
+}
+
+// ctrl-r is one refresh, so it is one run of the source hook. This used to refresh and then read
+// as two calls, and the read went through the ordinary TTL check: a failed refresh leaves the
+// cache file's mtime alone, so the read found the cache stale and ran the hook a second time. A
+// hook is allowed sixty seconds, so one keypress could stall for two minutes against docs that
+// promise one, and `cache_ttl_min: 0` did it on every press whether the source worked or not.
+// The assertion is a count for that reason: the rows can be right while the keypress costs double.
+func TestRefreshAsksTheSourceOnce(t *testing.T) {
+	cfg, tally := sourceCounting(t, `echo '{"name":"repo/7-warm","title":"warm"}'`+"\n")
+
+	msg, ok := loadRemote(cfg, true)().(remoteMsg)
+	if !ok {
+		t.Fatal("loadRemote did not answer with a remoteMsg")
+	}
+	if msg.err != nil {
+		t.Fatalf("a working source failed the refresh: %v", msg.err)
+	}
+	if n := hookRuns(t, tally); n != 1 {
+		t.Errorf("one ctrl-r ran the source %d times, want exactly 1", n)
+	}
+	if len(msg.items) != 1 || msg.items[0].Name != "repo/7-warm" {
+		t.Errorf("the refreshed rows are wrong: %+v", msg.items)
+	}
+}
+
+// The failing source is the case that doubled, and it is also the case that must keep its reason:
+// the status line is the only place a broken source is visible, so a fix that dropped the refresh
+// error to collapse the two calls would trade one silence for another.
+func TestRefreshOnABrokenSourceStillAsksOnceAndSaysWhy(t *testing.T) {
+	cfg, tally := sourceCounting(t, "echo 'tracker is down' >&2\nexit 1\n")
+
+	msg, ok := loadRemote(cfg, true)().(remoteMsg)
+	if !ok {
+		t.Fatal("loadRemote did not answer with a remoteMsg")
+	}
+	if n := hookRuns(t, tally); n != 1 {
+		t.Errorf("one ctrl-r against a broken source ran it %d times, want exactly 1", n)
+	}
+	if msg.err == nil {
+		t.Fatal("a broken source reported no error, so the status line would say nothing")
+	}
+	// And what it says has to be the source's own words, not a generic failure.
+	if !strings.Contains(msg.err.Error(), "tracker is down") {
+		t.Errorf("the reason was lost on the way to the status line: %v", msg.err)
+	}
+}
 
 // peers builds a tree with a local machine and one remote, which is the shape that exposed the
 // index bug: the rows interleave a header per machine, so row numbers and peer numbers diverge

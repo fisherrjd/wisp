@@ -310,12 +310,23 @@ func run(args []string) error {
 				"Or close it out bare, for work there is nothing to say about:\n"+
 				"  wisp done %s --anyway", item, item, item)
 		}
+		// Asked before the close, because afterwards every item looks the same and the flag is
+		// the only thing CloseOut reports back. Closing an item that is already closed is not an
+		// error: with a line it is someone adding to the write-up, without one it is someone who
+		// had forgotten it was finished. What gets printed has to tell those apart, or it claims
+		// a write-up that never happened, which is how this was found.
+		already := cfg.ItemDone(item)
 		if err := cfg.CloseOut(item, true, note); err != nil {
 			return err
 		}
-		if note != "" {
+		switch {
+		case already && note != "":
+			fmt.Printf("%s was already closed out; added your line to %s\n", item, cfg.NotesPath(item))
+		case already:
+			fmt.Printf("%s was already closed out; nothing to do\n", item)
+		case note != "":
 			fmt.Printf("closed out %s, and wrote it up in %s\n", item, cfg.NotesPath(item))
-		} else {
+		default:
 			fmt.Printf("closed out %s; it is out of the picker, nothing on disk was touched\n", item)
 		}
 		return nil

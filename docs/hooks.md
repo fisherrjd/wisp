@@ -12,23 +12,39 @@ Three of its decisions were changed on purpose. Each is marked where it is made,
 
 **60 seconds, and 8 MB on stdout.** Both apply to `source:`, `context:` and `close:`, the three that go through the shared runner. `provision:` is outside both, for the reason above: it runs in its own window, a cold nix build is a normal thing for it to be doing, and there is a person watching it.
 
+**The two bounds do not behave alike, and that is the thing to take away from this section.** They are both reported now, so what separates them is what each one costs you. The deadline kills the hook: the run ends where it stood, and the error names the bound. The ceiling kills the answer and leaves the hook alive: wisp keeps the first 8 MB, accepts and throws away the rest, and the hook exits zero none the wiser, but wisp counts what it dropped and says so. One bound costs you the hook, the other costs you the end of its answer, and neither costs you the reason.
+
 The deadline is generous because a `close` hook may be posting to a tracker over a bad network, and it exists at all because these three run where nothing can cancel them. A `source` hook that hangs takes the picker's refresh with it, and a `context` hook that hangs takes an open. Neither has a `ctrl-c` reaching it. That is a change of mind from the paragraph this replaced, which argued for no deadline on the grounds that killing a slow-but-working query is worse than a wait you can see. It is worse; a wait you cannot see, in a UI with no way to interrupt it, is worse still.
 
-The hook is killed and the failure names the bound:
+On the deadline the hook is killed and the failure names the bound:
 
 ```
 source: items.sh: gave up after 1m0s
 ```
 
+Whatever the hook had already printed is handed back alongside that error, and every caller drops it: a half-finished list is not a shorter list, it is a list that stopped in the middle for a reason you now know about. That shape, the partial answer and the reason travelling together and the caller deciding, is the shape the ceiling now takes too.
+
 **Two edges worth knowing, because neither is what the numbers suggest.**
 
 The deadline kills the hook and not its children. A hook that backgrounds something, or that runs a long command without `exec`, leaves a process holding the pipe wisp is reading, and wisp waits for that pipe to close. A hook whose script ends in `sleep 90` reports `gave up after 1m0s` and returns after ninety seconds; the same script written `exec sleep 90` returns after sixty. If a hook must outlive its own answer, detach it properly and close its output.
 
-The 8 MB ceiling ends the run rather than truncating it. Crossing it closes wisp's end of the pipe, the hook takes a `SIGPIPE`, and what surfaces is a failure with no rows kept:
+The 8 MB ceiling truncates rather than ending the run, and the *hook* never finds out. wisp stops keeping bytes at the ceiling; everything past it is accepted and thrown away, wisp's end of the pipe stays open, and every write is acknowledged at its full length whatever was actually kept. So a hook that prints 40 MB writes 32 MB of it into the void and exits zero believing it answered. What wisp has is the first 8 MB, and a count of the bytes it threw away.
+
+**This bound is on its third implementation, and the two it replaced were each wrong in a different direction.** Reporting the short length back to the hook is the obvious one and it was the first: the shortened write closes the pipe, the hook takes a `SIGPIPE`, and what surfaced was a failure with nothing kept, `source: items.sh: signal: broken pipe`. The ceiling exists so a runaway script cannot be read whole into memory and written whole to disk, and enforcing it that way cost you the answer as well as the runaway part of it, nothing at all rather than the first 8 MB. So the second implementation kept the bytes and stayed quiet: the pipe stays open, the hook writes to nowhere, and `runHook` returned the first 8 MB with a nil error. That hid the more interesting failure. A source that answered most of the question was indistinguishable from one that answered all of it, and the short answer went into the cache and onto the board with nothing anywhere saying it was short.
+
+The third keeps the bytes and reports the cut, which is what this page used to ask for. Truncating rather than killing is unchanged and still right, for the reason above. What changed is that `runHook` hands back the kept bytes **and** an error naming how much went missing, wrapping an `ErrHookTruncated` sentinel so a caller can tell "this answer is incomplete" from "this hook failed":
 
 ```
-source: items.sh: signal: broken pipe
+source: items.sh: printed more than 8.0 MB and was cut, 32.0 MB dropped: hook output was truncated
 ```
+
+**The three callers do not agree about that error, and the disagreement is the point of the sentinel.**
+
+- `source:` treats it as a failed refresh, because it is one. The cache is written only on a clean run, so the truncated bytes are never stored and never parsed: what you are looking at is the last good answer plus that line in the status bar, or, if the source has never answered cleanly, no remote rows and that same line. Stale-and-annotated is the outcome, never short-and-silent.
+- `context:` throws the partial briefing away and writes the built-in one instead, with the reason on stderr, exactly as it does for a hook that crashed or printed nothing. Discarding 8 MB of real briefing for a generic one is the right trade: an agent told most of a story with no sign the rest was cut is worse off than an agent told a short story it can see is generic.
+- `close:` is carved out. It is the one caller that checks `errors.Is(err, ErrHookTruncated)` and carries on regardless, because nothing reads a close hook's stdout, so there is no answer here for the ceiling to shorten. Letting the ceiling abort a close-out would make a chatty script a veto over finishing work. Its bound that matters is still the deadline.
+
+The rule underneath all three is the one this page keeps returning to: a broken thing, an empty thing and a *partial* thing must not look alike. The ceiling failed that rule for two implementations and meets it now. The one place it is still unmet is a `source` hook silently switching the built-in GitLab source off, named under [The fallback](#the-fallback).
 
 Under the ceiling everything is normal. A source listing tens of thousands of rows is well inside it; this is a bound on a runaway script, not a budget to work against.
 
@@ -102,7 +118,7 @@ No arguments. Prints one JSON object per line:
 
 `name` is required and must be `<parent>/<child>`, the same two-level shape the vault uses. `title` is optional and fills the row's description when the local slug differs.
 
-**JSON per line rather than one array**, because a long list should stream, and because a truncated write should cost you the last row rather than the whole response.
+**JSON per line rather than one array**, because a long list should stream, and because a partial write should cost you the last row rather than the whole response. That second reason is weaker than it was when it was written, and it is worth being exact about rather than leaving as received wisdom: crossing the [8 MB ceiling](#what-a-hook-is-allowed-to-cost) is now an error, and a run that errors is never cached and never parsed, so the ceiling can no longer hand the parser a half-written document at all. What the line shape still buys is every other ragged edge: a row the tracker mangles costs one skipped line rather than a response that no longer parses.
 
 A line that will not parse, or that names something that is not a legal item, is **skipped rather than failing the batch**: one bad row from a tracker must not empty the picker. Legal means it passes the same containment check everything else does and has exactly two non-empty levels, because a source hook is a program someone else wrote producing names that become directories. A workflow may decide where names come from; it may not decide what a name is allowed to be.
 
@@ -122,6 +138,8 @@ wisp: ~/.config/wisp/workflows/hooked/bin/items.sh did not recognise that link (
 name the item yourself instead:
   wisp new <repo>/<name>
 ```
+
+One wrong word lives on this path, and it is written down rather than left to be found. A `--url` run that crosses the [8 MB ceiling](#what-a-hook-is-allowed-to-cost) comes back as an error like any other, so it is reported as a link the source did not recognise, when what actually happened is that the source recognised it and printed 8 MB about it. The message carries the truncation text after it, so the real cause is on screen. One JSON object is four orders of magnitude inside the ceiling, which is why this is a mislabelled case nobody reaches rather than an answer anyone loses.
 
 ### What wisp keeps
 
@@ -145,9 +163,15 @@ source: items.sh: curl: (6) Could not resolve host: gitlab.example.com
 
 An empty source and a broken one look identical otherwise, and the silent version of that already cost one real debugging session.
 
-**What a failed refresh costs the list, exactly.** Inside the TTL nothing is asked at all, so a source that broke since the last refresh is invisible until the TTL runs out and the rows keep painting. Once the TTL has passed, the hook is asked, and if it fails the reason above is what you get **and the remote rows are dropped for that repaint**: the `+` section empties and the message says why. Local rows, sessions and vault folders are untouched, so the picker is still a list of your work.
+**What a failed refresh costs the list, exactly.** Inside the TTL nothing is asked at all, so a source that broke since the last refresh is invisible until the TTL runs out and the rows keep painting. Once the TTL has passed, the hook is asked, and if it fails you get the reason above **and the rows you had**: the last good answer keeps painting and the message says why it is not newer. Local rows, sessions and vault folders are untouched, so the picker is still a list of your work.
 
-That is not the bargain the layer underneath was written for. The cache layer hands its caller the stale rows *and* the reason, on purpose, so that a broken source annotates a list rather than emptying one. Both callers, the source hook's and GitLab's, then return on the error and throw the rows away. The reason survives and the rows do not, which is half of the intended behaviour: better than the silent stale list it replaced, and not yet the annotated one it is aiming at. Written down here rather than left as a surprise, because [what would make this wrong](#what-would-make-each-one-wrong) names exactly this.
+Rows and reason together is the whole bargain, and it took two goes to get. The cache layer always handed its caller the stale rows alongside the error, on purpose; both callers, the source hook's and GitLab's, then returned early on that error and threw the rows away. The reason survived and the rows did not, which is the annotated-versus-empty distinction failing at the last step, one layer above where it was implemented. Both callers now carry both out.
+
+A forced refresh is one call rather than a refresh followed by a read, and that is a correctness fix rather than a tidiness one. The two-call version asked the source twice on a single `ctrl-r`: a refresh that failed left the cache file's mtime where it was, so the read that followed still judged the cache stale and ran the hook again. A hook is allowed a minute, so one keypress could cost two, and with `cache_ttl_min: 0` it happened on every press whether the source worked or not.
+
+**A truncated refresh is a failed refresh, and that is a reversal.** A source that crosses the [8 MB ceiling](#what-a-hook-is-allowed-to-cost) is still cut rather than killed, and still exits zero, but wisp now returns the kept bytes with an error saying how many it dropped, and this path treats that error exactly as it treats a non-zero exit. The cache is written only after a clean run, so the short output is never stored, never parsed and never painted; what you get is the paragraph above, the rows you had and the reason they are not newer. With no cache to fall back on you get no remote rows and the same reason.
+
+Which means the thing to worry about here is staleness, not shortness. The board can be older than your tracker while a source keeps overrunning the ceiling, and the status line is what tells you that is happening. The version this replaced was the more dangerous one and read the other way round: the shortened output was cached and painted as though it were the whole answer, so the rows on screen were fresh, incomplete and unremarkable.
 
 ### The fallback
 
@@ -208,6 +232,14 @@ wisp: context hook failed, using the built-in briefing: .../bin/context.sh print
 ```
 
 An empty briefing and a working one are not distinguishable downstream, and a session whose agent was told nothing at all is the outcome the fallback exists to prevent.
+
+**A briefing that is there but incomplete falls back too**, which is newer than the rest of this section and used to be the one case that slipped through. A hook whose stdout crosses the [8 MB ceiling](#what-a-hook-is-allowed-to-cost) is truncated rather than killed and does exit zero, but the truncation comes back as an error, so the partial briefing is discarded and the built-in one is written in its place:
+
+```
+wisp: context hook failed, using the built-in briefing: context.sh: printed more than 8.0 MB and was cut, 32.0 MB dropped: hook output was truncated
+```
+
+Throwing away 8 MB of genuine briefing to write a generic one is the trade this makes, and it is the right way round. An agent told most of a story with no sign the rest was cut will act on the half it has; an agent told a short generic story can see that it is short and generic and go and read the files named in it. Before this, the file was written and nothing on the path could tell a truncated hook from one that meant to stop there.
 
 ---
 
@@ -289,13 +321,15 @@ It is the one that changes who can use wisp. It is self-contained: one function 
 
 ### What would make each one wrong
 
-That list of three is the acceptance test, and it outlived the order it was written for. Two of the three hold in what shipped.
+That list of three is the acceptance test, and it outlived the order it was written for. All three hold in what shipped, one of them only after a review pass caught it failing a layer above where it was implemented.
 
-- **`source:`** if the failure path empties the list instead of annotating it. The whole value of the GitLab source's current design is that a broken query and an empty one look different. **This one is half met.** The list is annotated, which is the part that matters most, and the remote rows are also dropped for that repaint rather than served stale. [Failure](#failure) above has the detail and says where the two halves come apart.
+- **`source:`** if the failure path empties the list instead of annotating it. The whole value of the GitLab source's current design is that a broken query and an empty one look different. Held, on the second attempt: the rows and the reason now travel together all the way to the picker, where for a while the cache layer produced both and each caller dropped the rows one level up. [Failure](#failure) above has the detail.
 - **`context:`** if a broken hook stops a session opening. Falling back is not a compromise, it is the requirement. Held.
 - **`close:`** if the refusal is silent, or if the flag gets written before the hook runs. Held: the hook runs first and its last line of stderr is the message.
 
 The place the same standard is not applied is one layer up: a `source` hook silently switches the built-in GitLab source off, and a workspace with `gitlab.group` filled in gets no word that its query has stopped running. It is named under [The fallback](#the-fallback) rather than quietly left out.
+
+The output ceiling was the second place, and it is the one entry here that has moved from unmet to met. "A broken source and an empty one must look different" has an unstated third case, a source that answered most of the question, and a hook cut at 8 MB used to hit it squarely: no error, no annotation, just fewer rows, cached. Truncating rather than killing was always the right call; being silent about it to *you* was a separate decision and the wrong one, and the two were being defended as though they were one. Both are now decided separately. `source` and `context` refuse a truncated answer and name how much was dropped, so all three cases look different, and `close` ignores it because nothing reads its stdout, which is an exemption rather than an omission. [What a hook is allowed to cost](#what-a-hook-is-allowed-to-cost) has the mechanism and the two implementations this one replaced.
 
 ---
 
@@ -305,7 +339,7 @@ Four decisions on this page were kept without change, and they are the load-bear
 
 - **Name a contract, shell out, stay out of it.** A hook is a program, not a Go plugin, not a shared object, not a DSL in YAML.
 - **Identity is not configurable.** `Item.Key()` and the four-word slug cut stay compiled in.
-- **Failure is a state, not an exception.** A broken source annotates the list rather than raising, and a broken context hook falls back to the built-in briefing rather than refusing to open a session. That discipline generalised: a workflow that will not load now costs you its keys rather than your session, and a manifest key wisp does not recognise is reported instead of ignored. The one place it is not fully honoured is the source's own rows, which a failed refresh drops as well as annotating; [Failure](#failure) says so rather than leaving it implied.
+- **Failure is a state, not an exception.** A broken source annotates the list rather than raising, and a broken context hook falls back to the built-in briefing rather than refusing to open a session. That discipline generalised: a workflow that will not load now costs you its keys rather than your session, and a manifest key wisp does not recognise is reported instead of ignored. It took two review passes to hold all the way down. The cache layer always handed back the stale rows alongside the reason they were not newer, and both callers then returned early on the error and threw the rows away, so the principle was implemented in one layer and undone in the next; [Failure](#failure) has what each state looks like now.
 - **Remote workspaces need no design.** Hooks run on the machine that owns the workspace, because that machine runs its own load and answers `board --json` for itself.
 
 Three were changed.

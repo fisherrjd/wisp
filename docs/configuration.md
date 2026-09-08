@@ -236,7 +236,7 @@ The raw query response is cached at `$TMPDIR/wisp-gitlab-<hash of workspace path
 
 `ctrl-r` re-queries and replaces the cache only if an answer arrives. It no longer deletes the file first: deleting up front meant a `ctrl-r` against a source that had since broken emptied the list outright.
 
-A refresh that fails says so in the status line, and the remote rows are dropped for that repaint rather than served stale. Local rows are untouched. [Hooks](hooks.md#failure) has the detail, and is honest that this is half of the intended behaviour: the cache layer hands its caller the stale rows and the reason together, and the caller keeps the reason.
+A refresh that fails says so in the status line and keeps serving the rows it already had, so a source that breaks annotates the list rather than emptying it. Local rows are untouched. [Hooks](hooks.md#failure) has the detail.
 
 The query asks for open work items **assigned to you**, across the group and its descendants, capped at the first 100. That cap is silent: if you are the assignee on more than a hundred open items, the rest do not appear and nothing says so.
 

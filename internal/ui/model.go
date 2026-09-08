@@ -132,12 +132,23 @@ func loadLocal(cfg wisp.Config) tea.Cmd {
 
 // loadRemote runs off the UI goroutine, since it can block on the network for most of a second
 // on a cold cache and blocking the update loop would freeze typing.
+//
+// A forced refresh is one call, not a refresh followed by a read. The two-call version asked the
+// source twice on a single ctrl-r: a refresh that failed left the cache file's mtime where it was,
+// so the read that followed still found the cache stale and ran the hook again, and with
+// `cache_ttl_min: 0` it happened on every press whether the source worked or not. A hook is
+// allowed a minute, so one keypress could cost two.
+//
+// Both calls return the rows and the reason together, which is what keeps a broken source
+// annotating the list rather than emptying it: the stale rows come back alongside the error the
+// status line shows.
 func loadRemote(cfg wisp.Config, refresh bool) tea.Cmd {
+	load := cfg.RemoteItems
+	if refresh {
+		load = cfg.RefreshRemoteItems
+	}
 	return func() tea.Msg {
-		if refresh {
-			_ = cfg.RefreshCache()
-		}
-		items, err := cfg.RemoteItems()
+		items, err := load()
 		return remoteMsg{items: items, err: err}
 	}
 }
@@ -300,7 +311,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case "ctrl+r":
-			m.status = "refreshing gitlab"
+			// Not "refreshing gitlab": a workspace with a `source:` hook has no GitLab in it at
+			// all, and naming the wrong thing in the one line that reports what is happening is
+			// how a tool tells you it was built for somebody else.
+			m.status = "refreshing"
 			// Refresh means everything, not only the network. A workflow edited or accepted in
 			// another terminal is exactly what someone reaches for this key after doing.
 			m.cfg.ForgetWorkflows()

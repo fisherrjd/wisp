@@ -777,14 +777,29 @@ func (c Config) loadBundle(addr string) (Workflow, error) {
 		}
 		return Workflow{}, fmt.Errorf("no workflow %q at %s; using the built-in", addr, shortPath(dir))
 	}
-	// One walk, used for both the gate and the parse: the accept check hashes the whole bundle
-	// and the resolution needs the manifest out of it.
-	sum, raw, err := hashBundle(dir)
-	if err != nil {
-		return Workflow{}, fmt.Errorf("workflow %q: %v; using the built-in", addr, err)
-	}
-	if IsWorkspaceWorkflow(addr) && c.Accepted[c.acceptKey(addr)] != sum {
-		return Workflow{}, fmt.Errorf("workflow %q is supplied by this workspace and has not been accepted; run `wisp workflow accept %s` after reading it", addr, addr)
+	// The whole bundle is hashed only where something is gated on the hash, which is a workspace
+	// one. Hashing every bundle read every file beside every manifest, and resolution is not a rare
+	// path: NeedsInputMarker resolves the workspace's workflow for each of Local, BoardItems,
+	// Peers, LocalPeers and Sessions, none of which hold the picker's memo, so one of your own
+	// bundles with a venv or a vendored checkout next to it made every board refresh walk the lot.
+	// The gated case still reads the directory once rather than twice: hashBundle hands back the
+	// manifest it had to read anyway.
+	var raw []byte
+	if IsWorkspaceWorkflow(addr) {
+		sum, manifest, err := hashBundle(dir)
+		if err != nil {
+			return Workflow{}, fmt.Errorf("workflow %q: %v; using the built-in", addr, err)
+		}
+		if c.Accepted[c.acceptKey(addr)] != sum {
+			return Workflow{}, fmt.Errorf("workflow %q is supplied by this workspace and has not been accepted; run `wisp workflow accept %s` after reading it", addr, addr)
+		}
+		raw = manifest
+	} else {
+		manifest, err := os.ReadFile(filepath.Join(dir, WorkflowFile))
+		if err != nil {
+			return Workflow{}, fmt.Errorf("workflow %q: %v; using the built-in", addr, err)
+		}
+		raw = manifest
 	}
 	bundle, err := parseWorkflow(dir, raw)
 	if err != nil {
@@ -845,6 +860,10 @@ func (w *Workflow) validate() []string {
 // Expand substitutes a workflow's template vocabulary. It is deliberately tiny and closed:
 // {item} {slug} {repo} {branch} {base} {worktree} {workspace} {program} {prompt} {wisp}, plain
 // substitution and nothing else.
+// A token whose value is empty collapses, taking the whitespace on one side with it, rather than
+// leaving a gap where a word was. That is a run line's requirement rather than a nicety: the
+// values are quoted before they are substituted, so an empty one arriving as a gap between two
+// spaces became an empty argument, and an empty argument is not the same thing as no argument.
 // One pass, scanning for tokens, rather than a ReplaceAll per key. The difference is not
 // efficiency: sequential replacement rescans what it has already substituted, so a value
 // containing {repo} would be expanded again by a later key. That is reachable, because {prompt}
@@ -855,30 +874,50 @@ func Expand(tmpl string, vars map[string]string) string {
 	if tmpl == "" || !strings.ContainsRune(tmpl, '{') {
 		return tmpl
 	}
-	var b strings.Builder
-	b.Grow(len(tmpl))
+	// A byte slice rather than a strings.Builder, which cannot give anything back once written: an
+	// empty value has to be able to take the space before it with it.
+	b := make([]byte, 0, len(tmpl))
 	for i := 0; i < len(tmpl); {
 		if tmpl[i] != '{' {
-			b.WriteByte(tmpl[i])
+			b = append(b, tmpl[i])
 			i++
 			continue
 		}
 		end := strings.IndexByte(tmpl[i:], '}')
 		if end < 0 {
-			b.WriteString(tmpl[i:])
+			b = append(b, tmpl[i:]...)
 			break
 		}
 		name := tmpl[i+1 : i+end]
-		if v, ok := vars[name]; ok {
-			b.WriteString(v)
-		} else {
+		v, known := vars[name]
+		switch {
+		case !known:
 			// An unknown token is left alone rather than blanked, so a typo is visible in the
 			// window it produced instead of silently becoming nothing.
-			b.WriteString(tmpl[i : i+end+1])
+			b = append(b, tmpl[i:i+end+1]...)
+		case v == "":
+			// An empty value takes the whitespace beside it with it, so the token collapses rather
+			// than leaving a hole. The tokens are mostly arguments in a run line, and `{program}
+			// {prompt}` with nothing to say would otherwise hand the shell a trailing separator to
+			// make an argument out of. One side only, never both: eating both would run the words
+			// either side of the token together.
+			i += end + 1
+			gap := i
+			for i < len(tmpl) && (tmpl[i] == ' ' || tmpl[i] == '\t') {
+				i++
+			}
+			if i == gap {
+				for len(b) > 0 && (b[len(b)-1] == ' ' || b[len(b)-1] == '\t') {
+					b = b[:len(b)-1]
+				}
+			}
+			continue
+		default:
+			b = append(b, v...)
 		}
 		i += end + 1
 	}
-	return b.String()
+	return string(b)
 }
 
 // BranchFor is the branch an item's repo gets when the manifest does not name one outright.

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // The half of the workflow work that runs somebody else's program: the layout the session is
@@ -108,7 +109,7 @@ func TestRunLinesQuoteWhatTheySubstitute(t *testing.T) {
 	// rather than a path: `claude --permission-mode auto` has to keep working.
 	w.Program = "claude --permission-mode auto"
 	panes = c.expandLayout(w, item, entries, "")
-	if !strings.HasPrefix(panes[0].run, "claude --permission-mode auto ") {
+	if !strings.HasPrefix(panes[0].run, "claude --permission-mode auto") {
 		t.Errorf("the program was quoted, which would look for a binary with spaces in its name: %q", panes[0].run)
 	}
 }
@@ -381,6 +382,213 @@ func TestWindowNamesAreUnique(t *testing.T) {
 	}
 }
 
+// The provisioning script derives the checkout directory from the arguments it is handed, so a
+// workflow that wants it anywhere else has to say so. Both halves are the test: a default
+// workspace must send exactly the arguments every script in the field was written against, and a
+// non-default `worktree:` must either land where wisp is looking or say so out loud. Without this,
+// setting `worktree:` opened a session whose briefing said "still provisioning" forever, because
+// the script built one directory and wisp went on watching another.
+func TestProvisionIsToldWhereTheWorktreeGoes(t *testing.T) {
+	c := hookWorkspace(t, "repo/1-thing")
+	item := Item{Name: "repo/1-thing"}
+	entries := []Entry{{Repo: "repo", Branch: "feature/1-thing", Base: "main"}}
+	if err := os.MkdirAll(filepath.Join(c.Workspace, "repo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tmp := t.TempDir()
+	argv := filepath.Join(tmp, "argv")
+	// A script on the new contract: it records what it was handed, and builds the directory it was
+	// given, falling back to deriving one the way the old contract makes it.
+	honours := script(t, tmp, "provision.sh", `printf '%s\n' "$@" > `+argv+`
+repo=$(basename "$1"); slug=$2; wt=""
+while [ $# -gt 0 ]; do
+  if [ "$1" = "--worktree" ]; then wt=$2; fi
+  shift
+done
+[ -n "$wt" ] || wt=".worktrees/$repo--$slug"
+mkdir -p "$wt"
+`)
+	args := func(t *testing.T) []string {
+		t.Helper()
+		raw, err := os.ReadFile(argv)
+		if err != nil {
+			t.Fatal("the script did not run")
+		}
+		return strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n")
+	}
+	// "provisioning repo (branch)" is the ordinary announcement; anything else here is a
+	// complaint, and a run that lands where wisp is looking has nothing to complain about.
+	quiet := func(msg string) {
+		if !strings.HasPrefix(msg, "provisioning repo (") {
+			t.Errorf("logged: %s", msg)
+		}
+	}
+
+	// The default, which is the acceptance test for the whole branch: the arguments wisp has
+	// always sent, in the order it has always sent them, and nothing else.
+	w := c.WorkflowFor(item, "")
+	w.Hooks.Provision = honours
+	if err := c.EnsureWorktrees(w, item, entries, quiet); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{filepath.Join(c.Workspace, "repo"), "1-thing", "feature/1-thing", "--attach", "--base", "main", "--no-install"}
+	if got := args(t); strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("argv was %v,\nwant             %v", got, want)
+	}
+
+	// A `worktree:` that says something else: the path wisp is going to watch goes on the end, and
+	// the checkout lands there.
+	w.Worktree = "{slug}"
+	wt := c.WorktreeFor(w, "repo", item)
+	if err := c.EnsureWorktrees(w, item, entries, quiet); err != nil {
+		t.Fatal(err)
+	}
+	if got := args(t); len(got) < 2 || got[len(got)-2] != "--worktree" || got[len(got)-1] != wt {
+		t.Errorf("argv was %v, want it ending in --worktree %s", got, wt)
+	}
+	if !isDir(wt) {
+		t.Errorf("%s was not created, so every open would report it as still provisioning", wt)
+	}
+
+	// And a script that ignores the flag, which is every script written before it existed, is a
+	// mismatch that has to be raised rather than waited on. Raised, not logged: the provision
+	// window closes on a log line and stays on screen for an error, and no repo in this item can
+	// get past it.
+	ignores := script(t, tmp, "old.sh", "mkdir -p \".worktrees/$(basename \"$1\")--$2\"\n")
+	w.Hooks.Provision = ignores
+	err := c.EnsureWorktrees(w, Item{Name: "repo/2-other"}, entries, func(string) {})
+	if err == nil {
+		t.Fatal("a script that built the worktree somewhere else was accepted, which is the silent forever-provisioning case")
+	}
+	for _, want := range []string{"--worktree", c.WorktreeFor(w, "repo", Item{Name: "repo/2-other"})} {
+		if !strings.Contains(err.Error(), shortPath(want)) {
+			t.Errorf("the error does not name %s: %v", want, err)
+		}
+	}
+}
+
+// A repo whose window name a fixed window has already claimed gets a deduped one, and it has to
+// get the same deduped one when the provisioning half comes back to create it. Names are handed
+// out in layout order, so expanding a layout stripped to its per-worktree entries started with
+// nothing claimed, handed the repo the fixed window's name back, found that name already in the
+// session and skipped the repo as done. Delete this and a repo sharing a name with one of your own
+// windows silently never gets one.
+func TestWorktreeWindowNamesDoNotMoveBetweenTheTwoHalves(t *testing.T) {
+	c := hookWorkspace(t, "repo/1-thing")
+	item := Item{Name: "repo/1-thing"}
+	w := c.WorkflowFor(item, "")
+	w.Layout = []Window{
+		{Window: "api", Cwd: "workspace"},
+		{Window: "{repo}", For: "each-worktree", Cwd: "worktree"},
+		{Window: "provision", When: "provisioning", Cwd: "workspace", Run: "{wisp} provision {item}"},
+	}
+	entries := []Entry{{Repo: "api"}}
+
+	// At open, with no checkout yet: the fixed window has the name, and the repo has no window.
+	cold := c.expandLayout(w, item, entries, "")
+	if len(cold) != 2 || cold[0].name != "api" || cold[1].name != "provision" {
+		t.Fatalf("cold open gave %+v, want the fixed api window and the provision one", cold)
+	}
+
+	// And once the checkout lands, which is the expansion the provisioning half runs.
+	if err := os.MkdirAll(c.WorktreeFor(w, "api", item), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var worktrees []pane
+	for _, p := range c.expandLayout(w, item, entries, "") {
+		if p.perWorktree {
+			worktrees = append(worktrees, p)
+		}
+	}
+	if len(worktrees) != 1 {
+		t.Fatalf("got %d per-worktree windows, want one: %+v", len(worktrees), worktrees)
+	}
+	if worktrees[0].name == "api" {
+		t.Error("the repo was handed the fixed window's name, so it would be skipped as already made")
+	}
+
+	// A name must not depend on which checkouts happen to exist either, or the two halves disagree
+	// about which window belongs to which repo the moment one lands before the other.
+	two := []Entry{{Repo: "platform-service-alpha"}, {Repo: "platform-service-beta"}}
+	if err := os.MkdirAll(c.WorktreeFor(w, "platform-service-beta", item), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	name := func(repo string) string {
+		t.Helper()
+		for _, p := range c.expandLayout(w, item, two, "") {
+			if p.perWorktree && p.dir == c.WorktreeFor(w, repo, item) {
+				return p.name
+			}
+		}
+		return ""
+	}
+	half := name("platform-service-beta")
+	if err := os.MkdirAll(c.WorktreeFor(w, "platform-service-alpha", item), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if whole := name("platform-service-beta"); whole != half {
+		t.Errorf("the second repo's window was %q with one checkout and %q with both", half, whole)
+	}
+}
+
+// The collision path shortens the name to make room for the ~2, and it has to cut by runes the way
+// windowName does. Two repos collide only when they share a prefix, so a shared multibyte prefix
+// is exactly what reaches this, and a byte cut lands mid-character and hands tmux a broken escape
+// sequence for the repo unlucky enough to be second.
+func TestCollidingWindowNamesAreCutByRunes(t *testing.T) {
+	c := hookWorkspace(t, "repo/1-thing")
+	item := Item{Name: "repo/1-thing"}
+	w := c.WorkflowFor(item, "")
+	entries := []Entry{{Repo: "платформа-сервис-альфа"}, {Repo: "платформа-сервис-бета"}}
+	for _, e := range entries {
+		if err := os.MkdirAll(c.WorktreeFor(w, e.Repo, item), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seen := map[string]bool{}
+	for _, p := range c.expandLayout(w, item, entries, "") {
+		if !utf8.ValidString(p.name) {
+			t.Errorf("window name %q is not valid UTF-8: the cut landed mid-character", p.name)
+		}
+		if seen[p.name] {
+			t.Errorf("two windows named %q", p.name)
+		}
+		seen[p.name] = true
+	}
+	if len(seen) != 3 {
+		t.Errorf("got %d windows, want agent plus one per worktree: %v", len(seen), seen)
+	}
+}
+
+// An empty prompt has to leave no argument at all rather than an empty one. The built-in agent
+// window is `{program} {prompt}` and the run line is shell-quoted before substitution, so an item
+// with no context file to inline ran claude with an empty quoted argument, which most agent CLIs
+// read as being handed an empty prompt rather than as being handed none. Reachable through
+// WriteContext returning "" for an item whose folder is not there, and through every call
+// addWorktreeWindows makes.
+func TestAnEmptyPromptLeavesNoArgument(t *testing.T) {
+	c := hookWorkspace(t, "repo/1-thing")
+	item := Item{Name: "repo/1-thing"}
+	w := c.WorkflowFor(item, "")
+	entries := []Entry{{Repo: "repo", Branch: "feature/1-thing"}}
+
+	panes := c.expandLayout(w, item, entries, "")
+	if panes[0].run != "claude" {
+		t.Errorf("the agent window runs %q, want the program on its own", panes[0].run)
+	}
+
+	// And a prompt that exists is still one quoted argument, which is the property this must not
+	// have undone: the context carries the item's own notes, and an item name can come from a hook.
+	ctx, err := c.WriteContext(w, item, entries)
+	if err != nil || ctx == "" {
+		t.Fatalf("no context file to inline: %v", err)
+	}
+	panes = c.expandLayout(w, item, entries, ctx)
+	if !strings.HasPrefix(panes[0].run, "claude '") || !strings.HasSuffix(panes[0].run, "'") {
+		t.Errorf("the prompt is not one quoted argument: %q", panes[0].run)
+	}
+}
+
 // A hook that never returns must not take the picker, or an open, with it.
 func TestHooksAreBounded(t *testing.T) {
 	c := hookWorkspace(t, "repo/1-thing")
@@ -388,11 +596,16 @@ func TestHooksAreBounded(t *testing.T) {
 	// not how long it is.
 	big := script(t, t.TempDir(), "loud.sh", "yes hello | head -c 20000000\n")
 	out, err := c.runHook(big, nil)
-	if err != nil {
-		t.Fatalf("a noisy hook should be truncated, not failed: %v", err)
-	}
 	if len(out) > maxHookOutput {
 		t.Errorf("hook output was %d bytes, want it capped at %d", len(out), maxHookOutput)
+	}
+	// The bound holds and it is reported. Truncation used to return a nil error, which made a
+	// source that answered most of the question look exactly like one that answered all of it.
+	if err == nil {
+		t.Fatal("a truncated hook reported no error, so a short answer would paint as a complete one")
+	}
+	if !strings.Contains(err.Error(), "dropped") {
+		t.Errorf("the error does not say what was lost: %v", err)
 	}
 }
 
@@ -470,9 +683,15 @@ func TestABrokenSourceKeepsTheStaleRows(t *testing.T) {
 	}
 }
 
-// The output cap truncates. Reporting the short length back to io.Copy is a short write, which
-// closes the pipe and kills the hook with SIGPIPE, producing nothing at all instead of the first
-// 8 MB, which is the opposite of what a cap is for.
+// The output cap truncates rather than killing, and says that it did. Two separate properties,
+// and both have been wrong at some point.
+//
+// Reporting the short length back to io.Copy is a short write, which closes the pipe and kills the
+// hook with SIGPIPE, producing nothing at all instead of the first 8 MB, which is the opposite of
+// what a cap is for. That is why the full length is always returned. But reporting nothing to the
+// caller either made a truncated answer indistinguishable from a whole one: the shortened rows
+// were cached and painted as complete, which is the same failure as a broken source looking like
+// a quiet one, wearing a third face.
 func TestTheOutputCapTruncatesRatherThanKilling(t *testing.T) {
 	c := hookWorkspace(t, "repo/1-thing")
 	var b strings.Builder
@@ -482,10 +701,15 @@ func TestTheOutputCapTruncatesRatherThanKilling(t *testing.T) {
 	big := script(t, t.TempDir(), "loud.sh", "cat <<'EOF'\n"+b.String()+"EOF\n")
 
 	out, err := c.runHook(big, nil)
-	if err != nil {
-		t.Fatalf("the hook was killed instead of truncated: %v", err)
-	}
+	// Kept, not killed: the bytes are the proof the pipe stayed open.
 	if len(out) != maxHookOutput {
 		t.Errorf("kept %d bytes, want exactly the cap %d", len(out), maxHookOutput)
+	}
+	if err == nil {
+		t.Fatal("truncation was silent, so a partial answer would be indistinguishable from a whole one")
+	}
+	// Not a kill. A hook that died on SIGPIPE would say so, and would have handed back nothing.
+	if strings.Contains(err.Error(), "broken pipe") || strings.Contains(err.Error(), "signal") {
+		t.Errorf("the hook was killed instead of truncated: %v", err)
 	}
 }

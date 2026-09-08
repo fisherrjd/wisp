@@ -635,6 +635,42 @@ func TestUserWorkflowsNeedNoAcceptance(t *testing.T) {
 	}
 }
 
+// Only a gated bundle is read whole. The hash is what the accept check compares, and a workspace
+// bundle is the only thing gated on it, but hashing ran ahead of that check for every bundle: every
+// resolution of one of your own read every file beside its manifest. That path is the one
+// NeedsInputMarker takes for each of Local, BoardItems, Peers, LocalPeers and Sessions, none of
+// which hold the picker's memo, so a bundle with a venv or a vendored checkout next to it made
+// `wisp board` walk the lot on every refresh. Delete this and nothing points at the walk.
+func TestOnlyGatedBundlesAreReadWhole(t *testing.T) {
+	f := newWorkflowFixture(t)
+	dir := f.userBundle("solo", "name: solo\nprogram: aider\n")
+	f.userConfig("workflow: solo\n")
+	// Unreadable is the cheapest stand-in for expensive: a hash of the tree cannot be computed
+	// without reading this, and a resolution that has no reason to read it does not notice.
+	blocked := f.write(filepath.Join(dir, "vendored"), "not for you")
+	if err := os.Chmod(blocked, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.ReadFile(blocked); err == nil {
+		t.Skip("running as a user who can read anything, so this would prove nothing")
+	}
+
+	if w := f.c.WorkflowFor(testItem, ""); w.Program != "aider" || len(w.Notes) != 0 {
+		t.Errorf("program = %q, notes = %v: your own bundle was walked rather than read", w.Program, w.Notes)
+	}
+
+	// The other half of the same property: a workspace bundle is gated, so it is still hashed
+	// whole, and the file the one above never touched is exactly what it trips over.
+	sdir := f.spaceBundle("team", "name: team\nprogram: codex\n")
+	if err := os.Chmod(f.write(filepath.Join(sdir, "vendored"), "not for you"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	f.spaceConfig("workflow: ./team\n")
+	if w := f.c.WorkflowFor(testItem, ""); !hasNote(w, "vendored") {
+		t.Errorf("notes = %v, want the accept check to have read the whole bundle", w.Notes)
+	}
+}
+
 // ---------------------------------------------------------------------------------------------
 // 6. Degradation
 // ---------------------------------------------------------------------------------------------
@@ -846,6 +882,27 @@ func TestExpand(t *testing.T) {
 	// A template with tokens and no variables at all still comes back intact.
 	if got := Expand("feature/{slug}", nil); got != "feature/{slug}" {
 		t.Errorf("Expand with no vars = %q, want the template untouched", got)
+	}
+}
+
+// A value that is empty takes the token and the gap beside it with it. The built-in's agent window
+// is `{program} {prompt}`, and a run line is shell-quoted before substitution, so a prompt with
+// nothing in it used to expand to claude with an empty quoted argument, which is not the same
+// thing as no argument at all for most agent CLIs. Delete this and the token comes back as a hole
+// in the middle of a command line.
+func TestExpandCollapsesEmptyValues(t *testing.T) {
+	vars := map[string]string{"program": "claude", "prompt": "", "flags": ""}
+	for _, tc := range []struct{ in, want, why string }{
+		{"{program} {prompt}", "claude", "the separator goes with the value it separated"},
+		{"{program} {flags} run", "claude run", "one side only: eating both would join the words either side"},
+		{"{prompt}", "", "nothing left is nothing at all"},
+		{"{prompt} {program}", "claude", "a token at the front takes the space after it instead"},
+		{"x={prompt}", "x=", "no whitespace to take, and what is around it is left alone"},
+		{"{program}  {prompt}", "claude", "however much whitespace there was"},
+	} {
+		if got := Expand(tc.in, vars); got != tc.want {
+			t.Errorf("Expand(%q) = %q, want %q (%s)", tc.in, got, tc.want, tc.why)
+		}
 	}
 }
 

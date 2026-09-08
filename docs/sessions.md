@@ -148,7 +148,7 @@ Keys wisp does not know are left alone. Real `orchestration.md` files carry an `
 wisp never runs `git worktree add` itself. It shells out to a script in your workspace:
 
 ```
-<workspace>/.claude/scripts/provision-worktree.sh <repo-path> <slug> <branch> --attach [--base <base>] [--no-install]
+<workspace>/.claude/scripts/provision-worktree.sh <repo-path> <slug> <branch> --attach [--base <base>] [--no-install] [--worktree <path>]
 ```
 
 That contract is the whole interface. The script already handles branching from the remote default, copying `default.nix` and `.envrc`, `direnv allow` and the dependency install, and duplicating any of that inside wisp would be a second source of truth.
@@ -156,6 +156,10 @@ That contract is the whole interface. The script already handles branching from 
 `--attach` is always passed. The contract is "give me a worktree for this branch", and an item reopened after cleanup has a live branch but no checkout; without it, every reconstitution fails on "branch already exists".
 
 `--no-install` is passed unless `install:` is on. Nix and direnv still give a working toolchain, and `node_modules` for a large monorepo is far too much to pay for opening an item in order to read it.
+
+`--worktree` is passed only when the workflow's `worktree:` template resolves to something other than the directory the script would derive on its own. That condition is deliberate, and it is what keeps the default contract byte for byte what it has always been: a workspace that never set `worktree:` sends the same argv it sent before workflows existed, and no existing script has to learn a new flag to keep working.
+
+It exists because the two halves had drifted. `worktree:` decided where wisp *looked* for the checkout, while the script went on deriving `<repo>--<slug>` for itself, so any workflow that changed the template opened a session that could never find its own worktree: the per-repo window never appeared and the context file said "still provisioning" forever. Passing the destination is the smaller half of the fix. The other half is that wisp now checks the directory is there after the script exits zero, and names the path, the template and the flag if it is not, because a script that quietly ignores an argument it does not understand is exactly how the first version failed silently.
 
 Failures are graded. A repo named in the manifest that is not a directory here is logged and skipped. A script that exits non-zero is logged and the other repos are still attempted. A **missing** script aborts the run, because nothing after it can work.
 

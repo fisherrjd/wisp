@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -55,21 +56,32 @@ func (c Config) sourceCachePathFor(hook string) string {
 // than cache_ttl_min or when ctrl-r drops it, exactly as the GitLab query is. A hook that wants
 // to be cheap can be; a hook that is slow does not have to think about it. Pushing the TTL into
 // every hook would make ctrl-r mean something different for each one.
-func (c Config) RemoteItems() ([]Item, error) {
+func (c Config) RemoteItems() ([]Item, error) { return c.sourcedItems(false) }
+
+// sourcedItems is RemoteItems carrying the one bit ctrl-r adds: whether the source is being
+// re-asked rather than read.
+//
+// Both entry points come through here so that "which source does this workspace have" stays
+// written down once. It was written down twice, in the read and in the refresh, and the two
+// halves then disagreed about the TTL, which is how a single ctrl-r came to run the hook twice.
+//
+// Named for the source rather than for remoteness because remoteItems is already taken by a
+// different question: what a workspace on another machine holds.
+func (c Config) sourcedItems(force bool) ([]Item, error) {
 	// The far side owns its own source, whatever it is. Asking for its board is the whole of
 	// this end's job, and it never learns a hook was involved.
 	if c.IsRemote() {
-		return c.GitLabItems()
+		return c.gitLabItems(force)
 	}
 	w := c.WorkflowFor(Item{}, "")
 	if w.Hooks.Source == "" {
-		return c.GitLabItems()
+		return c.gitLabItems(force)
 	}
 	// The rows and the reason, not one or the other. cachedSource deliberately hands back stale
 	// rows alongside the error that stopped them being refreshed, and returning early on the
 	// error threw the rows away, which turned "here is an old list, and here is why" back into
 	// the empty-and-annotated list this was supposed to stop being.
-	raw, err := c.cachedSource(w)
+	raw, err := c.cachedSource(w, force)
 	return c.parseSource(raw), err
 }
 
@@ -117,8 +129,8 @@ func (c Config) validSourceName(name string) bool {
 	return true
 }
 
-func (c Config) cachedSource(w Workflow) ([]byte, error) {
-	return c.cached(c.sourceCachePathFor(w.Hooks.Source), func() error { return c.refreshSource(w) })
+func (c Config) cachedSource(w Workflow, force bool) ([]byte, error) {
+	return c.cached(c.sourceCachePathFor(w.Hooks.Source), func() error { return c.refreshSource(w) }, force)
 }
 
 func (c Config) refreshSource(w Workflow) error {
@@ -143,6 +155,14 @@ func (c Config) ResolveURL(url string) (Item, error) {
 		return Item{}, ErrNoURLSource
 	}
 	out, err := c.runHook(w.Hooks.Source, nil, "--url", url)
+	// Truncation is not a refusal, so it does not get the refusal's wording. A source that
+	// recognised the link and then printed 8 MB about it did not fail to recognise it, and
+	// telling someone their link was unrecognised sends them to fix the wrong thing. One JSON
+	// object is nowhere near the ceiling, so this is about the message being true rather than
+	// about a case anyone will hit.
+	if errors.Is(err, ErrHookTruncated) {
+		return Item{}, fmt.Errorf("%s answered about that link, but the answer was cut: %v", shortPath(w.Hooks.Source), err)
+	}
 	if err != nil {
 		// A non-zero exit here is the source saying it does not recognise this link, which is a
 		// normal state rather than a failure: not every tracker can resolve every URL. Said in

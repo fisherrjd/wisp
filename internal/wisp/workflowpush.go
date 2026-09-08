@@ -156,9 +156,16 @@ func bundleContents(dir string) (int, int64) {
 	return files, size
 }
 
+// Stops at MB because that is where the things it measures stop: a bundle is scripts and a
+// manifest, and the hook ceiling is 8 MB. It used to stop at kB, which printed that ceiling as
+// "8192.0 kB" in the one message whose whole job is telling you what the limit was.
 func humanBytes(n int64) string {
-	if n < 1024 {
+	switch {
+	case n < 1024:
 		return fmt.Sprintf("%d B", n)
+	case n < 1024*1024:
+		return fmt.Sprintf("%.1f kB", float64(n)/1024)
+	default:
+		return fmt.Sprintf("%.1f MB", float64(n)/(1024*1024))
 	}
-	return fmt.Sprintf("%.1f kB", float64(n)/1024)
 }

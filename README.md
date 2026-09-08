@@ -245,8 +245,10 @@ Without an `orchestration.md`, a single-repo item is inferred from the folder's 
 Provisioning shells out to the workflow's `provision` hook, which by default is your workspace's own `.claude/scripts/provision-worktree.sh`, with a fixed contract:
 
 ```
-provision-worktree.sh <repo-path> <slug> <branch> --attach [--base <base>] [--no-install]
+provision-worktree.sh <repo-path> <slug> <branch> --attach [--base <base>] [--no-install] [--worktree <path>]
 ```
+
+`--worktree` appears only when the workflow's `worktree:` is not the default, and it names the directory the checkout must end up in. A script that ignores it builds the right worktree in the wrong place, and wisp says so rather than looping on "still provisioning".
 
 It does not block the session opening. The agent window runs at the workspace root and reads the context file, so the session appears at once and any missing worktrees are built in a side window that adds their windows and rewrites the context file when it is done.
 
