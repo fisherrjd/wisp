@@ -313,36 +313,43 @@ Attaching stacks two tmux servers, so the prefix key means two things. The wrapp
 
 [docs/remote-workspaces.md](docs/remote-workspaces.md) has the wire protocol, the ssh options, and every failure message.
 
+## Install
+
+Two things have to be there: `tmux` and `git`. Then one of:
+
+```
+go install github.com/fisherrjd/wisp@latest      # any machine with Go
+nix profile install github:fisherrjd/wisp        # any machine with nix
+```
+
+### Sixty seconds
+
+```
+wisp ws new mine ~/code        # a directory holding your repos becomes a workspace
+wisp                           # the picker; answer its one question with `default`
+```
+
+Then `ctrl-n`, type a name, `enter`. A session opens with an agent window briefed on the item, a worktree per repo built from origin's default branch, and a shell in each. Nothing else needs configuring: no tracker, no scripts, no nix. `wisp workflow` shows what is running and where each setting came from.
+
 ## Requirements
 
 | | |
 |---|---|
 | **tmux** | Required for everything. |
-| **ssh** | Required for remote workspaces. Purely local use never invokes it. |
-| **glab** | Optional, and only for the built-in GitLab source. Without it that source is empty and pasting a link into `wisp new` fails; a workflow with its own `source` hook never invokes it, and everything else is unaffected. |
 | **git** | Required for worktrees: the built-in provisioner runs it. `wisp repos` looks for `.git` directories. |
+| **ssh** | Remote workspaces only. Purely local use never invokes it. |
+| **glab** | Only the built-in GitLab source, once `gitlab:` is set. Without it that source is empty and pasting a link fails; a workflow with its own `source` hook never invokes it. |
+| **direnv**, **nix**, a package manager | Optional. The built-in provisioner uses each when the checkout asks for it and the tool is installed, and skips it with one line otherwise. |
 | **tar** | Only for `wisp workflow push`, on both ends. |
 
-direnv, nix and package managers are optional: the built-in provisioner uses each when the checkout asks for it and the tool is installed, and skips it with one line otherwise.
+### With nix
 
-## Install
-
-```
-nix build github:fisherrjd/wisp
-```
-
-Or as a flake input, with the overlay:
+The flake exposes the package and an overlay:
 
 ```nix
 inputs.wisp.url = "github:fisherrjd/wisp";
 # then, where you build pkgs:
 nixpkgs.overlays = [ inputs.wisp.overlays.default ];
-```
-
-Without nix, which is the usual case on a server you only want the far end on:
-
-```
-go install github.com/fisherrjd/wisp@latest
 ```
 
 A remote workspace needs wisp on both machines, at versions speaking the same wire; a mismatch says so by name and number rather than half-working.

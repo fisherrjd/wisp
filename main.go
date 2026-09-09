@@ -589,7 +589,9 @@ func newWorkspace(cfg wisp.Config, args []string) error {
 	if outer := cfg.NestedIn(created); outer != "" {
 		fmt.Printf("\nnote: this sits inside the workspace at %s.\nRunning wisp anywhere below here will find this one, not that one.\n", outer)
 	}
-	fmt.Printf("\nedit %s for its gitlab group, then:\n  wisp -w %s\n",
-		filepath.Join(created, wisp.MarkerFile), name)
+	// What a newcomer does next, and nothing that presumes a tracker: the workspace works as it
+	// is. The tracker and the workflow are in the file, for later.
+	fmt.Printf("\nnext:\n  wisp -w %s%s open the picker; it asks once which workflow runs here\n  ctrl-n%s then a name, enter\n\nlater:\n  %s%s the tracker, and any key you want to change\n  wisp workflow list%s what there is to bind\n",
+		name, strings.Repeat(" ", max(1, 12-len(name))), strings.Repeat(" ", 12+3), filepath.Join(created, wisp.MarkerFile), "  ", "  ")
 	return nil
 }

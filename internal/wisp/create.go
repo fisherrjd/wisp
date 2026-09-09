@@ -37,7 +37,8 @@ const wispYAMLTemplate = `# wisp workspace config. Everything here is optional.
 # worktrees: .worktrees
 # provision: .claude/scripts/provision-worktree.sh
 #
-# The remote source is off until all three are set. These are examples, not
+# wisp works with none of the below set: items are what you make with ctrl-n.
+# The GitLab source turns on once all three are set. These are examples, not
 # defaults; there is nothing sensible to default them to.
 #
 # gitlab:
