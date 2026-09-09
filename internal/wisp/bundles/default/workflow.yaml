@@ -1,0 +1,89 @@
+# wisp's own workflow, the one every other falls back to key by key, spelled
+# out. `wisp workflow init <name>` starts from a copy of this file.
+#
+# a wisp workflow. The directory is the unit: this file plus any scripts it
+# names is the whole thing, and copying the directory copies the workflow.
+#
+# Every key is optional. Anything left out falls back to wisp's built-in
+# workflow, one key at a time, so a workflow that changes one thing is four
+# lines long.
+
+name: default
+description: one agent at the workspace root, a shell per worktree
+
+# The agent. It is what {program} means in the layout below.
+program: claude
+
+# Where the work lands. Substitutions: {item} {slug} {repo}.
+# worktree names a directory inside the workspace's worktrees dir, so it holds
+# no slashes.
+branch: "feature/{slug}"
+worktree: "{repo}--{slug}"
+
+# The session, one entry per tmux window, in order.
+#
+#   window  the name, truncated to 12 characters, as tmux window names are
+#   cwd     workspace, worktree or home
+#   run     handed to /bin/sh; leave it out for an interactive shell
+#   for     each-worktree repeats the window once per repo in the item
+#   when    provisioning limits it to items whose worktrees are not there yet
+#   focus   the window selected when the session opens; the first one wins
+#
+# Substitutions: the ones above, plus {branch} {base} {worktree} {workspace}
+# {program} {prompt} {wisp}. There is no other control flow on purpose: a
+# config language that grows conditionals has become a bad programming
+# language, and that is what the hooks below are for.
+layout:
+  - window: agent
+    cwd: workspace
+    run: "{program} {prompt}"
+    focus: true
+  - window: "{repo}"
+    for: each-worktree
+    cwd: worktree
+  - window: provision
+    when: provisioning
+    cwd: workspace
+    run: "{wisp} provision {item}"
+
+# The programs wisp hands off to. A relative path here is relative to this
+# directory rather than to the workspace, which is what lets the bundle be
+# copied to another machine and still find its own scripts.
+#
+# Left unset here, the built-in provision is .claude/scripts/provision-worktree.sh
+# under the workspace root, run only once it has been read and accepted.
+#
+# hooks:
+#   source: bin/items.sh        # where items come from, instead of the vault
+#   new: bin/new.sh             # how a typed name or link becomes an item
+#   context: bin/context.sh     # what the agent is told when a session opens
+#   close: bin/close.sh         # what happens when an item is closed out
+#   provision: bin/worktree.sh  # how a worktree is built
+#   open: bin/open.sh           # after the session is built, before you land in it
+#   kill: bin/kill.sh           # after a session is killed
+#   preview: bin/preview.sh     # what the picker shows for an item with no session
+
+# What a new item's folder starts out as, and where a bare name is filed.
+#
+#   seed    a directory beside this file; its top-level files are copied into
+#           every new item, with {item} {slug} {repo} {iid} {title} {date}
+#           {parent} {workspace} {vault} filled in, never over a file already
+#           there. notes.md stays the one file wisp guarantees.
+#   parent  where "wisp new some-name" lands when the name has no repo in it.
+#           Unset, wisp ties it to a repo and asks when it cannot tell; _adhoc
+#           files every bare name there without asking.
+#
+# item:
+#   seed: seed
+#   parent: _adhoc
+
+# The word the picker uses for rows that came from the source.
+#
+# picker:
+#   remote_label: gitlab
+
+# How this workflow recognises its agent waiting on you, matched against the
+# pane. The line below is out of Claude Code's permission dialog, so it is
+# worth changing the moment program: is not Claude Code.
+status:
+  needs_input: "No, and tell Claude what to do differently"

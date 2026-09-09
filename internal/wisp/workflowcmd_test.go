@@ -46,7 +46,7 @@ func TestWorkflowInitRefusesAnExistingName(t *testing.T) {
 	} {
 		t.Run(tc.addr, func(t *testing.T) {
 			c := newWorkflowConfig(t)
-			if err := c.workflowInit(tc.name, tc.here); err != nil {
+			if err := c.workflowInit(tc.name, "", tc.here); err != nil {
 				t.Fatalf("init: %v", err)
 			}
 			path := filepath.Join(tc.root(c), tc.name, WorkflowFile)
@@ -73,7 +73,7 @@ func TestWorkflowInitRefusesAnExistingName(t *testing.T) {
 			if err := os.WriteFile(path, []byte(edited), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			err = c.workflowInit(tc.name, tc.here)
+			err = c.workflowInit(tc.name, "", tc.here)
 			if err == nil {
 				t.Fatal("init over an existing workflow was allowed")
 			}
@@ -93,7 +93,7 @@ func TestWorkflowInitRefusesAnExistingName(t *testing.T) {
 	// A name that is not one path segment must never reach the filesystem.
 	c := newWorkflowConfig(t)
 	for _, bad := range []string{"", "..", "a/b", "../escape"} {
-		if err := c.workflowInit(bad, false); err == nil {
+		if err := c.workflowInit(bad, "", false); err == nil {
 			t.Errorf("init(%q) was allowed", bad)
 		}
 	}
@@ -116,7 +116,7 @@ func TestWorkflowUseWritesTheKey(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := newWorkflowConfig(t)
-			if err := c.workflowInit("solo", false); err != nil {
+			if err := c.workflowInit("solo", "", false); err != nil {
 				t.Fatal(err)
 			}
 			path := UserConfigPath()

@@ -73,7 +73,7 @@ Keeping a workflow in git needs nothing from wisp. A workflow is a directory, so
 |---|---|
 | yours | beside the user config, `~/.config/wisp/workflows/<name>/` |
 | a workspace's | `<workspace>/.wisp/workflows/<name>/` |
-| the built-in | compiled into the binary, no directory anywhere |
+| shipped with wisp | compiled into the binary, no directory anywhere. `default` is the built-in; any other shipped name resolves out of the binary when you have no directory by that name. `wisp workflow init <name> --from <shipped>` copies one out |
 
 Yours are found beside `config.yaml` rather than at a fixed path, so `XDG_CONFIG_HOME` relocates both together. A config file and the workflows it names should not be able to end up on opposite sides of that variable.
 
@@ -93,7 +93,9 @@ An earlier draft had a search path with first-hit-wins, and it was wrong. It mea
 
 An address is one path segment. Anything with a separator in it, or `.`, or `..`, is refused by name rather than followed, because the value arrives from a checked-in file and reaches the filesystem.
 
-The one shadowing left is yours over the built-in: a directory of your own called `default` wins over the compiled-in one. That is allowed, because it is your directory and you meant it. Naming `default` when you have no such directory is simply the built-in, and is not annotated: it is the answer, not a failure to find one.
+The one shadowing left is yours over what wisp ships: a directory of your own called `default`, or by any other shipped name, wins over the compiled-in one, and `wisp workflow list` says so on the row. That is allowed, because it is your directory and you meant it. Naming `default` when you have no such directory is simply the built-in, and is not annotated: it is the answer, not a failure to find one.
+
+A shipped bundle carries no scripts, and a test in the source holds that line. It may shape a folder (`item.seed`) and a session (`layout`), but a script that ran out of the binary would be one no file anyone accepted, so there are none; a workspace-relative `provision:` one names still passes through [the script rule](#the-script-rule) like every other path inside the workspace.
 
 ---
 

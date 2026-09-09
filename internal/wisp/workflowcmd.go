@@ -114,14 +114,26 @@ func (c Config) WorkflowCommand(args []string) error {
 		return nil
 
 	case "init":
-		names, flags, err := workflowFlags(rest, "--here")
+		// --from takes a value, which the flag parser does not know how to do; it is lifted out
+		// first so the rest can be checked as before.
+		from := ""
+		var trimmed []string
+		for i := 0; i < len(rest); i++ {
+			if rest[i] == "--from" && i+1 < len(rest) {
+				from = rest[i+1]
+				i++
+				continue
+			}
+			trimmed = append(trimmed, rest[i])
+		}
+		names, flags, err := workflowFlags(trimmed, "--here")
 		if err != nil {
 			return err
 		}
 		if len(names) == 0 {
-			return fmt.Errorf("usage: wisp workflow init <name> [--here]\n\nthe name is a directory: `wisp workflow init solo` makes solo yours")
+			return fmt.Errorf("usage: wisp workflow init <name> [--from <shipped>] [--here]\n\nthe name is a directory: `wisp workflow init solo` makes solo yours;\n--from starts from one of the bundles wisp ships (%s)", strings.Join(shippedNames, ", "))
 		}
-		return c.workflowInit(names[0], flags["--here"])
+		return c.workflowInit(names[0], from, flags["--here"])
 
 	case "use":
 		names, flags, err := workflowFlags(rest, "--here")
@@ -345,6 +357,9 @@ func (c Config) printWorkflow(w Workflow, item string) {
 	}
 	if lives == "" {
 		lives = "compiled into wisp"
+		if w.Addr != "" && w.Addr != "default" && isShipped(w.Addr) && w.From["name"] != "" {
+			lives = "shipped with wisp"
+		}
 	}
 	fmt.Printf("\n  address   %s\n  selected  %s\n  lives in  %s\n\n", addr, selected, lives)
 
@@ -460,104 +475,24 @@ func (c Config) printWorkflowList() {
 	}
 }
 
-// workflowYAMLTemplate is what `init` writes: the built-in's own values, spelled out, with the
-// reasoning beside each key.
+
+// workflowInit writes a starting point: a copy of one of the bundles wisp ships, `default`
+// unless --from names another. It never writes over one that is there.
 //
-// An empty file would work just as well, since every key falls back to the built-in on its own.
-// It would also teach nothing, and the spelling of the keys is the part nobody can guess. Filled
-// in with the name and with the needs-input marker, so the copy cannot drift from the built-in it
-// claims to be.
-const workflowYAMLTemplate = `# a wisp workflow. The directory is the unit: this file plus any scripts it
-# names is the whole thing, and copying the directory copies the workflow.
-#
-# Every key is optional. Anything left out falls back to wisp's built-in
-# workflow, one key at a time, so a workflow that changes one thing is four
-# lines long.
-
-name: %s
-description: say what this one is for
-
-# The agent. It is what {program} means in the layout below.
-program: claude
-
-# Where the work lands. Substitutions: {item} {slug} {repo}.
-# worktree names a directory inside the workspace's worktrees dir, so it holds
-# no slashes.
-branch: "feature/{slug}"
-worktree: "{repo}--{slug}"
-
-# The session, one entry per tmux window, in order.
-#
-#   window  the name, truncated to 12 characters, as tmux window names are
-#   cwd     workspace, worktree or home
-#   run     handed to /bin/sh; leave it out for an interactive shell
-#   for     each-worktree repeats the window once per repo in the item
-#   when    provisioning limits it to items whose worktrees are not there yet
-#   focus   the window selected when the session opens; the first one wins
-#
-# Substitutions: the ones above, plus {branch} {base} {worktree} {workspace}
-# {program} {prompt} {wisp}. There is no other control flow on purpose: a
-# config language that grows conditionals has become a bad programming
-# language, and that is what the hooks below are for.
-layout:
-  - window: agent
-    cwd: workspace
-    run: "{program} {prompt}"
-    focus: true
-  - window: "{repo}"
-    for: each-worktree
-    cwd: worktree
-  - window: provision
-    when: provisioning
-    cwd: workspace
-    run: "{wisp} provision {item}"
-
-# The programs wisp hands off to. A relative path here is relative to this
-# directory rather than to the workspace, which is what lets the bundle be
-# copied to another machine and still find its own scripts.
-#
-# hooks:
-#   source: bin/items.sh        # where items come from, instead of the vault
-#   new: bin/new.sh             # how a typed name or link becomes an item
-#   context: bin/context.sh     # what the agent is told when a session opens
-#   close: bin/close.sh         # what happens when an item is closed out
-#   provision: bin/worktree.sh  # how a worktree is built
-#   open: bin/open.sh           # after the session is built, before you land in it
-#   kill: bin/kill.sh           # after a session is killed
-#   preview: bin/preview.sh     # what the picker shows for an item with no session
-
-# What a new item's folder starts out as, and where a bare name is filed.
-#
-#   seed    a directory beside this file; its top-level files are copied into
-#           every new item, with {item} {slug} {repo} {iid} {title} {date}
-#           {parent} {workspace} {vault} filled in, never over a file already
-#           there. notes.md stays the one file wisp guarantees.
-#   parent  where "wisp new some-name" lands when the name has no repo in it.
-#           Unset, wisp ties it to a repo and asks when it cannot tell; _adhoc
-#           files every bare name there without asking.
-#
-# item:
-#   seed: seed
-#   parent: _adhoc
-
-# The word the picker uses for rows that came from the source.
-#
-# picker:
-#   remote_label: gitlab
-
-# How this workflow recognises its agent waiting on you, matched against the
-# pane. The default below is a line out of Claude Code's permission dialog, so
-# it is worth changing the moment program: is not Claude Code.
-#
-# status:
-#   needs_input: %q
-`
-
-// workflowInit writes a starting point. It never writes over one that is there.
-func (c Config) workflowInit(name string, here bool) error {
+// A copy of a shipped bundle rather than a template of its own, so `init` and `show default`
+// cannot drift: the file init writes is the file the built-in is documented by. An empty file
+// would work just as well, since every key falls back on its own; it would also teach nothing,
+// and the spelling of the keys is the part nobody can guess.
+func (c Config) workflowInit(name, from string, here bool) error {
 	name = strings.TrimPrefix(strings.TrimSpace(name), "./")
 	if !safeWorkflowName(name) {
 		return fmt.Errorf("%q is not a workflow name: one directory segment, no slashes\n\n  wisp workflow init solo", name)
+	}
+	if from == "" {
+		from = "default"
+	}
+	if !isShipped(from) {
+		return fmt.Errorf("wisp does not ship a workflow called %q\n\nthe ones it does: %s", from, strings.Join(shippedNames, ", "))
 	}
 
 	root, addr := UserWorkflowsDir(), name
@@ -574,16 +509,21 @@ func (c Config) workflowInit(name string, here bool) error {
 	if exists(dir) {
 		return fmt.Errorf("%s already exists\n\nedit it:\n  wisp workflow edit %s\n\nor pick another name", shortPath(dir), addr)
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("could not create %s: %w", shortPath(dir), err)
+	if err := copyShipped(from, dir); err != nil {
+		return fmt.Errorf("could not write %s: %w", shortPath(dir), err)
 	}
 	path := filepath.Join(dir, WorkflowFile)
-	body := fmt.Sprintf(workflowYAMLTemplate, name, needsInputMarker)
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-		return fmt.Errorf("could not write %s: %w", shortPath(path), err)
+	// Through the YAML node rather than a template substitution, so every comment in the
+	// shipped file survives into the copy: those comments are the documentation.
+	if err := setConfigKey(path, "name", name); err != nil {
+		return fmt.Errorf("could not name %s: %w", shortPath(path), err)
 	}
 
-	fmt.Printf("%s\n\nit is a copy of the built-in, so it changes nothing until you edit it:\n  wisp workflow edit %s\n  wisp workflow use %s\n", shortPath(path), addr, addr)
+	what := "the built-in"
+	if from != "default" {
+		what = "the shipped " + from + " workflow"
+	}
+	fmt.Printf("%s\n\nit is a copy of %s, so it changes nothing until you edit it:\n  wisp workflow edit %s\n  wisp workflow use %s\n", shortPath(path), what, addr, addr)
 	if here {
 		// A workspace's own workflow is the one that arrives with a repo rather than with you, so
 		// it is the one that has to be read before it runs. Said here, at the moment it is made,
@@ -694,6 +634,9 @@ func (c Config) workflowEdit(addr string) error {
 	if dir == "" || !isDir(dir) {
 		if addr == "" || addr == "default" {
 			return fmt.Errorf("that is the built-in workflow, which is compiled into wisp\n\nmake your own copy of it and edit that:\n  wisp workflow init solo\n  wisp workflow use solo\n  wisp workflow edit solo")
+		}
+		if isShipped(addr) && !isDir(filepath.Join(UserWorkflowsDir(), addr)) {
+			return fmt.Errorf("%s is shipped with wisp, so there is no file of yours to open\n\nmake your own copy of it and edit that:\n  wisp workflow init mine --from %s\n  wisp workflow use mine\n  wisp workflow edit mine", addr, addr)
 		}
 		return fmt.Errorf("no workflow %q at %s\n\nmake it first:\n  wisp workflow init %s", addr, shortPath(dir), strings.TrimPrefix(addr, "./"))
 	}

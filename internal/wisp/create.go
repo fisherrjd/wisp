@@ -26,6 +26,9 @@ const wispYAMLTemplate = `# wisp workspace config. Everything here is optional.
 # Any workflow key can also be set directly here, overriding just that key.
 # Run "wisp workflow" to see what is in effect and where each key came from.
 #
+# "wisp workflow list" names what there is; "wisp workflow use <name> --here"
+# writes the line above.
+#
 # Defaults, uncomment to change:
 #
 # program: claude
@@ -59,7 +62,7 @@ const wispYAMLTemplate = `# wisp workspace config. Everything here is optional.
 // bargain mkdir strikes.
 //
 // Safe to run twice: an existing vault and an existing .wisp.yaml are both left alone.
-func (c Config) CreateWorkspace(name, path string, mkdir bool) (string, error) {
+func (c Config) CreateWorkspace(name, path string, mkdir bool, workflow string) (string, error) {
 	name = wsToken(name)
 	if name == "" {
 		return "", fmt.Errorf("a workspace needs a name: wisp ws new <name> [path]")
@@ -81,7 +84,11 @@ func (c Config) CreateWorkspace(name, path string, mkdir bool) (string, error) {
 			return "", err
 		}
 		if mkdir {
-			if _, err := loc.runBare("ws", "new", name, "-p", loc.Path); err != nil {
+			args := []string{"ws", "new", name, "-p", loc.Path}
+			if workflow != "" {
+				args = append(args, "--workflow", workflow)
+			}
+			if _, err := loc.runBare(args...); err != nil {
 				return "", fmt.Errorf("could not create it on %s: %w", loc.Host, err)
 			}
 		}
@@ -119,6 +126,13 @@ func (c Config) CreateWorkspace(name, path string, mkdir bool) (string, error) {
 	if !exists(marker) {
 		if err := os.WriteFile(marker, []byte(wispYAMLTemplate), 0o644); err != nil {
 			return "", fmt.Errorf("could not write %s: %w", MarkerFile, err)
+		}
+	}
+	// Bound at birth when asked, through the same node edit `wisp workflow use --here` makes, so
+	// the commented template around it survives.
+	if workflow != "" {
+		if err := setConfigKey(marker, "workflow", normalizeAddr(workflow)); err != nil {
+			return "", fmt.Errorf("could not bind %s: %w", workflow, err)
 		}
 	}
 	if err := c.register(name, Location{Path: abs}); err != nil {

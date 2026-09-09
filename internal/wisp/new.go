@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -261,10 +262,16 @@ func (c Config) makeItemDir(w Workflow, item Item) error {
 // are data and are not gated, and this is the rule that keeps that honest. A seeded
 // orchestration.md that names a program is still caught by the item gate on open, like any other.
 func (c Config) writeSeeds(w Workflow, item Item) error {
-	if w.Item.Seed == "" {
+	var seeds fs.FS
+	switch {
+	case w.SeedFS != nil:
+		seeds = w.SeedFS
+	case w.Item.Seed != "":
+		seeds = os.DirFS(w.Item.Seed)
+	default:
 		return nil
 	}
-	entries, err := os.ReadDir(w.Item.Seed)
+	entries, err := fs.ReadDir(seeds, ".")
 	if err != nil {
 		return nil // validate has already noted a missing seed dir; a vanished one is the same
 	}
@@ -279,7 +286,7 @@ func (c Config) writeSeeds(w Workflow, item Item) error {
 		if exists(dst) {
 			continue
 		}
-		raw, err := os.ReadFile(filepath.Join(w.Item.Seed, name))
+		raw, err := fs.ReadFile(seeds, name)
 		if err != nil {
 			return fmt.Errorf("seed %s: %w", name, err)
 		}

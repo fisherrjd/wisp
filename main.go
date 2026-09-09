@@ -480,17 +480,23 @@ func newWorkspace(cfg wisp.Config, args []string) error {
 	// putting the flag first, and treating a trailing -p as the path would create a directory
 	// called "-p" in the current one.
 	mkdir := false
+	workflow := ""
 	rest := args[:0:0]
-	for _, a := range args {
-		if a == "-p" || a == "--parents" {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "-p" || a == "--parents":
 			mkdir = true
-			continue
+		case a == "--workflow" && i+1 < len(args):
+			workflow = args[i+1]
+			i++
+		default:
+			rest = append(rest, a)
 		}
-		rest = append(rest, a)
 	}
 	args = rest
 	if len(args) == 0 {
-		return fmt.Errorf("usage: wisp ws new [-p] <name> [path]")
+		return fmt.Errorf("usage: wisp ws new [-p] [--workflow <name>] <name> [path]")
 	}
 	name := args[0]
 	path := "."
@@ -498,7 +504,7 @@ func newWorkspace(cfg wisp.Config, args []string) error {
 		path = args[1]
 	}
 
-	created, err := cfg.CreateWorkspace(name, path, mkdir)
+	created, err := cfg.CreateWorkspace(name, path, mkdir, workflow)
 	if err != nil {
 		return err
 	}

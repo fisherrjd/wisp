@@ -846,7 +846,7 @@ func (m model) updateNewWS(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if sys := m.currentSystem(); sys != "" {
 			path = m.cfg.Hosts[sys] + ":" + path
 		}
-		summary, err := m.cfg.CreateWorkspace(name, path, mkdir)
+		summary, err := m.cfg.CreateWorkspace(name, path, mkdir, "")
 		if err != nil {
 			// Stay on the line with the text intact: a missing directory is fixed by adding -p,
 			// which is one keystroke from here.

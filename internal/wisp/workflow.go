@@ -2,6 +2,7 @@ package wisp
 
 import (
 	"bytes"
+	"io/fs"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -143,6 +144,9 @@ type Workflow struct {
 	Status   Status   `yaml:"status"`
 	Item     ItemSpec `yaml:"item"`
 	Picker   Picker   `yaml:"picker"`
+	// SeedFS is where a shipped bundle's seed files are read from, since they are in the binary
+	// rather than at Item.Seed. Nil for every bundle on disk.
+	SeedFS fs.FS `yaml:"-"`
 
 	// From records which layer supplied each key, which is the whole point of `wisp workflow`.
 	// "why did my session open like that" is otherwise unanswerable without reading Go.
@@ -1074,6 +1078,11 @@ func (c Config) loadBundle(addr string) (Workflow, error) {
 		if addr == "default" {
 			return Workflow{}, errSilentBuiltin
 		}
+		// Any other name wisp ships resolves out of the binary when you have no directory by
+		// that name. Yours shadows it, exactly as yours shadows `default`.
+		if b, ok := shippedBundle(addr); ok {
+			return b, nil
+		}
 		return Workflow{}, fmt.Errorf("no workflow %q at %s; using the built-in", addr, shortPath(dir))
 	}
 	// The whole bundle is hashed only where something is gated on the hash, which is a workspace
@@ -1126,7 +1135,7 @@ func (w *Workflow) validate() []string {
 		w.Item.Parent = ""
 		delete(w.From, "parent")
 	}
-	if w.Item.Seed != "" && !isDir(w.Item.Seed) {
+	if w.Item.Seed != "" && w.SeedFS == nil && !isDir(w.Item.Seed) {
 		notes = append(notes, fmt.Sprintf("item.seed %s is not there, so new items get the plain stub", shortPath(w.Item.Seed)))
 		w.Item.Seed = ""
 		delete(w.From, "seed")
@@ -1324,6 +1333,8 @@ func (c Config) ListWorkflows(current string) []WorkflowEntry {
 		where := shortPath(UserWorkflowsDir())
 		if name == "default" {
 			where += "  (shadows the built-in)"
+		} else if isShipped(name) {
+			where += "  (shadows the shipped one)"
 		}
 		add(name, filepath.Join(UserWorkflowsDir(), name), where)
 	}
@@ -1335,7 +1346,7 @@ func (c Config) ListWorkflows(current string) []WorkflowEntry {
 	// is running when the note two lines above says it is not.
 	builtinInUse := current == "" || (current == "default" && !isDir(filepath.Join(UserWorkflowsDir(), "default")))
 	if !builtinInUse {
-		found := false
+		found := isShipped(current) && !isDir(filepath.Join(UserWorkflowsDir(), current))
 		for _, e := range out {
 			found = found || (e.Addr == current && e.Note == "")
 		}
@@ -1344,7 +1355,16 @@ func (c Config) ListWorkflows(current string) []WorkflowEntry {
 	for i := range out {
 		out[i].InUse = out[i].InUse && !builtinInUse
 	}
-	out = append(out, WorkflowEntry{Addr: "default", Where: "built-in", Accepted: true, InUse: builtinInUse})
+	for _, name := range shippedNames {
+		if isDir(filepath.Join(UserWorkflowsDir(), name)) {
+			continue // shadowed, and the row above says so
+		}
+		if name == "default" {
+			out = append(out, WorkflowEntry{Addr: "default", Where: "built-in", Accepted: true, InUse: builtinInUse})
+			continue
+		}
+		out = append(out, WorkflowEntry{Addr: name, Where: "shipped with wisp", Accepted: true, InUse: current == name && !builtinInUse})
+	}
 	return out
 }
 

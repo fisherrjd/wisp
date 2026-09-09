@@ -242,16 +242,16 @@ The machines wisp can reach, name and ssh target, sorted. No output if none are 
 
 Everything here writes to `~/.config/wisp/config.yaml` through a YAML node, so your comments survive. A brand-new section is appended as plain text rather than the whole file being re-emitted.
 
-### `wisp ws new [-p|--parents] <name> [path]`
+### `wisp ws new [-p|--parents] [--workflow <name>] <name> [path]`
 
-Make a directory a workspace and register it. The path defaults to `.`, and may be local or `host:path`. `-p` creates the directory too, and is accepted in any position: a trailing `-p` should not become a directory named `-p`.
+Make a directory a workspace and register it. The path defaults to `.`, and may be local or `host:path`. `-p` creates the directory too, and is accepted in any position: a trailing `-p` should not become a directory named `-p`. `--workflow` binds the new workspace to a bundle at birth, writing `workflow:` into its `.wisp.yaml` exactly as `wisp workflow use --here` would.
 
 It creates the vault and a fully commented `.wisp.yaml` to fill in, then registers the name, adding `default:` if nothing already answers that question. Run on a directory that is already a workspace, it just registers it, which is how you make an existing vault reachable by `hop`.
 
 Without `-p` the directory has to exist. A mistyped path should fail there and then rather than become a workspace somewhere nobody meant to put one, where the mistake only surfaces later as a picker with nothing in it.
 
 ```
-usage: wisp ws new [-p] <name> [path]
+usage: wisp ws new [-p] [--workflow <name>] <name> [path]
 a workspace needs a name: wisp ws new <name> [path]
 bigbox is a machine, not a workspace on one
 
@@ -434,9 +434,11 @@ usage: wisp workflow show <name>
 `wisp workflow list` is what there is to name
 ```
 
-### `wisp workflow init <name> [--here]`
+### `wisp workflow init <name> [--from <shipped>] [--here]`
 
-Write a starting point: `workflow.yaml` as the built-in spelled out, with the reasoning beside each key. It never writes over one that is there, because a workflow already there is a file somebody has edited. An empty file would work just as well, since every key falls back on its own; it would also teach nothing, and the spelling of the keys is the part nobody can guess.
+Write a starting point: a copy of one of the bundles wisp ships, `default` unless `--from` names another, with `name:` rewritten and every comment kept. It never writes over one that is there, because a workflow already there is a file somebody has edited. An empty file would work just as well, since every key falls back on its own; it would also teach nothing, and the spelling of the keys is the part nobody can guess.
+
+A copy rather than a template of its own, so `init` and `show default` cannot drift: the file `init` writes is the file the built-in is documented by, `internal/wisp/bundles/default/workflow.yaml` in the source.
 
 ```
 $ wisp workflow init calm
@@ -462,9 +464,13 @@ this one is the workspace's, so it also has to be accepted before it runs:
 ```
 
 ```
-usage: wisp workflow init <name> [--here]
+usage: wisp workflow init <name> [--from <shipped>] [--here]
 
-the name is a directory: `wisp workflow init solo` makes solo yours
+the name is a directory: `wisp workflow init solo` makes solo yours;
+--from starts from one of the bundles wisp ships (default)
+wisp does not ship a workflow called "x"
+
+the ones it does: default
 "a/b" is not a workflow name: one directory segment, no slashes
 ~/.config/wisp/workflows/hooked already exists
 
