@@ -1,7 +1,5 @@
-# wisp's own workflow, the one every other falls back to key by key, spelled
-# out. `wisp workflow init <name>` starts from a copy of this file, and it is
-# the same workflow as `workspace`: a tracker, a checkout per repo, and a
-# folder with notes and a plan for every item.
+# a tracker, a checkout per repo, and a folder with notes and a plan for every
+# item. `default` is this workflow under wisp's own name.
 #
 # a wisp workflow. The directory is the unit: this file plus any scripts it
 # names is the whole thing, and copying the directory copies the workflow.
@@ -10,7 +8,7 @@
 # workflow, one key at a time, so a workflow that changes one thing is four
 # lines long.
 
-name: default
+name: workspace
 description: a tracker, a worktree per repo, and notes plus a plan for every item
 
 # The agent. It is what {program} means in the layout below.

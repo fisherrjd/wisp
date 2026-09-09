@@ -462,7 +462,7 @@ usage: wisp workflow show <name>
 
 Write a starting point: a copy of one of the bundles wisp ships, `default` unless `--from` names another, with `name:` rewritten and every comment kept. It never writes over one that is there, because a workflow already there is a file somebody has edited. An empty file would work just as well, since every key falls back on its own; it would also teach nothing, and the spelling of the keys is the part nobody can guess.
 
-A copy rather than a template of its own, so `init` and `show default` cannot drift: the file `init` writes is the file the built-in is documented by, `internal/wisp/bundles/default/workflow.yaml` in the source.
+A copy rather than a template of its own, so `init` and `show default` cannot drift: the file `init` writes is the file the built-in is documented by, `internal/wisp/bundles/default/workflow.yaml` in the source. The four that ship: `default` (a tracker, a worktree per repo, seeded notes and plan; `workspace` is the same under its own name), `scratch` (notes only, every bare name under `_adhoc`), `minimal` (the bare floor, no seed).
 
 ```
 $ wisp workflow init calm
@@ -491,10 +491,10 @@ this one is the workspace's, so it also has to be accepted before it runs:
 usage: wisp workflow init <name> [--from <shipped>] [--here]
 
 the name is a directory: `wisp workflow init solo` makes solo yours;
---from starts from one of the bundles wisp ships (default)
+--from starts from one of the bundles wisp ships (default, workspace, scratch, minimal)
 wisp does not ship a workflow called "x"
 
-the ones it does: default
+the ones it does: default, workspace, scratch, minimal
 "a/b" is not a workflow name: one directory segment, no slashes
 ~/.config/wisp/workflows/hooked already exists
 

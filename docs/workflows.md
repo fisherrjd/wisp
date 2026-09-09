@@ -73,7 +73,7 @@ Keeping a workflow in git needs nothing from wisp. A workflow is a directory, so
 |---|---|
 | yours | beside the user config, `~/.config/wisp/workflows/<name>/` |
 | a workspace's | `<workspace>/.wisp/workflows/<name>/` |
-| shipped with wisp | compiled into the binary, no directory anywhere. `default` is the built-in; any other shipped name resolves out of the binary when you have no directory by that name. `wisp workflow init <name> --from <shipped>` copies one out |
+| shipped with wisp | compiled into the binary, no directory anywhere: `default`, `workspace`, `scratch`, `minimal`. `default` is the built-in, and it is `workspace` under wisp's own name: a tracker, a worktree per repo, and a seeded `notes.md` and `orchestration.md` for every item. `scratch` is notes only, every bare name under `_adhoc`. `minimal` is the floor with no seed. Any shipped name resolves out of the binary when you have no directory by it, and `wisp workflow init <name> --from <shipped>` copies one out |
 
 Yours are found beside `config.yaml` rather than at a fixed path, so `XDG_CONFIG_HOME` relocates both together. A config file and the workflows it names should not be able to end up on opposite sides of that variable.
 
@@ -244,7 +244,7 @@ A manifest's `repos[].branch` is explicit and per-repo. A workflow's `branch:` i
 | `hooks.context` | none | What the agent is told. See [Hooks](hooks.md). |
 | `hooks.close` | none | What closing an item out does. See [Hooks](hooks.md). |
 | `hooks.new` | none | How a typed name or pasted link becomes an item. See [Hooks](hooks.md#new-how-an-item-gets-its-name). |
-| `item.seed` | none | A directory whose top-level files every new item folder starts with, tokens expanded, never over a file already there. Relative to the bundle in a bundle, to the workspace in a config file. |
+| `item.seed` | `seed` in the built-in: `notes.md` and a commented `orchestration.md`; none in `minimal` | A directory whose top-level files every new item folder starts with, tokens expanded, never over a file already there. Relative to the bundle in a bundle, to the workspace in a config file. |
 | `item.parent` | none | Where a bare typed name is filed. Unset, wisp ties it to a repo and asks when it cannot tell; `_adhoc` files every bare name there without asking. One directory name. |
 | `picker.remote_label` | `gitlab` | The word the picker uses for rows that came from the source, in the legend, the help page and the preview. One short word. |
 | `hooks.open` | none | Runs after a session is built and before you land in it. A note, never a veto. See [Hooks](hooks.md#open-and-kill-around-a-session). |
@@ -791,7 +791,7 @@ A workflow is a directory, and every way of sharing one is a way of sharing a di
 | a repo's every checkout | commit it under `.wisp/workflows/<name>` and bind it with `wisp workflow use ./<name> --here`; everyone who clones gets asked to accept it once |
 | your other machines | `wisp workflow push <name> <host>` copies one of yours down the ssh connection wisp already opens |
 | anyone | `git clone` it under `~/.config/wisp/workflows/<name>`, or symlink a checkout there so `git pull` is the update |
-| everyone | send a pull request adding it under `internal/wisp/bundles/`; shipped bundles carry no scripts, so what they can carry is keys and seed files |
+| everyone | send a pull request adding it under `internal/wisp/bundles/`, beside `default`, `workspace`, `scratch` and `minimal`; shipped bundles carry no scripts, so what they can carry is keys and seed files |
 
 What a shared bundle can decide, all of it from `workflow.yaml` and the files beside it: how an item is named (`new`), where a bare name lands (`item.parent`), what its folder starts with (`item.seed`), where work comes from (`source`), what the agent is told (`context`), how a checkout is built (`provision`), what the session looks like (`layout`, `program`), what happens around it (`open`, `kill`), what the list calls its rows and shows for them (`picker.remote_label`, `preview`), what finishing means (`close`), and how it recognises its agent waiting (`status.needs_input`). What it cannot decide is [what must not become configurable](#what-must-not-become-configurable).
 

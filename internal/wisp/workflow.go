@@ -247,6 +247,9 @@ func (c Config) builtinResolved() Workflow {
 // bundle, if it set them" is one copy too many.
 func (w *Workflow) applyBundle(bundle Workflow, src string) {
 	w.Dir = bundle.Dir
+	if bundle.SeedFS != nil {
+		w.SeedFS = bundle.SeedFS
+	}
 	// Its notes come with it. Loading a bundle is the only thing that can produce an
 	// unknown-key note, and appending them at one of the two call sites meant `wisp open`
 	// reported a typo while `wisp workflow show`, the command whose whole job is explaining a
@@ -261,6 +264,26 @@ func (w *Workflow) applyBundle(bundle Workflow, src string) {
 	}
 	if bundle.Description != "" {
 		w.Description = bundle.Description
+	}
+}
+
+// applyBuiltinBundle lays the shipped `default` bundle over the floor when nothing else loaded.
+//
+// The floor, builtinWorkflow(), stays what it always was: overlay cannot unset a key, so a floor
+// carrying a seed would make a bare workflow unreachable from any bundle. What "the built-in"
+// means to a workspace is the floor plus this file, and every key it supplies is labelled
+// built-in because that is what it is. Name, Addr and Dir are left alone: nothing named a bundle.
+func (w *Workflow) applyBuiltinBundle() {
+	b, ok := shippedBundle("default")
+	if !ok {
+		return
+	}
+	w.overlay("built-in", b, "")
+	if b.SeedFS != nil {
+		w.SeedFS = b.SeedFS
+	}
+	if b.Description != "" {
+		w.Description = b.Description
 	}
 }
 
@@ -952,6 +975,8 @@ func (c Config) resolveWorkflow(item Item, oneShot string) Workflow {
 	// is what makes "mostly this workflow, but this one key differently" work.
 	if loaded && !w.OneShot {
 		w.applyBundle(bundle, addr)
+	} else if !loaded {
+		w.applyBuiltinBundle()
 	}
 
 	// The user config is yours by definition and is honoured whole.

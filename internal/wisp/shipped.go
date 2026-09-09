@@ -20,8 +20,9 @@ import (
 //go:embed bundles
 var shippedFS embed.FS
 
-// shippedNames is the listing order. `default` is the built-in and stays first.
-var shippedNames = []string{"default"}
+// shippedNames is the listing order. `default` is the built-in and stays first; it is the
+// workspace workflow under wisp's own name. `minimal` is the floor with no seed.
+var shippedNames = []string{"default", "workspace", "scratch", "minimal"}
 
 func isShipped(name string) bool { return slices.Contains(shippedNames, name) }
 

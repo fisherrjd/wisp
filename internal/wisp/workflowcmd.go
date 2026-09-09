@@ -1,6 +1,7 @@
 package wisp
 
 import (
+	"io/fs"
 	"bufio"
 	"bytes"
 	"errors"
@@ -245,7 +246,19 @@ var workflowKeys = []struct {
 	{"branch", func(_ Config, w Workflow) string { return w.Branch }},
 	{"worktree", func(_ Config, w Workflow) string { return w.Worktree }},
 	{"parent", func(_ Config, w Workflow) string { return w.Item.Parent }},
-	{"seed", func(c Config, w Workflow) string { return c.displayPath(w.Item.Seed) }},
+	{"seed", func(c Config, w Workflow) string {
+		// A shipped seed has no path to print, so the files themselves are the value.
+		if w.SeedFS != nil {
+			var names []string
+			if ents, err := fs.ReadDir(w.SeedFS, "."); err == nil {
+				for _, e := range ents {
+					names = append(names, e.Name())
+				}
+			}
+			return strings.Join(names, ", ") + " (shipped)"
+		}
+		return c.displayPath(w.Item.Seed)
+	}},
 	{"layout", func(_ Config, w Workflow) string { return layoutSummary(w.Layout) }},
 	{"source", func(c Config, w Workflow) string { return c.displayPath(w.Hooks.Source) }},
 	{"new", func(c Config, w Workflow) string { return c.displayPath(w.Hooks.New) }},
@@ -446,6 +459,7 @@ func (c Config) printWorkflow(w Workflow, item string) {
 func (c Config) resolveAddr(addr string) Workflow {
 	w := c.builtinResolved()
 	if addr == "" {
+		w.applyBuiltinBundle()
 		c.gateScripts(&w)
 		return w
 	}
@@ -456,6 +470,7 @@ func (c Config) resolveAddr(addr string) Workflow {
 		if !errors.Is(err, errSilentBuiltin) {
 			w.Notes = append(w.Notes, err.Error())
 		}
+		w.applyBuiltinBundle()
 		c.gateScripts(&w)
 		return w
 	}

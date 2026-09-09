@@ -1,0 +1,19 @@
+# notes only. Every bare name is filed under _adhoc, so there is no repo, no
+# checkout and no worktree: one agent window at the workspace root and a
+# notes.md. The tracker is whatever the workspace configures; this workflow
+# adds no source of its own.
+
+name: scratch
+description: notes only; one agent window, no checkout, every name filed under _adhoc
+
+program: claude
+
+layout:
+  - window: agent
+    cwd: workspace
+    run: "{program} {prompt}"
+    focus: true
+
+item:
+  seed: seed
+  parent: _adhoc

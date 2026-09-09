@@ -181,8 +181,9 @@ Four things can make wisp start a process, and each is read and accepted once be
 wisp workflow              what is in effect, key by key, and which file set each
 wisp workflow list         everything addressable from here
 wisp workflow init solo    a starting point: the built-in, spelled out
-wisp workflow init t --from default
-                           the same, from any bundle wisp ships
+wisp workflow init t --from scratch
+                           the same, from any bundle wisp ships:
+                           default (= workspace), scratch, minimal
 wisp workflow use solo     bind to it; --here binds the workspace instead
 wisp workflow accept       read everything this workspace would run, and allow it
 wisp workflow accept ./ship

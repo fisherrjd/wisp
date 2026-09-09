@@ -1,7 +1,6 @@
-# wisp's own workflow, the one every other falls back to key by key, spelled
-# out. `wisp workflow init <name>` starts from a copy of this file, and it is
-# the same workflow as `workspace`: a tracker, a checkout per repo, and a
-# folder with notes and a plan for every item.
+# the built-in floor spelled out: what wisp does with no seed files and no
+# hooks. `default` is this plus a seed; `wisp workflow init --from minimal`
+# starts from here.
 #
 # a wisp workflow. The directory is the unit: this file plus any scripts it
 # names is the whole thing, and copying the directory copies the workflow.
@@ -10,8 +9,8 @@
 # workflow, one key at a time, so a workflow that changes one thing is four
 # lines long.
 
-name: default
-description: a tracker, a worktree per repo, and notes plus a plan for every item
+name: minimal
+description: one agent at the workspace root, a shell per worktree; no seed files
 
 # The agent. It is what {program} means in the layout below.
 program: claude
@@ -52,13 +51,8 @@ layout:
 # directory rather than to the workspace, which is what lets the bundle be
 # copied to another machine and still find its own scripts.
 #
-# With no provision: wisp builds worktrees itself: git worktree add from
-# origin's default branch (or attaches the branch if it exists), copies
-# .envrc, default.nix and the other untracked toolchain files from the
-# checkout, direnv allow when the checkout's own is already allowed, and
-# installs by lockfile when `install:` is on. A workspace that has
-# .claude/scripts/provision-worktree.sh runs that instead, once it has been
-# read and accepted.
+# Left unset here, the built-in provision is .claude/scripts/provision-worktree.sh
+# under the workspace root, run only once it has been read and accepted.
 #
 # hooks:
 #   source: bin/items.sh        # where items come from, instead of the vault
@@ -80,13 +74,14 @@ layout:
 #           Unset, wisp ties it to a repo and asks when it cannot tell; _adhoc
 #           files every bare name there without asking.
 #
-item:
-  seed: seed
+# item:
+#   seed: seed
 #   parent: _adhoc
 
 # The word the picker uses for rows that came from the source.
-picker:
-  remote_label: gitlab
+#
+# picker:
+#   remote_label: gitlab
 
 # How this workflow recognises its agent waiting on you, matched against the
 # pane. The line below is out of Claude Code's permission dialog, so it is
