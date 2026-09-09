@@ -148,7 +148,7 @@ $ wisp new https://gitlab.example.com/g/repoa/-/issues/7
 repoa/7-from-a-link
 ```
 
-Called as `<script> --url <url>`, with no stdin. It prints one object in the same shape, or nothing at all when it has no opinion about this link, which is a normal state rather than a failure: not every tracker can resolve every link. A non-zero exit means the same thing, and wisp says so in its own words, naming the script so the next place to look is obvious:
+Called as `<script> --url <url>`, with no stdin. It prints one object in the same shape, or nothing at all when it has no opinion about this link, which is a normal state rather than a failure: not every tracker can resolve every link. **More than one object is refused by name**: a source that ignores its arguments and lists the whole tracker looks, from here, exactly like one that answered, and naming an item after whatever happened to be row one was a silent wrong answer to a question that was never heard. A non-zero exit means the same thing, and wisp says so in its own words, naming the script so the next place to look is obvious:
 
 ```
 $ wisp new https://example.com/nope
@@ -199,6 +199,52 @@ With no `source:` set, the built-in GitLab source runs, unchanged. Existing conf
 If both are set, **the hook wins and wisp says nothing**. That is worth stating plainly because it is the one place the "an empty source and a broken one must look different" rule is not applied to itself: a workspace with `gitlab.group` filled in and a `source` hook somewhere up the workflow stack quietly stops querying GitLab, and the only way to see that is `wisp workflow`, where the `source` row names the script and the layer it came from. Merging the two lists would be worse, but a line saying which one is off would be better than neither.
 
 A remote workspace's source is the far side's business entirely: this end asks for its board and never learns whether a hook was involved.
+
+---
+
+## `new:` — how an item gets its name
+
+Runs when something is typed into `ctrl-n` or handed to `wisp new`, before wisp decides anything about it.
+
+```yaml
+hooks:
+    new: bin/new.sh
+```
+
+```
+new.sh <input>            the typed text as the one argument; everything wisp worked out on stdin
+```
+
+stdin is one JSON object:
+
+```json
+{
+  "input": "retry backoff",
+  "default": "payments-api/retry-backoff",
+  "repo": "payments-api",
+  "repos": ["payments-api", "webhooks-worker"],
+  "parent": "",
+  "url": false,
+  "workspace": "/Users/you/work",
+  "vault": "working_items"
+}
+```
+
+`default` is the name wisp would give the item on its own: the repo it inferred from your cwd or from there being only one, or `item.parent`, or `_adhoc`. For a pasted link it is empty, because naming one of those costs a network round trip the hook may be about to make unnecessary. `repo` is the checkout the name was tied to, when one was: the picker's choice, or the inferred one.
+
+The hook prints **one object, or nothing**:
+
+```json
+{"name": "payments-api/1042-retry-backoff", "title": "Retry with backoff on 502"}
+```
+
+Nothing means no opinion, and wisp's own naming runs: `default`, or the built-in link handling for a URL. A non-zero exit is a refusal, and the last line of stderr is what the person sees, with the typed text left on the line for a second try. That is how a tracker that will not file work without a ticket says so.
+
+What wisp checks regardless: the name is exactly two legal levels inside the vault, the same rule every name from a hook passes. A workflow may decide what an item is called. It may not decide what a name is allowed to be.
+
+**A separate hook rather than a third mode on `source`**, and the reason is a script that already exists. A source that ignores its arguments and lists the whole tracker would, asked `--new`, answer with a list, and wisp would name the item after row one. A key nobody has set cannot be answered by accident. The same hazard sat under `--url`, which is why both now refuse more than one object rather than taking the first.
+
+What this buys: a GitLab workflow files by ticket, opening the issue on the way; a GitHub one runs `gh issue create` and files by the number it gets back; a vault with templates seeds the folder from one, though for that the declarative [`item.seed`](workflows.md#the-keys) is the shorter route.
 
 ---
 
@@ -353,6 +399,8 @@ The output ceiling was the second place, and it is the one entry here that has m
 ---
 
 ## What changed, and why
+
+**`--url` no longer takes the first row of a list.** A source hook that ignored its arguments created the first item it listed, silently, every time a link was pasted. It now errors, naming the script and the count. `new` was given its own key rather than a mode on `source` for the same reason.
 
 Four decisions on this page were kept without change, and they are the load-bearing ones:
 

@@ -68,6 +68,14 @@ func (i Item) Key() string {
 	return i.Name
 }
 
+// IID is the ticket number in the name, or "" for an item that has none.
+func (i Item) IID() string {
+	if m := iidRe.FindStringSubmatch(i.Name); m != nil {
+		return m[2]
+	}
+	return ""
+}
+
 // Repo is the directory the item belongs to, or "" for _adhoc items, which have no repo.
 func (i Item) Repo() string {
 	repo, _, ok := strings.Cut(i.Name, "/")

@@ -112,6 +112,8 @@ Make an item. Three input shapes, told apart by the input itself rather than by 
 | `some name`, run inside `<workspace>/<repo>/` | `<repo>/some-name` |
 | `some name`, in a workspace with one repo | `<repo>/some-name` |
 | `some name`, otherwise | `_adhoc/some-name`, with a note on stderr naming the repos it could have gone under |
+| anything, with a `new` hook set | whatever the hook answers, or the row above when it has no opinion ([Hooks](hooks.md#new-how-an-item-gets-its-name)) |
+| `some name`, with `item.parent` set | `<parent>/some-name`, no inference, no note |
 
 Only the first `/` splits, so the result is always exactly two levels. An item that already exists is handed back rather than refused, which is what makes `ctrl-n` on an existing name just open it.
 

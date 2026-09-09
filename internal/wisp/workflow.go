@@ -43,9 +43,60 @@ const oneShotSource = "--workflow"
 // are relative to the workspace. Getting that wrong would make a bundle uncopyable.
 type Hooks struct {
 	Source    string `yaml:"source"`
+	New       string `yaml:"new"`
 	Context   string `yaml:"context"`
 	Close     string `yaml:"close"`
 	Provision string `yaml:"provision"`
+	Open      string `yaml:"open"`
+	Kill      string `yaml:"kill"`
+	Preview   string `yaml:"preview"`
+}
+
+// hookSlot is one hook by name, with a pointer at where it lives, so every place that has to
+// walk "all the hooks" walks one list.
+type hookSlot struct {
+	key string
+	dst *string
+}
+
+// slots is the hooks in the order they are printed and folded: where items come from, how one is
+// named, what the agent is told, what finishing does, how a worktree is built, and the three
+// around a session. There were seven hand-kept copies of this list before it existed, and a hook
+// added to six of them printed as "-" in the seventh forever.
+func (h *Hooks) slots() []hookSlot {
+	return []hookSlot{
+		{"source", &h.Source},
+		{"new", &h.New},
+		{"context", &h.Context},
+		{"close", &h.Close},
+		{"provision", &h.Provision},
+		{"open", &h.Open},
+		{"kill", &h.Kill},
+		{"preview", &h.Preview},
+	}
+}
+
+// ItemSpec is what a workflow says about the folder an item is: what a bare name is filed under
+// and what a new folder starts out holding. The name of the notes file and where `done:` lives
+// are deliberately not here: two workflows on one vault disagreeing about where the flag is would
+// be a vault that shows finished work as open depending on who is looking.
+type ItemSpec struct {
+	// Seed is a directory whose top-level files are copied into a new item folder, tokens
+	// expanded, never over a file that is already there. Resolved like a hook path: relative to
+	// the bundle in a bundle, to the workspace in a config file.
+	Seed string `yaml:"seed"`
+	// Parent is where a bare typed name lands. "" infers a repo and asks when it cannot; a name
+	// (usually _adhoc) files every bare name there without asking, which is what a notes-only
+	// workflow wants.
+	Parent string `yaml:"parent"`
+}
+
+// Picker is what a workflow says about the list. Words only: the list, the tree and the footer
+// stay wisp's, and a workflow decides what the rows are called rather than how they are drawn.
+type Picker struct {
+	// RemoteLabel is the word beside + in the legend and on the help page for rows that came
+	// from the source. gitlab by default, because that is what the built-in source is.
+	RemoteLabel string `yaml:"remote_label"`
 }
 
 // Window is one tmux window in a session's layout.
@@ -90,6 +141,8 @@ type Workflow struct {
 	Hooks    Hooks    `yaml:"hooks"`
 	Layout   []Window `yaml:"layout"`
 	Status   Status   `yaml:"status"`
+	Item     ItemSpec `yaml:"item"`
+	Picker   Picker   `yaml:"picker"`
 
 	// From records which layer supplied each key, which is the whole point of `wisp workflow`.
 	// "why did my session open like that" is otherwise unanswerable without reading Go.
@@ -135,6 +188,7 @@ func builtinWorkflow() Workflow {
 			{Window: "provision", When: "provisioning", Cwd: "workspace", Run: "{wisp} provision {item}"},
 		},
 		Status: Status{NeedsInput: needsInputMarker},
+		Picker: Picker{RemoteLabel: "gitlab"},
 	}
 }
 
@@ -147,7 +201,7 @@ func builtinWorkflow() Workflow {
 func (c Config) builtinResolved() Workflow {
 	w := builtinWorkflow()
 	w.From = map[string]string{}
-	for _, k := range []string{"program", "branch", "worktree", "provision", "needs_input", "layout"} {
+	for _, k := range []string{"program", "branch", "worktree", "provision", "needs_input", "layout", "remote_label"} {
 		w.From[k] = "built-in"
 	}
 	// The built-in's provisioning script is workspace-relative, as it has always been.
@@ -395,6 +449,8 @@ func (w *Workflow) overlay(src string, o Workflow, base string) {
 	set("branch", o.Branch, &w.Branch)
 	set("worktree", o.Worktree, &w.Worktree)
 	set("needs_input", o.Status.NeedsInput, &w.Status.NeedsInput)
+	set("parent", o.Item.Parent, &w.Item.Parent)
+	set("remote_label", o.Picker.RemoteLabel, &w.Picker.RemoteLabel)
 
 	hook := func(key, val string, dst *string) {
 		if val == "" {
@@ -405,10 +461,13 @@ func (w *Workflow) overlay(src string, o Workflow, base string) {
 		}
 		*dst, w.From[key] = val, src
 	}
-	hook("source", o.Hooks.Source, &w.Hooks.Source)
-	hook("context", o.Hooks.Context, &w.Hooks.Context)
-	hook("close", o.Hooks.Close, &w.Hooks.Close)
-	hook("provision", o.Hooks.Provision, &w.Hooks.Provision)
+	theirs, mine := o.Hooks.slots(), w.Hooks.slots()
+	for i := range theirs {
+		hook(theirs[i].key, *theirs[i].dst, mine[i].dst)
+	}
+	// A seed directory is data rather than a program, but it is addressed exactly like one: the
+	// bundle is the unit that gets copied, and a template outside it would not come along.
+	hook("seed", o.Item.Seed, &w.Item.Seed)
 
 	if o.Layout != nil {
 		w.Layout, w.From["layout"] = o.Layout, src
@@ -427,13 +486,19 @@ type workflowOverlay struct {
 	Hooks    Hooks    `yaml:"hooks"`
 	Layout   []Window `yaml:"layout"`
 	Status   Status   `yaml:"status"`
+	Item     ItemSpec `yaml:"item"`
+	Picker   Picker   `yaml:"picker"`
 
 	// The flat spellings, for a config file that would rather not nest a single hook under
 	// `hooks:`. Both are accepted; the nested one wins if somebody writes both.
 	Source    string `yaml:"source"`
+	New       string `yaml:"new"`
 	Context   string `yaml:"context"`
 	Close     string `yaml:"close"`
 	Provision string `yaml:"provision"`
+	Open      string `yaml:"open"`
+	Kill      string `yaml:"kill"`
+	Preview   string `yaml:"preview"`
 }
 
 // workflow folds the two accepted spellings into one shape, and says when a file used both.
@@ -444,6 +509,7 @@ func (o workflowOverlay) workflow() (Workflow, []string) {
 	w := Workflow{
 		Program: o.Program, Branch: o.Branch, Worktree: o.Worktree,
 		Hooks: o.Hooks, Layout: o.Layout, Status: o.Status,
+		Item: o.Item, Picker: o.Picker,
 	}
 	var notes []string
 	fold := func(name string, flat string, nested *string) {
@@ -455,10 +521,11 @@ func (o workflowOverlay) workflow() (Workflow, []string) {
 			notes = append(notes, fmt.Sprintf("%s is set both as `%s:` and under `hooks:`; the one under hooks wins", name, name))
 		}
 	}
-	fold("source", o.Source, &w.Hooks.Source)
-	fold("context", o.Context, &w.Hooks.Context)
-	fold("close", o.Close, &w.Hooks.Close)
-	fold("provision", o.Provision, &w.Hooks.Provision)
+	flat := Hooks{Source: o.Source, New: o.New, Context: o.Context, Close: o.Close, Provision: o.Provision, Open: o.Open, Kill: o.Kill, Preview: o.Preview}
+	flats, nested := flat.slots(), w.Hooks.slots()
+	for i := range flats {
+		fold(flats[i].key, *flats[i].dst, nested[i].dst)
+	}
 	return w, notes
 }
 
@@ -511,11 +578,9 @@ func executableKeys(w Workflow) []string {
 	if w.Program != "" {
 		keys = append(keys, "program")
 	}
-	for _, h := range []struct {
-		name, val string
-	}{{"source", w.Hooks.Source}, {"context", w.Hooks.Context}, {"close", w.Hooks.Close}, {"provision", w.Hooks.Provision}} {
-		if h.val != "" {
-			keys = append(keys, h.name)
+	for _, h := range w.Hooks.slots() {
+		if *h.dst != "" {
+			keys = append(keys, h.key)
 		}
 	}
 	for _, win := range w.Layout {
@@ -594,15 +659,7 @@ func (c Config) acceptedBytes(key string, raw []byte) bool {
 // failed open for the built-in's `provision:` default and nothing else.
 func (c Config) gateScripts(w *Workflow) {
 	root := resolvePath(c.Workspace)
-	for _, h := range []struct {
-		key string
-		dst *string
-	}{
-		{"source", &w.Hooks.Source},
-		{"context", &w.Hooks.Context},
-		{"close", &w.Hooks.Close},
-		{"provision", &w.Hooks.Provision},
-	} {
+	for _, h := range w.Hooks.slots() {
 		path := *h.dst
 		if path == "" {
 			continue
@@ -679,7 +736,8 @@ func (c Config) gatedScripts(hooks Hooks, base string) []scriptRef {
 	root := resolvePath(c.Workspace)
 	var out []scriptRef
 	seen := map[string]bool{}
-	for _, val := range []string{hooks.Source, hooks.Context, hooks.Close, hooks.Provision} {
+	for _, h := range hooks.slots() {
+		val := *h.dst
 		if val == "" {
 			continue
 		}
@@ -755,15 +813,10 @@ func resolvePath(p string) string {
 // and copyable, which is the property a relative path out of it destroys.
 func stripBundleEscapes(dir string, w *Workflow) []string {
 	var notes []string
-	for _, h := range []struct {
-		key string
-		dst *string
-	}{
-		{"source", &w.Hooks.Source},
-		{"context", &w.Hooks.Context},
-		{"close", &w.Hooks.Close},
-		{"provision", &w.Hooks.Provision},
-	} {
+	// The seed directory walks with the hooks: it is not run, but it is copied and hashed, and
+	// the two reasons a hook may not leave the bundle are exactly those.
+	slots := append(w.Hooks.slots(), hookSlot{"seed", &w.Item.Seed})
+	for _, h := range slots {
 		val := *h.dst
 		// Lexically, before any symlink is followed, because the two are different questions. A
 		// symlink inside the bundle is fine: WalkDir lists it and ReadFile follows it, so its
@@ -897,6 +950,19 @@ func (c Config) resolveWorkflow(item Item, oneShot string) Workflow {
 	if iw.Status.NeedsInput != "" {
 		w.Notes = append(w.Notes, "an item cannot set `status.needs_input`: the pane scan asks the workspace once, not each item")
 		iw.Status.NeedsInput = ""
+	}
+	// Same impossibility as source: the item does not exist until something has named it.
+	if iw.Hooks.New != "" {
+		w.Notes = append(w.Notes, "an item cannot set `new`: it names items, and this one has already been named")
+		iw.Hooks.New = ""
+	}
+	if iw.Item.Parent != "" {
+		w.Notes = append(w.Notes, "an item cannot set `item.parent`: it decides where new items land, and this one has already landed")
+		iw.Item.Parent = ""
+	}
+	if iw.Picker.RemoteLabel != "" {
+		w.Notes = append(w.Notes, "an item cannot set `picker.remote_label`: the legend is drawn once for the workspace, not per item")
+		iw.Picker.RemoteLabel = ""
 	}
 	// And an item does not get to start a process on the strength of its own frontmatter alone.
 	//
@@ -1054,6 +1120,21 @@ func (w *Workflow) validate() []string {
 	var notes []string
 	if strings.Contains(w.Worktree, "/") {
 		notes = append(notes, fmt.Sprintf("worktree %q contains a /: it names a directory inside `worktrees:`, not a path", w.Worktree))
+	}
+	if w.Item.Parent != "" && safeSegment(w.Item.Parent) == "" {
+		notes = append(notes, fmt.Sprintf("item.parent %q is not one directory name, ignored", w.Item.Parent))
+		w.Item.Parent = ""
+		delete(w.From, "parent")
+	}
+	if w.Item.Seed != "" && !isDir(w.Item.Seed) {
+		notes = append(notes, fmt.Sprintf("item.seed %s is not there, so new items get the plain stub", shortPath(w.Item.Seed)))
+		w.Item.Seed = ""
+		delete(w.From, "seed")
+	}
+	if l := w.Picker.RemoteLabel; l != "" && (strings.ContainsAny(l, " \t\n\r") || len(l) > 12) {
+		notes = append(notes, fmt.Sprintf("picker.remote_label %q is not one short word, ignored", l))
+		w.Picker.RemoteLabel = builtinWorkflow().Picker.RemoteLabel
+		w.From["remote_label"] = "built-in"
 	}
 	seen := map[string]bool{}
 	kept := w.Layout[:0:0]

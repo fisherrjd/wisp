@@ -171,21 +171,44 @@ func (c Config) ResolveURL(url string) (Item, error) {
 		return Item{}, fmt.Errorf("%s did not recognise that link (%v)\n\nname the item yourself instead:\n  wisp new <repo>/<name>",
 			shortPath(w.Hooks.Source), err)
 	}
-	for _, line := range strings.Split(string(out), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		var row sourceRow
-		if err := json.Unmarshal([]byte(line), &row); err != nil {
-			return Item{}, fmt.Errorf("source --url: %v is not one JSON object", line)
-		}
-		if !c.validSourceName(row.Name) {
-			return Item{}, fmt.Errorf("source --url: %q is not an item name", row.Name)
-		}
-		return Item{Name: row.Name, Title: row.Title}, nil
+	row, ok, err := c.oneObject(out, w.Hooks.Source, "source --url")
+	if err != nil || !ok {
+		return Item{}, err
 	}
-	return Item{}, nil
+	return Item{Name: row.Name, Title: row.Title}, nil
+}
+
+// oneObject reads the answer to a question about one item: exactly one JSON object, or nothing
+// at all, which is "no opinion" and is not an error.
+//
+// More than one object is refused by name rather than taken from the top. A source that ignores
+// its arguments and lists the whole tracker looks, from here, exactly like one that answered, and
+// naming an item after whatever happened to be row one was a silent wrong answer to a question
+// that was never heard. The name is checked as every name from a hook is: a program somebody else
+// wrote may decide what an item is called, not what a name is allowed to be.
+func (c Config) oneObject(out []byte, script, what string) (sourceRow, bool, error) {
+	var lines []string
+	for _, line := range strings.Split(string(out), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			lines = append(lines, line)
+		}
+	}
+	switch len(lines) {
+	case 0:
+		return sourceRow{}, false, nil
+	case 1:
+	default:
+		return sourceRow{}, false, fmt.Errorf("%s: %s answered with a list of %d, not one item; a hook asked about one item answers with one object, or nothing",
+			what, shortPath(script), len(lines))
+	}
+	var row sourceRow
+	if err := json.Unmarshal([]byte(lines[0]), &row); err != nil {
+		return sourceRow{}, false, fmt.Errorf("%s: %v is not one JSON object", what, lines[0])
+	}
+	if !c.validSourceName(row.Name) {
+		return sourceRow{}, false, fmt.Errorf("%s: %q is not an item name", what, row.Name)
+	}
+	return row, true, nil
 }
 
 // ErrNoURLSource means this workspace has no source hook, so `wisp new <url>` falls through to

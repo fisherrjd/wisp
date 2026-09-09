@@ -389,3 +389,45 @@ func TestHelpDocumentsWhatTheFooterOmits(t *testing.T) {
 		}
 	}
 }
+
+
+// A workflow that says where bare names land has answered the question the repo step asks, so
+// the step is skipped and the item is made where the workflow said.
+func TestParentSkipsTheRepoQuestion(t *testing.T) {
+	build := func(userCfg string) wisp.Config {
+		t.Helper()
+		t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+		t.Setenv("WISP_PROGRAM", "")
+		ws := t.TempDir()
+		for _, r := range []string{"alpha", "beta"} {
+			if err := os.MkdirAll(filepath.Join(ws, r, ".git"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		cfgPath := wisp.UserConfigPath()
+		if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(cfgPath, []byte(userCfg), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return wisp.Config{Workspace: ws, Vault: "working_items", Worktrees: ".worktrees", Name: "test", Accepted: map[string]string{}}
+	}
+	enter := tea.KeyMsg{Type: tea.KeyEnter}
+
+	m := model{cfg: build(""), mode: modeNew, input: "loose", width: 100, height: 30}
+	next, _ := m.Update(enter)
+	if got := next.(model).mode; got != modeNewRepo {
+		t.Fatalf("with two repos and no parent, enter should ask which: mode %d", got)
+	}
+
+	m = model{cfg: build("item:\n  parent: _adhoc\n"), mode: modeNew, input: "loose", width: 100, height: 30}
+	next, cmd := m.Update(enter)
+	nm := next.(model)
+	if nm.mode == modeNewRepo {
+		t.Fatal("item.parent is set, so there is nothing to ask")
+	}
+	if nm.chosen == nil || nm.chosen.Name != "_adhoc/loose" || cmd == nil {
+		t.Errorf("chosen = %v, want _adhoc/loose and a quit", nm.chosen)
+	}
+}

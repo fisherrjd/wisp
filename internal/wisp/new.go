@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // iidFromURL pulls the kind and the number out of a GitLab item URL. Work items, issues and
@@ -69,14 +70,17 @@ func (c Config) NewItemNoted(input string) (Item, string, error) {
 		return Item{Name: made.Name, State: StateFolder}, made.Note, nil
 	}
 
-	var name, note string
+	// The workflow gets a say before wisp decides anything: a `new` hook may name the item
+	// outright, and `item.parent` may say where a bare name lands. Both are workspace-level,
+	// which is why the item passed here is the zero one.
+	w := c.WorkflowFor(Item{}, "")
+
+	var name, note, title, repo string
+	isURL := strings.HasPrefix(input, "http://") || strings.HasPrefix(input, "https://")
 	switch {
-	case strings.HasPrefix(input, "http://"), strings.HasPrefix(input, "https://"):
-		resolved, err := c.itemFromURL(input)
-		if err != nil {
-			return Item{}, "", err
-		}
-		name = resolved
+	case isURL:
+		// Deferred: naming from a link needs the network, and a `new` hook that has an opinion
+		// makes that trip unnecessary. name stays empty here and is filled in below.
 	case strings.Contains(input, "/"):
 		// Taken as-is so an item can be filed under a repo directly. Each segment is still
 		// slugified, since these become directory names.
@@ -91,26 +95,105 @@ func (c Config) NewItemNoted(input string) (Item, string, error) {
 		if slug == "" {
 			return Item{}, "", fmt.Errorf("%q does not name an item", input)
 		}
-		if repo := c.InferRepo(); repo != "" {
-			name = repo + "/" + slug
-		} else {
-			name = "_adhoc/" + slug
-			if repos, _ := c.Repos(); len(repos) > 0 {
-				note = fmt.Sprintf("filed under _adhoc: nothing here says which repo it belongs to (%s)\n  wisp new <repo>/%s ties it to one", strings.Join(repos, ", "), slug)
+		switch {
+		case w.Item.Parent != "":
+			// The workflow has said where bare names go, so there is nothing to infer and
+			// nothing to note: this is the answer, not a fallback.
+			name = w.Item.Parent + "/" + slug
+		default:
+			repo = c.InferRepo()
+			if repo != "" {
+				name = repo + "/" + slug
+			} else {
+				name = "_adhoc/" + slug
+				if repos, _ := c.Repos(); len(repos) > 0 {
+					note = fmt.Sprintf("filed under _adhoc: nothing here says which repo it belongs to (%s)\n  wisp new <repo>/%s ties it to one", strings.Join(repos, ", "), slug)
+				}
 			}
 		}
 	}
 
-	it := Item{Name: name, State: StateFolder}
+	if w.Hooks.New != "" {
+		hooked, err := c.runNewHook(w, input, name, repo, isURL)
+		if err != nil {
+			return Item{}, "", err
+		}
+		if hooked.Name != "" {
+			// The hook answered, so wisp's own reasoning about where the name would have gone
+			// is moot, and so is the note explaining that reasoning.
+			name, title, note = hooked.Name, hooked.Title, ""
+		}
+	}
+	if name == "" && isURL {
+		resolved, err := c.itemFromURL(input)
+		if err != nil {
+			return Item{}, "", err
+		}
+		name = resolved
+	}
+
+	it := Item{Name: name, State: StateFolder, Title: title}
 	if isDir(c.ItemDir(it.Name)) {
 		// Already there: hand it back rather than failing, so ctrl-n on something that exists
 		// just opens it.
 		return it, note, nil
 	}
-	if err := c.makeItemDir(it); err != nil {
+	if err := c.makeItemDir(w, it); err != nil {
 		return Item{}, "", err
 	}
 	return it, note, nil
+}
+
+// newHookInput is what a `new` hook is told. Everything wisp already worked out is here, so a
+// hook that only wants to change one thing about the answer does not have to re-derive the rest.
+type newHookInput struct {
+	Input string `json:"input"`
+	// Default is the name wisp would give the item on its own, "" for a link, since naming one of
+	// those costs a network round trip the hook may be about to make unnecessary.
+	Default string `json:"default"`
+	// Repo is the checkout the name was tied to, when one was: the picker's choice, or the one
+	// InferRepo found. "" when nothing decided.
+	Repo      string   `json:"repo"`
+	Repos     []string `json:"repos"`
+	Parent    string   `json:"parent"`
+	URL       bool     `json:"url"`
+	Workspace string   `json:"workspace"`
+	Vault     string   `json:"vault"`
+}
+
+// runNewHook asks the workflow what this input should be called.
+//
+// A separate hook rather than a third mode on `source`, and the reason is a script that already
+// exists: a source that ignores its arguments and prints the whole tracker would, asked `--new`,
+// answer with a list, and wisp would name the item after row one. A key nobody has set cannot be
+// answered by accident. The same hazard sits under `--url`, which is why both now refuse more
+// than one object.
+func (c Config) runNewHook(w Workflow, input, def, repo string, isURL bool) (Item, error) {
+	repos, _ := c.Repos()
+	if repos == nil {
+		repos = []string{}
+	}
+	payload, err := json.Marshal(newHookInput{
+		Input: input, Default: def, Repo: repo, Repos: repos, Parent: w.Item.Parent,
+		URL: isURL, Workspace: c.Workspace, Vault: c.Vault,
+	})
+	if err != nil {
+		return Item{}, err
+	}
+	out, err := c.runHook(w.Hooks.New, payload, input)
+	if errors.Is(err, ErrHookTruncated) {
+		return Item{}, fmt.Errorf("%s answered, but the answer was cut: %v", shortPath(w.Hooks.New), err)
+	}
+	if err != nil {
+		// A refusal is the hook's to make: a tracker that will not file work without a ticket
+		// says so here, and the typed text stays on the line for a second try.
+		return Item{}, fmt.Errorf("%s would not make that item (%v)", shortPath(w.Hooks.New), err)
+	}
+	row, ok, err := c.oneObject(out, w.Hooks.New, "new")
+	if err != nil || !ok {
+		return Item{}, err
+	}
+	return Item{Name: row.Name, Title: row.Title}, nil
 }
 
 // InferRepo is the repo a bare item name belongs to, when the workspace can say without asking.
@@ -156,9 +239,12 @@ func (c Config) InferRepo() string {
 // had a folder here, and the vault is where its notes and its context file go.
 //
 // Safe to call on a folder that already exists, and it never overwrites an existing notes.md.
-func (c Config) makeItemDir(item Item) error {
+func (c Config) makeItemDir(w Workflow, item Item) error {
 	dir := c.ItemDir(item.Name)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	if err := c.writeSeeds(w, item); err != nil {
 		return err
 	}
 	notes := filepath.Join(dir, "notes.md")
@@ -166,6 +252,59 @@ func (c Config) makeItemDir(item Item) error {
 		return nil
 	}
 	return os.WriteFile(notes, []byte(fmt.Sprintf("# %s\n\n", item.Slug())), 0o644)
+}
+
+// writeSeeds copies the workflow's seed files into a new item folder.
+//
+// Top-level regular files only, never over a file that is there, and never a dotfile: a seed is
+// the shape a folder starts in, not a way to put an .envrc where a shell will read it. The files
+// are data and are not gated, and this is the rule that keeps that honest. A seeded
+// orchestration.md that names a program is still caught by the item gate on open, like any other.
+func (c Config) writeSeeds(w Workflow, item Item) error {
+	if w.Item.Seed == "" {
+		return nil
+	}
+	entries, err := os.ReadDir(w.Item.Seed)
+	if err != nil {
+		return nil // validate has already noted a missing seed dir; a vanished one is the same
+	}
+	dir := c.ItemDir(item.Name)
+	vars := c.seedVars(w, item)
+	for _, e := range entries {
+		name := e.Name()
+		if !e.Type().IsRegular() || strings.HasPrefix(name, ".") || safeSegment(name) == "" {
+			continue
+		}
+		dst := filepath.Join(dir, name)
+		if exists(dst) {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(w.Item.Seed, name))
+		if err != nil {
+			return fmt.Errorf("seed %s: %w", name, err)
+		}
+		if err := os.WriteFile(dst, []byte(Expand(string(raw), vars)), 0o644); err != nil {
+			return fmt.Errorf("seed %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
+// seedVars is the template vocabulary a seed file sees. Item facts only: a seed is written
+// before any session exists, so there is no branch, worktree or prompt to offer yet.
+func (c Config) seedVars(w Workflow, item Item) map[string]string {
+	parent, _, _ := strings.Cut(item.Name, "/")
+	return map[string]string{
+		"item":      item.Name,
+		"slug":      item.Slug(),
+		"repo":      item.Repo(),
+		"iid":       item.IID(),
+		"title":     item.Title,
+		"date":      time.Now().Format("2006-01-02"),
+		"parent":    parent,
+		"workspace": c.Workspace,
+		"vault":     c.Vault,
+	}
 }
 
 // itemFromURL turns a pasted link into <repo>/<iid>-<slug>.

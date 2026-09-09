@@ -432,19 +432,20 @@ func (c Config) Open(item Item, oneShot string, log func(string)) error {
 
 	if session == "" {
 		session = c.SessionName(item.Name)
-		// An item picked straight off GitLab has never had a folder here. Make it now: the vault
-		// is where its notes and its context file go, and without one WriteContext wrote nothing,
-		// so the agent started with no prompt at all, not even the name of the item it was on.
-		if !isDir(c.ItemDir(item.Name)) {
-			if err := c.makeItemDir(item); err != nil {
-				return fmt.Errorf("could not create the item folder: %w", err)
-			}
-		}
 		// Resolved once, here, and threaded through: every layer below reads three files, and
 		// resolving per repo in a loop would read them again for each one.
 		w := c.WorkflowFor(item, oneShot)
 		for _, note := range w.Notes {
 			log(note)
+		}
+		// An item picked straight off the source has never had a folder here. Make it now: the
+		// vault is where its notes and its context file go, and without one WriteContext wrote
+		// nothing, so the agent started with no prompt at all, not even the name of the item it
+		// was on. After the workflow, because the folder starts out as whatever it seeds.
+		if !isDir(c.ItemDir(item.Name)) {
+			if err := c.makeItemDir(w, item); err != nil {
+				return fmt.Errorf("could not create the item folder: %w", err)
+			}
 		}
 		entries, err := c.Manifest(w, item)
 		if err != nil {

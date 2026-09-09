@@ -393,7 +393,8 @@ func (m model) updateNew(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// from the picker nothing ever would: it runs at the workspace root, so the inference
 		// `wisp new` gets from your cwd is not available here. One repo needs no asking, and
 		// NewItem picks it on its own.
-		if in := strings.TrimSpace(m.input); in != "" && !strings.Contains(in, "/") && !strings.HasPrefix(in, "http") {
+		if in := strings.TrimSpace(m.input); in != "" && !strings.Contains(in, "/") && !strings.HasPrefix(in, "http") &&
+			m.cfg.WorkflowFor(wisp.Item{}, "").Item.Parent == "" {
 			if repos, err := m.cfg.Repos(); err == nil && len(repos) > 1 {
 				m.repoChoices = append(append([]string{}, repos...), "")
 				m.repoCursor = 0

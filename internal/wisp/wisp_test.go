@@ -180,7 +180,7 @@ func TestMakeItemDir(t *testing.T) {
 	c := Config{Workspace: ws, Vault: "working_items"}
 	it := Item{Name: "myrepo/189-some-title"}
 
-	if err := c.makeItemDir(it); err != nil {
+	if err := c.makeItemDir(builtinWorkflow(), it); err != nil {
 		t.Fatal(err)
 	}
 	notes := filepath.Join(c.ItemDir(it.Name), "notes.md")
@@ -197,7 +197,7 @@ func TestMakeItemDir(t *testing.T) {
 	if err := os.WriteFile(notes, []byte("# mine\n\nreal work\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.makeItemDir(it); err != nil {
+	if err := c.makeItemDir(builtinWorkflow(), it); err != nil {
 		t.Fatal(err)
 	}
 	if body, _ := os.ReadFile(notes); string(body) != "# mine\n\nreal work\n" {
@@ -587,7 +587,7 @@ func TestItemDoneRoundTripsThroughTheVault(t *testing.T) {
 	dir := t.TempDir()
 	c := Config{Workspace: dir, Vault: "working_items", Name: "t"}
 	for _, name := range []string{"repo/1-one", "repo/2-two"} {
-		if err := c.makeItemDir(Item{Name: name}); err != nil {
+		if err := c.makeItemDir(builtinWorkflow(), Item{Name: name}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -629,7 +629,7 @@ func TestItemDoneRoundTripsThroughTheVault(t *testing.T) {
 func TestNoteIsEmptySeesPastTheStub(t *testing.T) {
 	dir := t.TempDir()
 	c := Config{Workspace: dir, Vault: "working_items", Name: "t"}
-	if err := c.makeItemDir(Item{Name: "repo/1-thing"}); err != nil {
+	if err := c.makeItemDir(builtinWorkflow(), Item{Name: "repo/1-thing"}); err != nil {
 		t.Fatal(err)
 	}
 	// makeItemDir writes "# <slug>\n\n" and nothing else. That is wisp's writing, not yours.
@@ -666,7 +666,7 @@ func TestNoteIsEmptySeesPastTheStub(t *testing.T) {
 func TestCloseOutWritesTheLineAndTheFlag(t *testing.T) {
 	dir := t.TempDir()
 	c := Config{Workspace: dir, Vault: "working_items", Name: "t"}
-	if err := c.makeItemDir(Item{Name: "repo/1-thing"}); err != nil {
+	if err := c.makeItemDir(builtinWorkflow(), Item{Name: "repo/1-thing"}); err != nil {
 		t.Fatal(err)
 	}
 	note := c.NotesPath("repo/1-thing")
@@ -706,7 +706,7 @@ func TestCloseOutWritesTheLineAndTheFlag(t *testing.T) {
 func TestCloseOutBareLeavesTheNoteAlone(t *testing.T) {
 	dir := t.TempDir()
 	c := Config{Workspace: dir, Vault: "working_items", Name: "t"}
-	if err := c.makeItemDir(Item{Name: "_adhoc/thing"}); err != nil {
+	if err := c.makeItemDir(builtinWorkflow(), Item{Name: "_adhoc/thing"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := c.CloseOut("_adhoc/thing", true, ""); err != nil {

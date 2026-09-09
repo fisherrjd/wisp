@@ -232,11 +232,18 @@ var workflowKeys = []struct {
 	{"program", func(_ Config, w Workflow) string { return w.Program }},
 	{"branch", func(_ Config, w Workflow) string { return w.Branch }},
 	{"worktree", func(_ Config, w Workflow) string { return w.Worktree }},
+	{"parent", func(_ Config, w Workflow) string { return w.Item.Parent }},
+	{"seed", func(c Config, w Workflow) string { return c.displayPath(w.Item.Seed) }},
 	{"layout", func(_ Config, w Workflow) string { return layoutSummary(w.Layout) }},
 	{"source", func(c Config, w Workflow) string { return c.displayPath(w.Hooks.Source) }},
+	{"new", func(c Config, w Workflow) string { return c.displayPath(w.Hooks.New) }},
 	{"context", func(c Config, w Workflow) string { return c.displayPath(w.Hooks.Context) }},
 	{"close", func(c Config, w Workflow) string { return c.displayPath(w.Hooks.Close) }},
 	{"provision", func(c Config, w Workflow) string { return c.displayPath(w.Hooks.Provision) }},
+	{"open", func(c Config, w Workflow) string { return c.displayPath(w.Hooks.Open) }},
+	{"kill", func(c Config, w Workflow) string { return c.displayPath(w.Hooks.Kill) }},
+	{"preview", func(c Config, w Workflow) string { return c.displayPath(w.Hooks.Preview) }},
+	{"remote_label", func(_ Config, w Workflow) string { return w.Picker.RemoteLabel }},
 	{"needs_input", func(_ Config, w Workflow) string { return w.Status.NeedsInput }},
 }
 
@@ -511,9 +518,32 @@ layout:
 #
 # hooks:
 #   source: bin/items.sh        # where items come from, instead of the vault
+#   new: bin/new.sh             # how a typed name or link becomes an item
 #   context: bin/context.sh     # what the agent is told when a session opens
 #   close: bin/close.sh         # what happens when an item is closed out
 #   provision: bin/worktree.sh  # how a worktree is built
+#   open: bin/open.sh           # after the session is built, before you land in it
+#   kill: bin/kill.sh           # after a session is killed
+#   preview: bin/preview.sh     # what the picker shows for an item with no session
+
+# What a new item's folder starts out as, and where a bare name is filed.
+#
+#   seed    a directory beside this file; its top-level files are copied into
+#           every new item, with {item} {slug} {repo} {iid} {title} {date}
+#           {parent} {workspace} {vault} filled in, never over a file already
+#           there. notes.md stays the one file wisp guarantees.
+#   parent  where "wisp new some-name" lands when the name has no repo in it.
+#           Unset, wisp ties it to a repo and asks when it cannot tell; _adhoc
+#           files every bare name there without asking.
+#
+# item:
+#   seed: seed
+#   parent: _adhoc
+
+# The word the picker uses for rows that came from the source.
+#
+# picker:
+#   remote_label: gitlab
 
 # How this workflow recognises its agent waiting on you, matched against the
 # pane. The default below is a line out of Claude Code's permission dialog, so
@@ -719,16 +749,11 @@ func (c Config) workflowEdit(addr string) error {
 // the interesting line in a script somebody else wrote is exactly as likely to be the last one as
 // the first.
 func (c Config) printHookBodies(hooks Hooks, base string) {
-	for _, hook := range []struct{ key, val string }{
-		{"source", hooks.Source},
-		{"context", hooks.Context},
-		{"close", hooks.Close},
-		{"provision", hooks.Provision},
-	} {
-		if hook.val == "" {
+	for _, hook := range hooks.slots() {
+		if *hook.dst == "" {
 			continue
 		}
-		script := hook.val
+		script := *hook.dst
 		if !filepath.IsAbs(script) {
 			script = filepath.Join(base, script)
 		}

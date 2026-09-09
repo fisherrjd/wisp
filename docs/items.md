@@ -24,6 +24,8 @@ working_items/
 
 Only `notes.md` is guaranteed, created with the folder. Everything else is optional, and items in practice hold whatever else the work needed.
 
+What a folder starts out holding is the workflow's to say: `item.seed` names a directory whose top-level files are copied into every new item, with `{item} {slug} {repo} {iid} {title} {date} {parent} {workspace} {vault}` filled in, never over a file that is already there. A seeded `notes.md` replaces the `# <slug>` stub; anything else sits beside it. Dotfiles and subdirectories are not copied, so a seed is the shape a folder starts in and not a way to put an `.envrc` where a shell will read it ([Workflows](workflows.md#the-keys)).
+
 **Every subdirectory counts as an item**, not only the numbered ones. `wisp new <repo>/<name>` files an item under a repo without a ticket behind it, and requiring a leading number here meant wisp created those, opened them, and then left them out of its own list.
 
 Three directory names are skipped as infrastructure: `.git`, `.claude`, `.obsidian`. The vault is usually both a git repo and a markdown vault.

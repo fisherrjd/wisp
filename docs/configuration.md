@@ -60,7 +60,8 @@ The top-level key wins whenever the file mentions it at all, including when it s
 | `branch` | `feature/{slug}` | The branch an item's repo gets when its manifest does not name one. |
 | `worktree` | `{repo}--{slug}` | The directory name inside `worktrees:` for one repo's checkout. |
 | `provision` | `.claude/scripts/provision-worktree.sh` | Path to the provisioning script. The one place wisp has always run code you wrote. |
-| `source`, `context`, `close` | none | The other three hooks. Also spellable nested under `hooks:`, which wins if both are written, and says so. |
+| `source`, `new`, `context`, `close` | none | The other hooks. Also spellable nested under `hooks:`, which wins if both are written, and says so. |
+| `item.seed`, `item.parent`, `picker.remote_label` | none, none, `gitlab` | What a new item folder starts with, where a bare name lands, the picker's word for source rows. [Workflows](workflows.md#the-keys). |
 | `layout` | one `agent`, one per worktree, one `provision` | The session's tmux windows. |
 | `status.needs_input` | Claude Code's permission dialog line | The pane text that means an agent is waiting on a human. Workspace-level: an item that sets it is refused. |
 

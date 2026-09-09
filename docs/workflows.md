@@ -196,11 +196,13 @@ Two mechanisms, deliberately not one. The frontmatter says "this item is always 
 
 **The override belongs to the item, not to the session.** A session has nowhere durable to keep one: session state lives in tmux user options, which die with the tmux server, and an override you set once and lose on reboot is worse than not having it at all. The item folder is where per-item intent already lives, beside the repos and the branches, and items outlive sessions by design ([Items](items.md)).
 
-### An item may not override `source` or `status.needs_input`
+### An item may not override `source`, `new`, `item.parent`, `status.needs_input` or `picker.remote_label`
 
-Two keys, refused the same way and for the same shape of reason: an item is not the thing that gets to answer either question.
+Five keys, refused the same way and for the same shape of reason: an item is not the thing that gets to answer any of these questions.
 
-`source` is a bootstrapping impossibility rather than a policy call. It decides where items come from, so an item cannot have an opinion about it: the item does not exist until `source` has run.
+`source`, `new` and `item.parent` are bootstrapping impossibilities rather than policy calls. They decide where items come from and what a new one is called, so an item cannot have an opinion about them: the item does not exist until they have run.
+
+`picker.remote_label` is drawn once, in the legend, for the whole list.
 
 `status.needs_input` is resolved once for the whole workspace, because the pane scan runs over every live session at once on every repaint and per-row resolution would read three files per row ([`status`](#status)). An item's marker would therefore be reported and never consulted, which is worse than refusing it.
 
@@ -208,6 +210,7 @@ Writing either is not an error. It is dropped and named:
 
 ```
 --- an item cannot set `source`: it decides which items exist, and this one does not yet
+--- an item cannot set `new`: it names items, and this one has already been named
 --- an item cannot set `status.needs_input`: the pane scan asks the workspace once, not each item
 ```
 
@@ -234,6 +237,10 @@ A manifest's `repos[].branch` is explicit and per-repo. A workflow's `branch:` i
 | `hooks.source` | none | Where items come from. See [Hooks](hooks.md). |
 | `hooks.context` | none | What the agent is told. See [Hooks](hooks.md). |
 | `hooks.close` | none | What closing an item out does. See [Hooks](hooks.md). |
+| `hooks.new` | none | How a typed name or pasted link becomes an item. See [Hooks](hooks.md#new-how-an-item-gets-its-name). |
+| `item.seed` | none | A directory whose top-level files every new item folder starts with, tokens expanded, never over a file already there. Relative to the bundle in a bundle, to the workspace in a config file. |
+| `item.parent` | none | Where a bare typed name is filed. Unset, wisp ties it to a repo and asks when it cannot tell; `_adhoc` files every bare name there without asking. One directory name. |
+| `picker.remote_label` | `gitlab` | The word the picker uses for rows that came from the source. |
 | `layout` | one `agent`, one per worktree, one `provision` | The session's tmux windows. |
 | `status.needs_input` | Claude Code's permission dialog line | The pane text that means an agent is waiting on a human. |
 
