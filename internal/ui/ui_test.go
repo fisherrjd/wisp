@@ -431,3 +431,85 @@ func TestParentSkipsTheRepoQuestion(t *testing.T) {
 		t.Errorf("chosen = %v, want _adhoc/loose and a quit", nm.chosen)
 	}
 }
+
+// unboundWorkspace is a workspace with no .wisp.yaml and an empty user config: nothing names a
+// workflow, so the built-in runs by default rather than by choice.
+func unboundWorkspace(t *testing.T) wisp.Config {
+	t.Helper()
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("WISP_PROGRAM", "")
+	ws := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(ws, "working_items"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return wisp.Config{Workspace: ws, Vault: "working_items", Worktrees: ".worktrees", Name: "test", Accepted: map[string]string{}}
+}
+
+// stubAsked replaces the tmux-backed memory of "later" with a bool for the test's lifetime.
+func stubAsked(t *testing.T) *bool {
+	t.Helper()
+	asked := false
+	origAsked, origMark := wisp.WorkflowAsked, wisp.MarkWorkflowAsked
+	wisp.WorkflowAsked = func(string) bool { return asked }
+	wisp.MarkWorkflowAsked = func(string) { asked = true }
+	t.Cleanup(func() { wisp.WorkflowAsked, wisp.MarkWorkflowAsked = origAsked, origMark })
+	return &asked
+}
+
+func TestUnboundWorkspaceAsksOnceAndBinds(t *testing.T) {
+	cfg := unboundWorkspace(t)
+	stubAsked(t)
+
+	m := model{cfg: cfg, width: 120, height: 30}
+	next, _ := m.Update(candidatesMsg{})
+	nm := next.(model)
+	if nm.mode != modeBindWorkflow {
+		t.Fatalf("the first paint of an unbound workspace should ask: mode %d", nm.mode)
+	}
+	if len(nm.wfChoices) < 2 || nm.wfChoices[0].Addr != "default" || nm.wfChoices[len(nm.wfChoices)-1].Addr != "later" {
+		t.Fatalf("choices should start at the built-in and end at later: %+v", nm.wfChoices)
+	}
+
+	bound, _ := nm.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	bm := bound.(model)
+	if bm.mode != modeFilter {
+		t.Errorf("after binding the picker should be back on the list: mode %d", bm.mode)
+	}
+	raw, err := os.ReadFile(filepath.Join(cfg.Workspace, ".wisp.yaml"))
+	if err != nil || !strings.Contains(string(raw), "workflow: default") {
+		t.Errorf("binding should write the choice into .wisp.yaml, literally: %q %v", raw, err)
+	}
+
+	// Bound now, so a fresh picker does not ask.
+	again, _ := (model{cfg: cfg, width: 120, height: 30}).Update(candidatesMsg{})
+	if got := again.(model).mode; got != modeFilter {
+		t.Errorf("a bound workspace was asked again: mode %d", got)
+	}
+}
+
+func TestLaterIsRememberedForTheServer(t *testing.T) {
+	cfg := unboundWorkspace(t)
+	asked := stubAsked(t)
+
+	next, _ := (model{cfg: cfg, width: 120, height: 30}).Update(candidatesMsg{})
+	deferred, _ := next.(model).Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if got := deferred.(model).mode; got != modeFilter {
+		t.Errorf("esc should leave the list running the built-in: mode %d", got)
+	}
+	if !*asked {
+		t.Error("later was not recorded")
+	}
+	if exists := fileExists(filepath.Join(cfg.Workspace, ".wisp.yaml")); exists {
+		t.Error("later must write nothing")
+	}
+
+	again, _ := (model{cfg: cfg, width: 120, height: 30}).Update(candidatesMsg{})
+	if got := again.(model).mode; got != modeFilter {
+		t.Errorf("asked again after later: mode %d", got)
+	}
+}
+
+func fileExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
+}

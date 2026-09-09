@@ -438,6 +438,9 @@ func (c Config) Open(item Item, oneShot string, log func(string)) error {
 		for _, note := range w.Notes {
 			log(note)
 		}
+		if w.From["workflow"] == "" && !w.OneShot {
+			log("no workflow is bound here, so the built-in runs; `wisp workflow use <name> --here` binds one (`wisp workflow list` says what there is)")
+		}
 		// An item picked straight off the source has never had a folder here. Make it now: the
 		// vault is where its notes and its context file go, and without one WriteContext wrote
 		// nothing, so the agent started with no prompt at all, not even the name of the item it

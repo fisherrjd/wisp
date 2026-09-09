@@ -55,7 +55,7 @@ The top-level key wins whenever the file mentions it at all, including when it s
 
 | key | default | what it controls |
 |---|---|---|
-| `workflow` | the built-in | The bundle this file binds to. A bare name is one of yours under `~/.config/wisp/workflows/`, a leading `./` is one this workspace ships in `.wisp/workflows/`. |
+| `workflow` | the built-in | The bundle this file binds to. A bare name is one of yours under `~/.config/wisp/workflows/` or one wisp ships, a leading `./` is one this workspace ships in `.wisp/workflows/`. `default` written out is a choice, not a no-op: the picker stops asking. |
 | `program` | `claude` | The command run in the session's `agent` window. wisp appends the context prompt as one shell-quoted argument, so flags belong here. |
 | `branch` | `feature/{slug}` | The branch an item's repo gets when its manifest does not name one. |
 | `worktree` | `{repo}--{slug}` | The directory name inside `worktrees:` for one repo's checkout. |

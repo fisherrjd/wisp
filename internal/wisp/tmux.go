@@ -222,6 +222,23 @@ func hasRawSession(name string) bool {
 	return exec.Command("tmux", "has-session", "-t", "="+name).Run() == nil
 }
 
+// askedOption prefixes a server-level option per workspace, recording that the picker has asked
+// which workflow to bind and was told "later". Server-level for the same reason lastOption is:
+// each `wisp pick` in the home loop is a new process, so the answer has to outlive one, and dying
+// with the tmux server is the right lifetime for "not now".
+const askedOption = "@wisp_wf_asked_"
+
+// WorkflowAsked and MarkWorkflowAsked are variables so the picker's tests can stand in for tmux.
+var (
+	WorkflowAsked = func(ws string) bool {
+		out, err := tmux("show-option", "-sqv", askedOption+wsToken(ws))
+		return err == nil && out != ""
+	}
+	MarkWorkflowAsked = func(ws string) {
+		_ = exec.Command("tmux", "set-option", "-s", askedOption+wsToken(ws), "1").Run()
+	}
+)
+
 // Remember records a session as this workspace's most recent, so hopping back into the
 // workspace lands where you left it rather than resetting you to the picker.
 func Remember(ws, session string) {

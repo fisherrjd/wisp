@@ -99,6 +99,10 @@ A shipped bundle carries no scripts, and a test in the source holds that line. I
 
 ---
 
+## Binding a workspace
+
+`workflow: <addr>` in `<workspace>/.wisp.yaml` is what makes a workflow the workspace's. Three things write it: `wisp workflow use <addr> --here`, `wisp ws new --workflow <addr>` at birth, and the picker's first-run question, asked once when nothing binds one ([The picker](picker.md#first-run)). `workflow: default` is a real answer and is written as such: the built-in by choice is a different state from the built-in by default, and `wisp open` says so in the second case with one `---` line naming the command that ends it.
+
 ## Precedence
 
 A bundle is a bag of defaults, not an all-or-nothing switch. Naming a key next to `workflow:` overrides just that key, at any layer, which is what makes "mostly my workflow, but this workspace tracks work in Jira" a one-line change rather than a forked directory.

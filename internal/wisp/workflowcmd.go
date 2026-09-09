@@ -539,18 +539,43 @@ func (c Config) workflowInit(name, from string, here bool) error {
 // every workspace that does not say otherwise; the workspace file is "this is how work happens
 // here", and travels with the repos to everyone else who checks them out.
 func (c Config) workflowUse(addr string, here bool) error {
+	summary, err := c.bindWorkflow(addr, here)
+	if err != nil {
+		return err
+	}
+	fmt.Print(summary)
+	fmt.Printf("\n  wisp workflow   what that changed, key by key\n")
+	return nil
+}
+
+// BindWorkflow writes `workflow: <addr>` into this workspace's .wisp.yaml, for the picker's
+// first-run question. The summary is what workflowUse would have printed.
+func (c Config) BindWorkflow(addr string) (string, error) { return c.bindWorkflow(addr, true) }
+
+// Unbound reports that no layer names a workflow here, so the built-in is running by default
+// rather than by choice. A remote workspace is never unbound from this end: its files are the
+// far side's to bind.
+func (c Config) Unbound() bool {
+	if c.IsRemote() {
+		return false
+	}
+	return c.WorkflowFor(Item{}, "").From["workflow"] == ""
+}
+
+func (c Config) bindWorkflow(addr string, here bool) (string, error) {
 	addr = strings.TrimSpace(addr)
 	dir, err := c.WorkflowDir(addr)
 	if err != nil {
-		return fmt.Errorf("%v\n\na workflow is one name: `solo` for one of yours, `./solo` for one this workspace ships", err)
+		return "", fmt.Errorf("%v\n\na workflow is one name: `solo` for one of yours, `./solo` for one this workspace ships", err)
 	}
-	// `default` with no directory of yours by that name is the built-in, which is always there.
-	if !isDir(dir) && addr != "default" {
+	// `default` with no directory of yours by that name is the built-in, which is always there,
+	// and so is anything else wisp ships.
+	if !isDir(dir) && !isShipped(addr) {
 		flag := ""
 		if IsWorkspaceWorkflow(addr) {
 			flag = " --here"
 		}
-		return fmt.Errorf("no workflow %q at %s\n\nmake it first:\n  wisp workflow init %s%s\n\nor see what there is:\n  wisp workflow list",
+		return "", fmt.Errorf("no workflow %q at %s\n\nmake it first:\n  wisp workflow init %s%s\n\nor see what there is:\n  wisp workflow list",
 			addr, shortPath(dir), strings.TrimPrefix(addr, "./"), flag)
 	}
 
@@ -559,20 +584,19 @@ func (c Config) workflowUse(addr string, here bool) error {
 		path = filepath.Join(c.Workspace, MarkerFile)
 	}
 	if path == "" {
-		return fmt.Errorf("cannot locate a config directory to record this in\n\nset XDG_CONFIG_HOME, or use --here to record it in the workspace")
+		return "", fmt.Errorf("cannot locate a config directory to record this in\n\nset XDG_CONFIG_HOME, or use --here to record it in the workspace")
 	}
 	if err := setConfigKey(path, "workflow", addr); err != nil {
-		return err
+		return "", err
 	}
 
-	fmt.Printf("workflow: %s\n  in %s\n", addr, shortPath(path))
+	summary := fmt.Sprintf("workflow: %s\n  in %s\n", addr, shortPath(path))
 	if IsWorkspaceWorkflow(addr) {
 		if ok, _ := c.WorkflowAccepted(addr); !ok {
-			fmt.Printf("\nnothing of it runs until it has been read and accepted:\n  wisp workflow accept %s\n", addr)
+			summary += fmt.Sprintf("\nnothing of it runs until it has been read and accepted:\n  wisp workflow accept %s\n", addr)
 		}
 	}
-	fmt.Printf("\n  wisp workflow   what that changed, key by key\n")
-	return nil
+	return summary, nil
 }
 
 // setConfigKey writes one top-level key into a config file, leaving the rest of it as it was.

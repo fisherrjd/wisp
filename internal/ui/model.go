@@ -64,6 +64,7 @@ const (
 	modeFilter    mode = iota // typing narrows the list
 	modeNew                   // typing names a new item, or pastes a GitLab URL
 	modeNewRepo               // choosing which repo a bare new name belongs to
+	modeBindWorkflow          // the first-run question: which workflow runs this workspace
 	modeWorkspace             // the list is the machine and workspace tree, not items
 	modeNewWS                 // typing names a new workspace
 	modeNewHost               // typing names a machine to reach
@@ -110,6 +111,11 @@ type model struct {
 	// input across the step, so esc goes back to it intact.
 	repoChoices []string
 	repoCursor  int
+	// wfChoices and wfCursor are the modeBindWorkflow step, asked once per picker process when
+	// nothing binds a workflow here; wfAsked is the once.
+	wfChoices []wisp.WorkflowEntry
+	wfCursor  int
+	wfAsked   bool
 
 	query   string
 	preview string
@@ -184,6 +190,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = false
 		m.local = msg.board.Items
 		m.peers = msg.board.Peers
+		// The first paint of an unbound workspace asks which workflow runs here, once. After
+		// "later" the tmux server remembers, since the home loop starts a new picker per open.
+		if !m.wfAsked {
+			m.wfAsked = true
+			if m.mode == modeFilter && m.cfg.Unbound() && !wisp.WorkflowAsked(m.cfg.Name) {
+				m.enterBindWorkflow()
+			}
+		}
 		// Against the rows, not the peers: the rows include a header per machine, so clamping to
 		// the peer count would drag a cursor parked on a late row backwards on every reload.
 		if rows := len(m.wsRows()); m.wsCursor >= rows {
@@ -217,6 +231,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateNew(msg)
 		case modeNewRepo:
 			return m.updateNewRepo(msg)
+		case modeBindWorkflow:
+			return m.updateBindWorkflow(msg)
 		case modeWorkspace:
 			return m.updateWorkspace(msg)
 		case modeNewWS:
@@ -489,6 +505,78 @@ func (m model) updateNewRepo(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				i := (m.repoCursor + step) % n
 				if strings.HasPrefix(strings.ToLower(m.repoChoices[i]), ch) || (m.repoChoices[i] == "" && ch == "n") {
 					m.repoCursor = i
+					break
+				}
+			}
+		}
+		return m, nil
+	}
+}
+
+// enterBindWorkflow opens the first-run question. The choices are everything `wisp workflow
+// list` would show plus "later", in that order, so the built-in is the first answer and
+// declining is the last.
+func (m *model) enterBindWorkflow() {
+	m.wfChoices = append(m.cfg.ListWorkflows(""), wisp.WorkflowEntry{Addr: "later"})
+	m.wfCursor = 0
+	m.mode, m.status = modeBindWorkflow, ""
+}
+
+// updateBindWorkflow is the first-run question: ← → walk the choices, enter binds the highlighted
+// one into this workspace's .wisp.yaml, esc or "later" leaves the built-in running and is not
+// asked again while this tmux server lives.
+func (m model) updateBindWorkflow(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	n := len(m.wfChoices)
+	later := func() (tea.Model, tea.Cmd) {
+		wisp.MarkWorkflowAsked(m.cfg.Name)
+		m.mode = modeFilter
+		m.status = "running the built-in; `wisp workflow use <name> --here` binds one"
+		return m, nil
+	}
+	switch msg.String() {
+	case "esc", "ctrl+c":
+		return later()
+
+	case "enter":
+		e := m.wfChoices[m.wfCursor]
+		if e.Addr == "later" {
+			return later()
+		}
+		if e.Note != "" {
+			// A workspace bundle that has not been read yet, or a directory with no manifest.
+			// Neither can be bound from here: the first needs a person at a terminal, the
+			// second needs a file.
+			if e.Accepted || !wisp.IsWorkspaceWorkflow(e.Addr) {
+				m.status = e.Addr + ": " + e.Note
+			} else {
+				m.status = e.Addr + " has to be read first: wisp workflow accept " + e.Addr
+			}
+			return m, nil
+		}
+		summary, err := m.cfg.BindWorkflow(e.Addr)
+		if err != nil {
+			m.status = firstLine(err.Error())
+			return m, nil
+		}
+		m.mode = modeFilter
+		m.status = firstLine(summary)
+		return m, m.reload()
+
+	case "left", "shift+tab", "up", "ctrl+k", "h":
+		m.wfCursor = (m.wfCursor + n - 1) % n
+		return m, nil
+
+	case "right", "tab", "down", "ctrl+j", "l", " ":
+		m.wfCursor = (m.wfCursor + 1) % n
+		return m, nil
+
+	default:
+		if msg.Type == tea.KeyRunes && len(msg.Runes) == 1 {
+			ch := strings.ToLower(string(msg.Runes))
+			for step := 1; step <= n; step++ {
+				i := (m.wfCursor + step) % n
+				if strings.HasPrefix(strings.ToLower(strings.TrimPrefix(m.wfChoices[i].Addr, "./")), ch) {
+					m.wfCursor = i
 					break
 				}
 			}

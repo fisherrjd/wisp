@@ -24,6 +24,7 @@ The picker has seven, and each one owns every key while it is open. For the line
 | **filter** | the item list | the default | `esc` quits |
 | **new item** | a create line over the list | `ctrl-n` | `esc`, or `enter` to create |
 | **which repo** | a row of repos on the create line | `enter` on a bare name, with several repos | `esc` back to the name, `enter` to create |
+| **which workflow** | a row of workflows on the prompt line | the first paint of a workspace nothing binds a workflow to | `enter` binds it, `esc` later |
 | **workspaces** | the machine and workspace tree | `ctrl-w` | `esc`, `ctrl-w` |
 | **new workspace** | a create line over the tree | `n` in the tree | `esc` |
 | **add machine** | a create line over the tree | `a` in the tree | `esc` |
@@ -53,6 +54,12 @@ The picker has seven, and each one owns every key while it is open. For the line
 | `esc` `ctrl-c` | quit, leaving everything running |
 
 A bare name is asked which repo it belongs to before it is made, when there is more than one to choose from: the create line becomes `new <name> in  repo-a  repo-b  none`, `←` `→` or `tab` walk the choices, a letter jumps to the next repo starting with it, `enter` takes the highlighted one. It starts on the repo of the row under the cursor, since a new item is most often a sibling of the one you were looking at. `none` is last and never first, because `_adhoc` is where work goes when nothing ties it to a checkout, not where it goes by default. One repo is not a choice, so it is not asked. `esc` goes back to the name intact.
+
+### First run
+
+A workspace nothing binds a workflow to runs the built-in by default rather than by choice, and the first time the picker paints one it asks, once: the prompt line becomes `workflow  nothing binds one here, run  default  <yours>  <this workspace's>  later`. `←` `→` walk the choices, `enter` writes `workflow: <name>` into the workspace's `.wisp.yaml`, and `default` is written literally, because a choice is a record even when it is the built-in. `esc` or `later` leaves the built-in running and is remembered on the tmux server, so the home loop, which starts a new picker after every open, does not ask again until the server does. A workspace bundle that has not been read is offered with its note and refused on `enter` with the accept command, since accepting needs a person at a terminal reading a script.
+
+`wisp workflow use <name> --here` is the same write from the shell, and a `workflow:` in your user config binds every workspace and is never asked.
 
 `ctrl-j` and `ctrl-k` rather than the emacs `ctrl-p` and `ctrl-n`, because `ctrl-n` is wanted for creating an item and splitting the pair across two idioms reads worse than moving both.
 

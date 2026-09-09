@@ -58,6 +58,9 @@ var (
 	// The create line has its own keys, since most of the list bindings do not apply while a
 	// name is being typed.
 	newKeys = []string{"enter create", "esc cancel"}
+	// The first-run question. esc is "later" rather than "cancel" because the question is not
+	// dismissed, it is deferred: the built-in keeps running and the server remembers the answer.
+	bindKeys = []string{"enter bind it here", "esc later"}
 	// Workspace mode. ctrl-x is "forget" rather than "kill": it edits the config and leaves
 	// every file and every session alone, and calling both of them kill would be a lie about
 	// one of them.
@@ -75,6 +78,8 @@ func (m model) activeKeys() []string {
 	switch m.mode {
 	case modeNew, modeNewRepo:
 		return newKeys
+	case modeBindWorkflow:
+		return bindKeys
 	case modeWorkspace:
 		return wsKeys
 	case modeNewWS:
@@ -311,6 +316,28 @@ func (m model) renderPrompt() string {
 		// make that obvious.
 		left := newLabel.Render(" closing out ") + " " + m.input + promptStyle.Render("▏")
 		right := countStyle.Render(truncate("one line on "+m.closing, max(12, m.width/3)))
+		gap := m.width - lipgloss.Width(left) - lipgloss.Width(right)
+		if gap < 1 {
+			gap = 1
+		}
+		return left + strings.Repeat(" ", gap) + right
+	}
+	if m.mode == modeBindWorkflow {
+		// Asked once, on the prompt line, so the list it is about stays on screen underneath.
+		var choices []string
+		for i, e := range m.wfChoices {
+			label := e.Addr
+			if e.Note != "" {
+				label += " (" + e.Note + ")"
+			}
+			if i == m.wfCursor {
+				choices = append(choices, rowSelected.Reverse(true).Render(" "+label+" "))
+			} else {
+				choices = append(choices, repoStyle.Render(" "+label+" "))
+			}
+		}
+		left := newLabel.Render(" workflow ") + promptStyle.Render(" nothing binds one here, run  ") + strings.Join(choices, " ")
+		right := countStyle.Render("← → pick, enter binds it to this workspace")
 		gap := m.width - lipgloss.Width(left) - lipgloss.Width(right)
 		if gap < 1 {
 			gap = 1
