@@ -44,6 +44,8 @@ usage:
                           joins the ring
   wisp host rm <name>     forget a machine and everything it holds
   wisp kill <item>        kill an item's session
+  wisp kill --all         kill every session in this workspace, after asking;
+                          --everywhere for every workspace, -y to skip the ask
   wisp workflow [<item>]  the workflow in effect, key by key, and where each
                           key came from. list, show, init, use, edit and
                           accept live under it
@@ -176,8 +178,11 @@ func run(args []string) error {
 		return nil
 
 	case "kill":
+		if hasFlag(args, "--all") {
+			return killAll(cfg, hasFlag(args, "--everywhere"), hasFlag(args, "-y"))
+		}
 		if len(args) < 2 {
-			return fmt.Errorf("usage: wisp kill <item>")
+			return fmt.Errorf("usage: wisp kill <item> | wisp kill --all [--everywhere] [-y]")
 		}
 		note, err := cfg.KillSession(args[1])
 		if err != nil {
@@ -359,6 +364,53 @@ func run(args []string) error {
 	default:
 		return fmt.Errorf("unknown command %q\n\n%s", cmd, usage)
 	}
+}
+
+// killAll ends every session in the workspace, or everywhere, after listing them and asking.
+//
+// Asked, because every live agent loses its context. The picker's own session and the one this
+// runs in are never on the list. Worktrees, branches and notes stay, as they do for one kill.
+func killAll(cfg wisp.Config, everywhere, yes bool) error {
+	targets := cfg.KillTargets(everywhere)
+	if len(targets) == 0 {
+		where := "in " + cfg.Name
+		if everywhere {
+			where = "anywhere"
+		}
+		fmt.Printf("no sessions to kill %s\n", where)
+		return nil
+	}
+	where := "in " + cfg.Name
+	if everywhere {
+		where = "across every workspace"
+	}
+	word := "sessions"
+	if len(targets) == 1 {
+		word = "session"
+	}
+	fmt.Printf("%d %s %s:\n", len(targets), word, where)
+	for _, s := range targets {
+		owner := ""
+		if everywhere {
+			owner = s.WS + "  "
+		}
+		fmt.Printf("  %s %s%s\n", s.State.Glyph(), owner, s.Item)
+	}
+	if err := wisp.Confirm(yes, "kill them?", "wisp kill --all -y", "nothing killed"); err != nil {
+		return err
+	}
+	notes, errs := cfg.KillMany(targets)
+	fmt.Printf("killed %d\n", len(targets)-len(errs))
+	for _, n := range notes {
+		fmt.Fprintln(os.Stderr, "  "+n)
+	}
+	if len(errs) > 0 {
+		for _, e := range errs {
+			fmt.Fprintln(os.Stderr, "  "+e.Error())
+		}
+		return fmt.Errorf("%d would not go", len(errs))
+	}
+	return nil
 }
 
 // emitBoard prints this workspace's state as JSON, for the wisp on another machine that has it

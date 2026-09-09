@@ -59,6 +59,8 @@ wisp done <item> [-m <line>]
                            --anyway closes it bare, --undo reopens it,
                            --list shows what has been closed out
 wisp kill <item>           kill an item's session
+wisp kill --all            every session in this workspace, after asking;
+                           --everywhere for every workspace, -y to skip the ask
 wisp ls                    list live sessions, every workspace
 wisp workflow [<item>]     the workflow in effect, key by key, and where each
                            key came from; list, show, init, use, edit, accept

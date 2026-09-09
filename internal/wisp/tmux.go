@@ -323,3 +323,65 @@ func NeedsInput(session, marker string) bool {
 // InsideTmux reports whether wisp itself was launched from within tmux, which decides between
 // switching the current client and attaching a new one.
 func InsideTmux() bool { return os.Getenv("TMUX") != "" }
+
+// KillTargets is every session `wisp kill --all` would end: this workspace's, or every
+// workspace's with everywhere, never the one the command is running in. States are resolved so
+// the list a person confirms shows which agents are waiting on them.
+func (c Config) KillTargets(everywhere bool) []Session {
+	all := AllSessions()
+	resolveStates(all, c.NeedsInputMarker())
+	return selectKills(all, c.Name, c.DefaultName(), CurrentSession(), everywhere)
+}
+
+// selectKills is KillTargets without tmux, so the rule can be tested: scope by workspace unless
+// everywhere, and the current session is never a target because killing it takes the terminal
+// asking the question with it.
+func selectKills(all []Session, ws, def, current string, everywhere bool) []Session {
+	var out []Session
+	for _, s := range all {
+		if s.Name == current {
+			continue
+		}
+		owner := s.WS
+		if owner == "" {
+			owner = def
+		}
+		if !everywhere && owner != ws {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+// KillMany ends each session in turn, through the workspace that owns it so its kill hook runs.
+// One failure does not stop the rest: the point of --all is to be done with them, and the ones
+// that would not go are reported together at the end.
+func (c Config) KillMany(targets []Session) (notes []string, errs []error) {
+	for _, s := range targets {
+		owner := c
+		if s.WS != "" && s.WS != c.Name {
+			if o, err := Load(s.WS); err == nil {
+				owner = o
+			}
+		}
+		note, err := owner.KillSession(s.Item)
+		if err != nil {
+			// Not this workspace's after all, or the owner would not load: end it by name so
+			// --all means all, hook or no hook.
+			if kerr := exec.Command("tmux", "kill-session", "-t", "="+s.Name).Run(); kerr != nil && hasRawSession(s.Name) {
+				errs = append(errs, fmt.Errorf("%s: %v", s.Item, err))
+				continue
+			}
+		}
+		if note != "" {
+			notes = append(notes, s.Item+": "+note)
+		}
+	}
+	return notes, errs
+}
+
+// Confirm asks a yes-or-no question on the terminal, or refuses when there is none to ask on.
+func Confirm(yes bool, question, command, refusal string) error {
+	return askOnce(yes, question, command, refusal)
+}

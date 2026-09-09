@@ -184,10 +184,30 @@ For a remote item this kills the session **on the machine doing the work**, then
 
 Worktrees, branches, the vault folder and every note survive.
 
+### `wisp kill --all [--everywhere] [-y]`
+
+Every session in this workspace, or in every workspace with `--everywhere`, listed with its glyph and then asked about, because every live agent loses its context. `-y` skips the question and is required when there is no terminal to ask on, the same rule `accept` follows. The session the command runs in is never on the list: killing it would take the terminal asking the question with it. Each item's kill hook runs, through the workspace that owns it.
+
 ```
-usage: wisp kill <item>
+$ wisp kill --all
+3 sessions in github:
+  ● _adhoc/wisp-workflow-creation
+  ? wisp/1042-retry-backoff
+  ● wisp/1050-docs
+
+kill them? [y/N] y
+killed 3
+```
+
+Not a refresh: a session is tmux plus the agent in it, and the wisp binary is only involved at open, at kill and in the picker's loop, which picks a new binary up on its next pass. The reason to end every session is to start the agents fresh.
+
+```
+usage: wisp kill <item> | wisp kill --all [--everywhere] [-y]
 no session for <item>
 could not kill <session>: <err>
+no sessions to kill in <workspace>
+nothing killed
+<n> would not go
 ```
 
 ### `wisp provision <item> [--workflow <name>]`
