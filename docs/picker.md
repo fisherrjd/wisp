@@ -23,6 +23,7 @@ The picker has seven, and each one owns every key while it is open. For the line
 |---|---|---|---|
 | **filter** | the item list | the default | `esc` quits |
 | **new item** | a create line over the list | `ctrl-n` | `esc`, or `enter` to create |
+| **which repo** | a row of repos on the create line | `enter` on a bare name, with several repos | `esc` back to the name, `enter` to create |
 | **workspaces** | the machine and workspace tree | `ctrl-w` | `esc`, `ctrl-w` |
 | **new workspace** | a create line over the tree | `n` in the tree | `esc` |
 | **add machine** | a create line over the tree | `a` in the tree | `esc` |
@@ -42,7 +43,7 @@ The picker has seven, and each one owns every key while it is open. For the line
 | `↑` `ctrl-k` / `↓` `ctrl-j` | move the cursor |
 | `backspace` | delete a character from the filter |
 | `ctrl-u` | clear the filter |
-| `ctrl-n` | create an item: a name, or a pasted GitLab link |
+| `ctrl-n` | create an item: a name, `repo/name`, or a pasted link |
 | `ctrl-d` | close the highlighted item out |
 | `ctrl-t` | show the closed-out ones again |
 | `ctrl-x` | kill the highlighted item's session |
@@ -50,6 +51,8 @@ The picker has seven, and each one owns every key while it is open. For the line
 | `ctrl-r` | re-ask the remote source, whichever one this workspace has, and re-read the workflow |
 | `ctrl-g` | the key list, every binding in one page |
 | `esc` `ctrl-c` | quit, leaving everything running |
+
+A bare name is asked which repo it belongs to before it is made, when there is more than one to choose from: the create line becomes `new <name> in  repo-a  repo-b  none`, `←` `→` or `tab` walk the choices, a letter jumps to the next repo starting with it, `enter` takes the highlighted one. It starts on the repo of the row under the cursor, since a new item is most often a sibling of the one you were looking at. `none` is last and never first, because `_adhoc` is where work goes when nothing ties it to a checkout, not where it goes by default. One repo is not a choice, so it is not asked. `esc` goes back to the name intact.
 
 `ctrl-j` and `ctrl-k` rather than the emacs `ctrl-p` and `ctrl-n`, because `ctrl-n` is wanted for creating an item and splitting the pair across two idioms reads worse than moving both.
 

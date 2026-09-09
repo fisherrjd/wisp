@@ -25,7 +25,7 @@ Five nouns, and everything else follows from them.
 |---|---|
 | **System** | A machine. This one, or one you reach over ssh. It owns its workspaces and answers for them; nothing here keeps a copy of what it holds. |
 | **Workspace** | The container. Every repo checkout, `docs/`, `.worktrees/` and the vault sit side by side inside it. Agents start here, so one cwd sees all of them. You can have several, and not everything you work on belongs in the same one. |
-| **Item** | A folder in the vault, `<repo>/<iid>-<slug>` or `_adhoc/<name>`. The unit of work. Its stable identity is only `<repo>/<iid>`, because slugs drift between what you typed locally and what GitLab derives from the title. |
+| **Item** | A folder in the vault, `<repo>/<iid>-<slug>`, `<repo>/<name>`, or as a last resort `_adhoc/<name>`. The unit of work. Its stable identity is only `<repo>/<iid>`, because slugs drift between what you typed locally and what GitLab derives from the title. |
 | **Worktree** | A cache, deliberately. Branches are the real state. Delete a worktree and reopening the item reprovisions it. |
 | **Session** | A tmux session tagged `@wisp_item`. Its windows come from the workflow's `layout:`, and the built-in one is: an `agent` window at the workspace root, one further window per worktree for builds and dev servers, plus a transient `provision` window while any are still being built. |
 
@@ -143,7 +143,7 @@ $WS/
     │       ├── orchestration.md   manifest frontmatter, for multi-repo items
     │       ├── notes.md           shown in the preview pane; carries `done:`
     │       └── .wisp-context.md   generated on open, safe to delete
-    └── _adhoc/<name>/             work with no ticket behind it
+    └── _adhoc/<name>/             work with no repo behind it, the fallback
 ```
 
 With no `notes.md`, the preview falls back to the first `.md` in the item folder.

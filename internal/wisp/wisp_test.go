@@ -723,3 +723,69 @@ func TestCloseOutBareLeavesTheNoteAlone(t *testing.T) {
 		t.Errorf("bare close invented a heading:\n%s", raw)
 	}
 }
+
+
+// A bare name tries to land under a repo before it falls back to _adhoc. Two things let it:
+// standing inside a checkout, and there being only one checkout to choose from.
+func TestNewItemInfersRepo(t *testing.T) {
+	ws := t.TempDir()
+	c := Config{Workspace: ws, Vault: "working_items"}
+	mkRepo := func(name string) {
+		if err := os.MkdirAll(filepath.Join(ws, name, ".git"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	chdir := func(dir string) {
+		t.Helper()
+		if err := os.Chdir(dir); err != nil {
+			t.Fatal(err)
+		}
+	}
+	orig, _ := os.Getwd()
+	defer chdir(orig)
+	chdir(ws)
+
+	// No repos at all: _adhoc, and nothing to say about it.
+	it, note, err := c.NewItemNoted("first")
+	if err != nil || it.Name != "_adhoc/first" || note != "" {
+		t.Errorf("no repos: got %q note %q err %v, want _adhoc/first and no note", it.Name, note, err)
+	}
+
+	// One repo: it is the answer.
+	mkRepo("alpha")
+	it, note, err = c.NewItemNoted("second")
+	if err != nil || it.Name != "alpha/second" || note != "" {
+		t.Errorf("one repo: got %q note %q err %v, want alpha/second", it.Name, note, err)
+	}
+
+	// Two repos, standing at the root: nothing decides, so _adhoc with a note naming both.
+	mkRepo("beta")
+	it, note, err = c.NewItemNoted("third")
+	if err != nil || it.Name != "_adhoc/third" {
+		t.Errorf("two repos: got %q err %v, want _adhoc/third", it.Name, err)
+	}
+	if !strings.Contains(note, "alpha, beta") || !strings.Contains(note, "wisp new <repo>/third") {
+		t.Errorf("two repos: note %q should list the repos and the fix", note)
+	}
+
+	// Two repos, standing inside one of them (any depth): that one.
+	if err := os.MkdirAll(filepath.Join(ws, "beta", "src", "deep"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	chdir(filepath.Join(ws, "beta", "src", "deep"))
+	it, note, err = c.NewItemNoted("fourth")
+	if err != nil || it.Name != "beta/fourth" || note != "" {
+		t.Errorf("inside beta: got %q note %q err %v, want beta/fourth", it.Name, note, err)
+	}
+
+	// An explicit repo/name is never second-guessed, wherever you stand.
+	it, _, err = c.NewItemNoted("alpha/fifth")
+	if err != nil || it.Name != "alpha/fifth" {
+		t.Errorf("explicit: got %q err %v, want alpha/fifth", it.Name, err)
+	}
+	// And so is an explicit _adhoc.
+	it, note, err = c.NewItemNoted("_adhoc/sixth")
+	if err != nil || it.Name != "_adhoc/sixth" || note != "" {
+		t.Errorf("explicit adhoc: got %q note %q err %v", it.Name, note, err)
+	}
+}

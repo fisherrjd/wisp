@@ -20,7 +20,7 @@ working_items/
     └── vq-workspace/              work with no ticket behind it
 ```
 
-`<repo>/<iid>-<slug>` for work with a ticket, `_adhoc/<name>` for work without. `_adhoc` is a sentinel parent, not a repo: an item under it has no repo to infer and its session is notes-only.
+`<repo>/<iid>-<slug>` for work with a ticket, `<repo>/<name>` for work without one, `_adhoc/<name>` for work with no repo either. `_adhoc` is a sentinel parent, not a repo: an item under it has no repo to infer and its session is notes-only. It is the fallback rather than the default: a bare name given to `wisp new` or `ctrl-n` is tied to a repo whenever the workspace can say which ([Commands](commands.md#wisp-new-nameurl---json)), and the picker asks when it cannot.
 
 Only `notes.md` is guaranteed, created with the folder. Everything else is optional, and items in practice hold whatever else the work needed.
 

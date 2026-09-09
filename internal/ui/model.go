@@ -63,6 +63,7 @@ type mode int
 const (
 	modeFilter    mode = iota // typing narrows the list
 	modeNew                   // typing names a new item, or pastes a GitLab URL
+	modeNewRepo               // choosing which repo a bare new name belongs to
 	modeWorkspace             // the list is the machine and workspace tree, not items
 	modeNewWS                 // typing names a new workspace
 	modeNewHost               // typing names a machine to reach
@@ -104,6 +105,11 @@ type model struct {
 
 	mode  mode
 	input string // the new-item line, kept separate so cancelling restores the filter intact
+	// repoChoices and repoCursor are the modeNewRepo step: the workspace's repos plus one "none"
+	// entry at the end, and which of them is highlighted. The name typed in modeNew stays in
+	// input across the step, so esc goes back to it intact.
+	repoChoices []string
+	repoCursor  int
 
 	query   string
 	preview string
@@ -209,6 +215,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch m.mode {
 		case modeNew:
 			return m.updateNew(msg)
+		case modeNewRepo:
+			return m.updateNewRepo(msg)
 		case modeWorkspace:
 			return m.updateWorkspace(msg)
 		case modeNewWS:
@@ -380,15 +388,29 @@ func (m model) updateNew(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "enter":
-		it, err := m.cfg.NewItem(m.input)
-		if err != nil {
-			// Stay on the line with the text intact: these errors are things the user can
-			// correct in place, like a link whose repo half no repo_pattern matches.
-			m.status = err.Error()
-			return m, nil
+		// A bare name is asked which repo it belongs to before it is made, when there is a
+		// choice to make. _adhoc is where a name lands when nothing ties it to a repo, and
+		// from the picker nothing ever would: it runs at the workspace root, so the inference
+		// `wisp new` gets from your cwd is not available here. One repo needs no asking, and
+		// NewItem picks it on its own.
+		if in := strings.TrimSpace(m.input); in != "" && !strings.Contains(in, "/") && !strings.HasPrefix(in, "http") {
+			if repos, err := m.cfg.Repos(); err == nil && len(repos) > 1 {
+				m.repoChoices = append(append([]string{}, repos...), "")
+				m.repoCursor = 0
+				// Start on the repo of the row under the cursor: a new item is most often a
+				// sibling of the one you were looking at.
+				if it := m.current(); it != nil {
+					for i, r := range repos {
+						if r == it.Repo() {
+							m.repoCursor = i
+						}
+					}
+				}
+				m.mode, m.status = modeNewRepo, ""
+				return m, nil
+			}
 		}
-		m.chosen = &it
-		return m, tea.Quit
+		return m.createItem(m.input)
 
 	case "backspace":
 		if m.input != "" {
@@ -407,6 +429,68 @@ func (m model) updateNew(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.input += string(msg.Runes)
 		case tea.KeySpace:
 			m.input += " "
+		}
+		return m, nil
+	}
+}
+
+// createItem builds the item and opens it, which is the same path a normal selection takes, so
+// a new item lands in a session exactly like an existing one.
+func (m model) createItem(input string) (tea.Model, tea.Cmd) {
+	it, note, err := m.cfg.NewItemNoted(input)
+	if err != nil {
+		// Stay on the line with the text intact: these errors are things the user can
+		// correct in place, like a link whose repo half no repo_pattern matches.
+		m.mode = modeNew
+		m.status = err.Error()
+		return m, nil
+	}
+	// The note says an item fell back to _adhoc, and the picker has just asked, so the only way
+	// to see it here is having answered "none". Nothing to add to a choice already made.
+	_ = note
+	m.chosen = &it
+	return m, tea.Quit
+}
+
+// updateNewRepo is the step between naming an item and making it: which repo it belongs to.
+//
+// A single line rather than a list, because the answer is one of a handful and the list behind
+// it is the thing you were just looking at. ← → tab walk the choices, a letter jumps to the
+// next repo starting with it, enter takes the highlighted one. "none" is the last entry and
+// never the first, because _adhoc is the fallback rather than the default.
+func (m model) updateNewRepo(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	n := len(m.repoChoices)
+	switch msg.String() {
+	case "esc", "ctrl+c":
+		m.mode = modeNew
+		m.status = ""
+		return m, nil
+
+	case "enter":
+		repo := m.repoChoices[m.repoCursor]
+		if repo == "" {
+			repo = "_adhoc"
+		}
+		return m.createItem(repo + "/" + strings.TrimSpace(m.input))
+
+	case "left", "shift+tab", "up", "ctrl+k", "h":
+		m.repoCursor = (m.repoCursor + n - 1) % n
+		return m, nil
+
+	case "right", "tab", "down", "ctrl+j", "l", " ":
+		m.repoCursor = (m.repoCursor + 1) % n
+		return m, nil
+
+	default:
+		if msg.Type == tea.KeyRunes && len(msg.Runes) == 1 {
+			ch := strings.ToLower(string(msg.Runes))
+			for step := 1; step <= n; step++ {
+				i := (m.repoCursor + step) % n
+				if strings.HasPrefix(strings.ToLower(m.repoChoices[i]), ch) || (m.repoChoices[i] == "" && ch == "n") {
+					m.repoCursor = i
+					break
+				}
+			}
 		}
 		return m, nil
 	}

@@ -335,16 +335,21 @@ func run(args []string) error {
 		if len(args) < 2 {
 			return fmt.Errorf("usage: wisp new <name|url> [--json]")
 		}
-		it, err := cfg.NewItem(args[1])
+		it, note, err := cfg.NewItemNoted(args[1])
 		if err != nil {
 			return err
 		}
 		if hasFlag(args, "--json") {
 			return json.NewEncoder(os.Stdout).Encode(struct {
 				Name string `json:"name"`
-			}{it.Name})
+				Note string `json:"note,omitempty"`
+			}{it.Name, note})
 		}
 		fmt.Println(it.Name)
+		// stderr, so a script reading the name is not handed the explanation as a second line.
+		if note != "" {
+			fmt.Fprintln(os.Stderr, "  "+note)
+		}
 		return nil
 
 	default:

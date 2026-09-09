@@ -73,7 +73,7 @@ var (
 // needs to stack them onto two lines.
 func (m model) activeKeys() []string {
 	switch m.mode {
-	case modeNew:
+	case modeNew, modeNewRepo:
 		return newKeys
 	case modeWorkspace:
 		return wsKeys
@@ -317,11 +317,34 @@ func (m model) renderPrompt() string {
 		}
 		return left + strings.Repeat(" ", gap) + right
 	}
+	if m.mode == modeNewRepo {
+		// The typed name stays on screen so the question reads as one line: "new <name> in
+		// <which repo>". The highlighted choice is the one enter takes.
+		var choices []string
+		for i, r := range m.repoChoices {
+			label := r
+			if r == "" {
+				label = "none"
+			}
+			if i == m.repoCursor {
+				choices = append(choices, rowSelected.Reverse(true).Render(" "+label+" "))
+			} else {
+				choices = append(choices, repoStyle.Render(" "+label+" "))
+			}
+		}
+		left := newLabel.Render(" new ") + " " + strings.TrimSpace(m.input) + promptStyle.Render("  in ") + strings.Join(choices, " ")
+		right := countStyle.Render("← → pick a repo, enter makes it")
+		gap := m.width - lipgloss.Width(left) - lipgloss.Width(right)
+		if gap < 1 {
+			gap = 1
+		}
+		return left + strings.Repeat(" ", gap) + right
+	}
 	if m.mode == modeNew {
 		// A distinct label, because this line creates rather than filters and the two look
 		// identical otherwise.
 		left := newLabel.Render(" new ") + " " + m.input + promptStyle.Render("▏")
-		right := countStyle.Render("name, or paste a gitlab link")
+		right := countStyle.Render("name, repo/name, or paste a link")
 		gap := m.width - lipgloss.Width(left) - lipgloss.Width(right)
 		if gap < 1 {
 			gap = 1
@@ -560,7 +583,7 @@ type helpSection struct {
 var helpLeft = []helpSection{
 	{"the list", []helpEntry{
 		{"enter", "open it"},
-		{"ctrl-n", "new item, or a gitlab link"},
+		{"ctrl-n", "new item: a name, repo/name, or a link; a bare name is asked for its repo"},
 		{"ctrl-d", "close it out"},
 		{"ctrl-t", "show or hide closed"},
 		{"ctrl-x", "kill its session"},

@@ -109,13 +109,17 @@ Make an item. Three input shapes, told apart by the input itself rather than by 
 |---|---|
 | `https://gitlab.example.com/grp/sub/repo/-/issues/42` | `repo/42-<slug-from-title>` |
 | `repo/some-name` | `repo/some-name`, both halves slugified |
-| `some name` | `_adhoc/some-name` |
+| `some name`, run inside `<workspace>/<repo>/` | `<repo>/some-name` |
+| `some name`, in a workspace with one repo | `<repo>/some-name` |
+| `some name`, otherwise | `_adhoc/some-name`, with a note on stderr naming the repos it could have gone under |
 
 Only the first `/` splits, so the result is always exactly two levels. An item that already exists is handed back rather than refused, which is what makes `ctrl-n` on an existing name just open it.
 
+A bare name **tries to land under a repo first**. `_adhoc` is the fallback for work nothing ties to a checkout, not the default for work you did not spell out: an item with a repo gets a worktree, a shell window and a hub note in its briefing, and one without gets a notes-only session. Standing inside a checkout when you run `wisp new` is as clear as typing the repo, and a workspace with one checkout has nothing to choose between. With several repos and no cwd to go on, wisp files under `_adhoc` and says so rather than guessing, because a wrong repo gets a worktree built for work that was never about it and a missing one is a rename away. The picker asks instead of guessing ([The picker](picker.md)).
+
 A pasted link **does not have to be assigned to you**. Being the assignee is what fills the `+` section of the picker; it has never had anything to do with whether you can open something.
 
-`--json` prints `{"name":"_adhoc/thing"}` instead of the bare name. That form is how one wisp asks another to create an item on the machine that owns the workspace.
+`--json` prints `{"name":"_adhoc/thing"}` instead of the bare name, plus a `note` field when the name fell back to `_adhoc` with repos available. That form is how one wisp asks another to create an item on the machine that owns the workspace.
 
 ```
 nothing to create

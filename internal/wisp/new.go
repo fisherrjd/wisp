@@ -30,37 +30,51 @@ var projectFromURL = regexp.MustCompile(`^https?://[^/]+/(.+?)/-/(?:work_items|i
 //
 //   - a GitLab URL, which becomes <repo>/<iid>-<slug> with the repo and number read from the
 //     link and the slug derived from the item's title
-//   - anything else, which becomes _adhoc/<slug>: work with no ticket behind it
+//   - anything else, which is tied to a repo when one can be inferred (see InferRepo) and
+//     otherwise becomes _adhoc/<slug>: work with no ticket and no repo behind it
 //
 // An input already shaped like <repo>/<name> is taken literally, so an item can be placed under
 // a specific repo without a URL.
+//
+// _adhoc is the fallback, not the default. An item with a repo gets a worktree, a shell window
+// and a hub note pulled into its briefing; one without gets a notes-only session. So a bare name
+// tries to land under a repo first, and only files under _adhoc when nothing here says which.
 func (c Config) NewItem(input string) (Item, error) {
+	it, _, err := c.NewItemNoted(input)
+	return it, err
+}
+
+// NewItemNoted is NewItem with the one thing worth saying about where the item landed: when a
+// bare name fell back to _adhoc, the note says so and lists the repos it could have been tied
+// to. Empty when there is nothing to add.
+func (c Config) NewItemNoted(input string) (Item, string, error) {
 	input = strings.TrimSpace(input)
 	if input == "" {
-		return Item{}, fmt.Errorf("nothing to create")
+		return Item{}, "", fmt.Errorf("nothing to create")
 	}
 	// The folder belongs on the machine that owns the workspace, and so does the GitLab lookup
 	// that names it. Both happen there and only the name comes back.
 	if c.IsRemote() {
 		out, err := c.Location.run("new", input, "--json")
 		if err != nil {
-			return Item{}, err
+			return Item{}, "", err
 		}
 		var made struct {
 			Name string `json:"name"`
+			Note string `json:"note"`
 		}
 		if err := json.Unmarshal(out, &made); err != nil || made.Name == "" {
-			return Item{}, fmt.Errorf("%s: could not read the created item back", c.Location.Host)
+			return Item{}, "", fmt.Errorf("%s: could not read the created item back", c.Location.Host)
 		}
-		return Item{Name: made.Name, State: StateFolder}, nil
+		return Item{Name: made.Name, State: StateFolder}, made.Note, nil
 	}
 
-	var name string
+	var name, note string
 	switch {
 	case strings.HasPrefix(input, "http://"), strings.HasPrefix(input, "https://"):
 		resolved, err := c.itemFromURL(input)
 		if err != nil {
-			return Item{}, err
+			return Item{}, "", err
 		}
 		name = resolved
 	case strings.Contains(input, "/"):
@@ -69,27 +83,71 @@ func (c Config) NewItem(input string) (Item, error) {
 		repo, rest, _ := strings.Cut(input, "/")
 		dir, slug := slugifyPath(repo), slugifyPath(rest)
 		if dir == "" || slug == "" {
-			return Item{}, fmt.Errorf("%q does not name an item; give it a repo and a name, like `wisp/my-thing`", input)
+			return Item{}, "", fmt.Errorf("%q does not name an item; give it a repo and a name, like `wisp/my-thing`", input)
 		}
 		name = dir + "/" + slug
 	default:
 		slug := slugifyPath(input)
 		if slug == "" {
-			return Item{}, fmt.Errorf("%q does not name an item", input)
+			return Item{}, "", fmt.Errorf("%q does not name an item", input)
 		}
-		name = "_adhoc/" + slug
+		if repo := c.InferRepo(); repo != "" {
+			name = repo + "/" + slug
+		} else {
+			name = "_adhoc/" + slug
+			if repos, _ := c.Repos(); len(repos) > 0 {
+				note = fmt.Sprintf("filed under _adhoc: nothing here says which repo it belongs to (%s)\n  wisp new <repo>/%s ties it to one", strings.Join(repos, ", "), slug)
+			}
+		}
 	}
 
 	it := Item{Name: name, State: StateFolder}
 	if isDir(c.ItemDir(it.Name)) {
 		// Already there: hand it back rather than failing, so ctrl-n on something that exists
 		// just opens it.
-		return it, nil
+		return it, note, nil
 	}
 	if err := c.makeItemDir(it); err != nil {
-		return Item{}, err
+		return Item{}, "", err
 	}
-	return it, nil
+	return it, note, nil
+}
+
+// InferRepo is the repo a bare item name belongs to, when the workspace can say without asking.
+//
+// Two answers count, in this order: the checkout the process is standing in, and the only
+// checkout there is. Standing inside <workspace>/<repo> when you run `wisp new` is as clear a
+// statement of which repo you mean as typing it, and a workspace with one repo has nothing to
+// choose between. Anything less certain is "", and the caller falls back to _adhoc rather than
+// guessing: a wrong repo gets a worktree built for work that was never about it, and a missing
+// one is a folder rename away.
+//
+// The picker runs at the workspace root, so for it only the single-repo answer ever fires; the
+// choice with several repos is its own step there, not a guess made here.
+func (c Config) InferRepo() string {
+	repos, err := c.Repos()
+	if err != nil || len(repos) == 0 {
+		return ""
+	}
+	if !c.IsRemote() {
+		// Both sides resolved, because the cwd comes back with symlinks followed (on macOS
+		// /var is /private/var) and the workspace path is whatever the config spelled.
+		if cwd, err := os.Getwd(); err == nil {
+			cwd = resolvePath(cwd)
+			if rel, err := filepath.Rel(resolvePath(c.Workspace), cwd); err == nil && rel != "." && !strings.HasPrefix(rel, "..") {
+				top := strings.SplitN(filepath.ToSlash(rel), "/", 2)[0]
+				for _, r := range repos {
+					if r == top {
+						return r
+					}
+				}
+			}
+		}
+	}
+	if len(repos) == 1 {
+		return repos[0]
+	}
+	return ""
 }
 
 // makeItemDir creates an item's folder and its notes stub.
