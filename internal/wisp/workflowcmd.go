@@ -382,13 +382,13 @@ func (c Config) printWorkflow(w Workflow, item string) {
 			wide = n
 		}
 	}
-	fmt.Printf("  %-11s %-*s %s\n", "key", wide, "value", "from")
+	fmt.Printf("  %-12s %-*s %s\n", "key", wide, "value", "from")
 	for i, k := range workflowKeys {
 		from := w.From[k.key]
 		if from == "" {
 			from = "-"
 		}
-		fmt.Printf("  %-11s %-*s %s\n", k.key, wide, vals[i], from)
+		fmt.Printf("  %-12s %-*s %s\n", k.key, wide, vals[i], from)
 	}
 
 	// The layout summary above names the windows and stops there, which is enough to see that the

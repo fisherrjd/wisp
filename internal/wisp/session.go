@@ -498,10 +498,6 @@ func (c Config) Open(item Item, oneShot string, log func(string)) error {
 			return err
 		}
 		_ = exec.Command("tmux", "set-option", "-t", session, "history-limit", "10000").Run()
-		_ = exec.Command("tmux", "set-option", "-t", session, ItemOption, item.Name).Run()
-		// Which workspace this belongs to, so the other workspaces' pickers do not list it and
-		// the tally in the header can attribute it.
-		_ = exec.Command("tmux", "set-option", "-t", session, WSOption, c.Name).Run()
 		// Once, on the build, and not on a reattach: the hook is about a session coming into
 		// being, and a minute-long script on every attach would be felt every time.
 		c.runOpenHook(w, item, entries, session, log)
@@ -835,7 +831,13 @@ func (c Config) buildLayout(w Workflow, session string, item Item, entries []Ent
 		return fmt.Errorf("could not create session: %w", err)
 	}
 	// Recorded before the other windows, because one of them is the provisioning half and it
-	// reads this to resolve the same workflow the session was built from.
+	// reads these to find this session and to resolve the same workflow it was built from. The
+	// item and workspace tags used to be set after every window was up, which was fine while a
+	// provision script took seconds and wrong the moment one took milliseconds: `wisp provision`
+	// asked for its session before the tag was on it, found nothing, and the repo's window was
+	// never added.
+	_ = exec.Command("tmux", "set-option", "-t", session, ItemOption, item.Name).Run()
+	_ = exec.Command("tmux", "set-option", "-t", session, WSOption, c.Name).Run()
 	if w.OneShot && w.Addr != "" {
 		_ = exec.Command("tmux", "set-option", "-t", session, WorkflowOption, w.Addr).Run()
 	}
