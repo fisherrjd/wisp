@@ -1,10 +1,12 @@
 package wisp
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // Preview is what the right-hand pane shows for the highlighted item.
@@ -28,7 +30,15 @@ func (c Config) Preview(item Item, width int) string {
 
 	var b strings.Builder
 	w := c.WorkflowFor(item, "")
-	if entries, err := c.Manifest(w, item); err == nil && len(entries) > 0 {
+	entries, err := c.Manifest(w, item)
+	// The workflow's own preview, when it has one, bounded tightly because this runs on every
+	// cursor move. Anything it will not or cannot say falls through to the summary below.
+	if w.Hooks.Preview != "" && err == nil {
+		if body, ok := c.runPreviewHook(w, item, entries, width); ok {
+			return body
+		}
+	}
+	if err == nil && len(entries) > 0 {
 		b.WriteString("repos\n\n")
 		for _, e := range entries {
 			mark := "needs provisioning"
@@ -56,7 +66,7 @@ func (c Config) Preview(item Item, width int) string {
 			b.WriteString("folder exists, no markdown yet\n")
 		}
 	default:
-		b.WriteString("no folder yet, this is a GitLab item\n")
+		fmt.Fprintf(&b, "no folder yet, this is a %s item\n", c.RemoteLabel())
 		if item.Title != "" {
 			fmt.Fprintf(&b, "\n%s\n", item.Title)
 		}
@@ -75,4 +85,34 @@ func firstMarkdown(dir string) string {
 		}
 	}
 	return ""
+}
+
+// previewTimeout bounds the preview hook. Five seconds, because the pane repaints on every cursor
+// move and a minute would be a picker that stops answering.
+const previewTimeout = 5 * time.Second
+
+// previewInput is the context input plus what the list knows about the row.
+type previewInput struct {
+	contextInput
+	State string `json:"state"`
+	Title string `json:"title"`
+	Width int    `json:"width"`
+}
+
+// runPreviewHook asks the workflow for the pane body. Silent on failure: this runs on every
+// keystroke, and a status line per move would be noise where a blank fallback is not.
+func (c Config) runPreviewHook(w Workflow, item Item, entries []Entry, width int) (string, bool) {
+	state := "folder"
+	if !isDir(c.ItemDir(item.Name)) {
+		state = "remote"
+	}
+	payload, err := json.Marshal(previewInput{contextInput: c.hookInput(w, item, entries), State: state, Title: item.Title, Width: width})
+	if err != nil {
+		return "", false
+	}
+	out, err := c.runHookFor(previewTimeout, w.Hooks.Preview, payload, item.Name)
+	if err != nil || len(strings.TrimSpace(string(out))) == 0 {
+		return "", false
+	}
+	return string(out), true
 }

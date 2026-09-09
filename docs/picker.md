@@ -65,7 +65,11 @@ A workspace nothing binds a workflow to runs the built-in by default rather than
 
 `ctrl-g` rather than the obvious `?`, because the filter line types: a bare `?` has to reach the query or an item with one in its name cannot be searched for. `ctrl-?` is worse than unavailable — most terminals send DEL for it, which is what `backspace` sends, and that is already bound.
 
-The filter is fuzzy and matches the item **name** only, not its GitLab title. Matching re-orders the list by rank.
+The filter is fuzzy and matches the item **name** only, not its title. Matching re-orders the list by match score.
+
+Below the live rows, the list is in the order the sources gave: sessions, then vault folders, then what the source listed. A source that emits `rank` on its rows orders that part of the list itself, ranked rows first in rank order and the rest after them in their old order. The live rows stay on top whatever the tracker thinks is most important, because an agent waiting on you is what the picker is for.
+
+The `+` row's word in the legend and on the help page is the workflow's `picker.remote_label`, `gitlab` unless a bundle says otherwise. The preview pane for an item with no session is the workflow's `preview` hook when it has one, bounded at five seconds, and the built-in summary otherwise ([Hooks](hooks.md#preview-what-the-pane-shows)).
 
 ### `ctrl-d` and `ctrl-x` are not the same kind of finished
 

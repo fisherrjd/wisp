@@ -475,7 +475,6 @@ func (c Config) printWorkflowList() {
 	}
 }
 
-
 // workflowInit writes a starting point: a copy of one of the bundles wisp ships, `default`
 // unless --from names another. It never writes over one that is there.
 //

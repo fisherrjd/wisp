@@ -246,7 +246,10 @@ A manifest's `repos[].branch` is explicit and per-repo. A workflow's `branch:` i
 | `hooks.new` | none | How a typed name or pasted link becomes an item. See [Hooks](hooks.md#new-how-an-item-gets-its-name). |
 | `item.seed` | none | A directory whose top-level files every new item folder starts with, tokens expanded, never over a file already there. Relative to the bundle in a bundle, to the workspace in a config file. |
 | `item.parent` | none | Where a bare typed name is filed. Unset, wisp ties it to a repo and asks when it cannot tell; `_adhoc` files every bare name there without asking. One directory name. |
-| `picker.remote_label` | `gitlab` | The word the picker uses for rows that came from the source. |
+| `picker.remote_label` | `gitlab` | The word the picker uses for rows that came from the source, in the legend, the help page and the preview. One short word. |
+| `hooks.open` | none | Runs after a session is built and before you land in it. A note, never a veto. See [Hooks](hooks.md#open-and-kill-around-a-session). |
+| `hooks.kill` | none | Runs after a session is killed, never before. See [Hooks](hooks.md#open-and-kill-around-a-session). |
+| `hooks.preview` | none | What the picker's pane shows for an item with no session, bounded at five seconds. See [Hooks](hooks.md#preview-what-the-pane-shows). |
 | `layout` | one `agent`, one per worktree, one `provision` | The session's tmux windows. |
 | `status.needs_input` | Claude Code's permission dialog line | The pane text that means an agent is waiting on a human. |
 

@@ -308,6 +308,42 @@ Throwing away 8 MB of genuine briefing to write a generic one is the trade this 
 
 ---
 
+## `open:` and `kill:` — around a session
+
+```yaml
+hooks:
+    open: bin/open.sh
+    kill: bin/kill.sh
+```
+
+```
+open.sh <item>        after the session is built, before you land in it
+kill.sh <item>        after the session is gone
+```
+
+`open` gets the same JSON the context hook gets, plus `"session"`, the tmux session name. It runs once, on the build, and not on a reattach: it is about a session coming into being, and a minute-long script on every attach would be felt every time. `wisp provision` does not run it either. A non-zero exit is one `--- open hook: …` line on the way in, and the attach proceeds: the session is already there, and a hook that could stop the attach would leave a built session nobody was shown.
+
+`kill` gets `{item, session, workspace, vault, dir}` and no repos: the session is gone, and what is left of the item is its folder. It runs only after `kill-session` succeeded, never before, and its exit code is a note on the status line rather than a refusal. A hook that could refuse a kill would be the `close` hook's shape, and kill has to always work: it is the way out of a session that has gone wrong, which is not the moment to be told no. A remote workspace's kill hook runs on the machine that owns the session.
+
+Both go through the ordinary runner: a minute, 8 MB, `WISP_WORKSPACE`, cwd at the workspace root.
+
+---
+
+## `preview:` — what the pane shows
+
+```yaml
+hooks:
+    preview: bin/preview.sh
+```
+
+```
+preview.sh <item>     the pane body on stdout
+```
+
+Runs for an item with no live session, on every cursor move, and so is bounded at **five seconds** rather than the minute every other hook gets. stdin is the context hook's JSON plus `"state"` (`folder` or `remote`), `"title"` and `"width"`. Empty output, a non-zero exit or the deadline fall back to the built-in summary silently: a status line per keystroke would be noise where a blank fallback is not. A live session's pane is always wisp's, since it is the agent's actual screen, and a remote workspace's preview is asked of the far side, which runs its own hook.
+
+---
+
 ## `close:` — what closing out does
 
 Runs when an item is closed out, before the flag is set.

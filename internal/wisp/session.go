@@ -113,23 +113,7 @@ type contextInput struct {
 // briefing. Everything wisp already knows is on stdin, so the script does not have to re-derive
 // any of it from the filesystem.
 func (c Config) runContextHook(w Workflow, item Item, entries []Entry) ([]byte, error) {
-	in := contextInput{
-		Item:      item.Name,
-		Workspace: c.Workspace,
-		Vault:     c.Vault,
-		Dir:       filepath.Join(c.Vault, item.Name),
-	}
-	for _, e := range entries {
-		wt := c.WorktreeFor(w, e.Repo, item)
-		rel, err := filepath.Rel(c.Workspace, wt)
-		if err != nil {
-			rel = wt
-		}
-		in.Repos = append(in.Repos, contextRepo{
-			Repo: e.Repo, Branch: e.Branch, Base: e.Base, Worktree: rel, Ready: isDir(wt),
-		})
-	}
-	payload, err := json.Marshal(in)
+	payload, err := json.Marshal(c.hookInput(w, item, entries))
 	if err != nil {
 		return nil, err
 	}
@@ -141,6 +125,51 @@ func (c Config) runContextHook(w Workflow, item Item, entries []Entry) ([]byte, 
 		return nil, fmt.Errorf("%s printed nothing", w.Hooks.Context)
 	}
 	return body, nil
+}
+
+// hookInput is what every hook that is about one item is told: the same shape for context,
+// open and preview, so a script written for one reads the others without relearning the keys.
+func (c Config) hookInput(w Workflow, item Item, entries []Entry) contextInput {
+	in := contextInput{
+		Item:      item.Name,
+		Workspace: c.Workspace,
+		Vault:     c.Vault,
+		Dir:       filepath.Join(c.Vault, item.Name),
+		Repos:     []contextRepo{},
+	}
+	for _, e := range entries {
+		wt := c.WorktreeFor(w, e.Repo, item)
+		rel, err := filepath.Rel(c.Workspace, wt)
+		if err != nil {
+			rel = wt
+		}
+		in.Repos = append(in.Repos, contextRepo{
+			Repo: e.Repo, Branch: e.Branch, Base: e.Base, Worktree: rel, Ready: isDir(wt),
+		})
+	}
+	return in
+}
+
+// openInput is the context input plus the session that now exists.
+type openInput struct {
+	contextInput
+	Session string `json:"session"`
+}
+
+// runOpenHook runs after the session is built and before you land in it. Its exit code is a
+// note, never a veto: the session is already there, and a hook that could stop the attach would
+// leave a built session nobody was shown.
+func (c Config) runOpenHook(w Workflow, item Item, entries []Entry, session string, log func(string)) {
+	if w.Hooks.Open == "" {
+		return
+	}
+	payload, err := json.Marshal(openInput{contextInput: c.hookInput(w, item, entries), Session: session})
+	if err != nil {
+		return
+	}
+	if _, err := c.runHook(w.Hooks.Open, payload, item.Name); err != nil && !errors.Is(err, ErrHookTruncated) {
+		log("open hook: " + err.Error())
+	}
 }
 
 // hookTimeout bounds a hook. Generous, because a close hook may be posting to a tracker, and
@@ -175,10 +204,16 @@ var ErrHookTruncated = errors.New("hook output was truncated")
 // diagnosis in remote.go, is what a failing script gets to say: one line, because it goes
 // somewhere with room for one.
 func (c Config) runHook(script string, stdin []byte, args ...string) ([]byte, error) {
+	return c.runHookFor(hookTimeout, script, stdin, args...)
+}
+
+// runHookFor is runHook with the deadline chosen by the caller. The preview hook runs on every
+// cursor move, and a minute is not a bound anyone at a keyboard would call one.
+func (c Config) runHookFor(timeout time.Duration, script string, stdin []byte, args ...string) ([]byte, error) {
 	if script == "" {
 		return nil, errors.New("no hook")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), hookTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, script, args...)
 	cmd.Dir = c.Workspace
@@ -192,7 +227,7 @@ func (c Config) runHook(script string, stdin []byte, args ...string) ([]byte, er
 	cmd.Stdout, cmd.Stderr = lid, errBuf
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() != nil {
-			return out.Bytes(), fmt.Errorf("%s: gave up after %s", filepath.Base(script), hookTimeout)
+			return out.Bytes(), fmt.Errorf("%s: gave up after %s", filepath.Base(script), timeout)
 		}
 		if line := lastLine(errBuf.String()); line != "" {
 			return out.Bytes(), fmt.Errorf("%s: %s", filepath.Base(script), line)
@@ -467,6 +502,9 @@ func (c Config) Open(item Item, oneShot string, log func(string)) error {
 		// Which workspace this belongs to, so the other workspaces' pickers do not list it and
 		// the tally in the header can attribute it.
 		_ = exec.Command("tmux", "set-option", "-t", session, WSOption, c.Name).Run()
+		// Once, on the build, and not on a reattach: the hook is about a session coming into
+		// being, and a minute-long script on every attach would be felt every time.
+		c.runOpenHook(w, item, entries, session, log)
 	}
 
 	// Recorded before attaching, so a hop out of this workspace and back returns to this item.

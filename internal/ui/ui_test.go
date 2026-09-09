@@ -390,7 +390,6 @@ func TestHelpDocumentsWhatTheFooterOmits(t *testing.T) {
 	}
 }
 
-
 // A workflow that says where bare names land has answered the question the repo step asks, so
 // the step is skipped and the item is made where the workflow said.
 func TestParentSkipsTheRepoQuestion(t *testing.T) {
@@ -512,4 +511,30 @@ func TestLaterIsRememberedForTheServer(t *testing.T) {
 func fileExists(p string) bool {
 	_, err := os.Stat(p)
 	return err == nil
+}
+
+// A source that ranks its rows orders what is its to order: everything below the live sessions.
+func TestRankOrdersTheListBelowTheLiveRows(t *testing.T) {
+	m := model{}
+	m.local = []wisp.Item{
+		{Name: "r/1-live", State: wisp.StateLive},
+		{Name: "r/2-folder", State: wisp.StateFolder},
+		{Name: "r/3-folder", State: wisp.StateFolder},
+		{Name: "r/9-unranked", State: wisp.StateFolder},
+	}
+	m.remote = []wisp.Item{
+		{Name: "r/3-ranked", State: wisp.StateRemote, Rank: 1},
+		{Name: "r/2-ranked", State: wisp.StateRemote, Rank: 2},
+		{Name: "r/4-new", State: wisp.StateRemote, Rank: 3},
+		{Name: "r/1-live", State: wisp.StateRemote, Rank: 4},
+	}
+	m.rebuild()
+	var got []string
+	for _, it := range m.all {
+		got = append(got, it.Name)
+	}
+	want := "r/1-live,r/3-folder,r/2-folder,r/4-new,r/9-unranked"
+	if strings.Join(got, ",") != want {
+		t.Errorf("order = %s, want %s", strings.Join(got, ","), want)
+	}
 }

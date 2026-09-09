@@ -179,10 +179,14 @@ func run(args []string) error {
 		if len(args) < 2 {
 			return fmt.Errorf("usage: wisp kill <item>")
 		}
-		if err := cfg.KillSession(args[1]); err != nil {
+		note, err := cfg.KillSession(args[1])
+		if err != nil {
 			return err
 		}
 		fmt.Printf("killed %s\n", args[1])
+		if note != "" {
+			fmt.Fprintln(os.Stderr, "  "+note)
+		}
 		return nil
 
 	// Every workspace, not just this one: the point of the list is to see what is running
@@ -381,7 +385,7 @@ func emitBoard(cfg wisp.Config, gitlab bool) error {
 			items = wisp.MergeAll(items, remote)
 		}
 		for _, it := range items {
-			out.Items = append(out.Items, wisp.ItemJSON{Name: it.Name, State: int(it.State), Title: it.Title, Done: it.Done})
+			out.Items = append(out.Items, wisp.ItemJSON{Name: it.Name, State: int(it.State), Title: it.Title, Done: it.Done, Rank: it.Rank})
 			switch it.State {
 			case wisp.StateNeedsInput:
 				out.Attn++

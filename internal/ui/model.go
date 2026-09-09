@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -61,15 +62,15 @@ type previewMsg struct {
 type mode int
 
 const (
-	modeFilter    mode = iota // typing narrows the list
-	modeNew                   // typing names a new item, or pastes a GitLab URL
-	modeNewRepo               // choosing which repo a bare new name belongs to
-	modeBindWorkflow          // the first-run question: which workflow runs this workspace
-	modeWorkspace             // the list is the machine and workspace tree, not items
-	modeNewWS                 // typing names a new workspace
-	modeNewHost               // typing names a machine to reach
-	modeClose                 // typing says what finished, on the way to closing an item out
-	modeHelp                  // the whole key list, since the footer only shows what applies
+	modeFilter       mode = iota // typing narrows the list
+	modeNew                      // typing names a new item, or pastes a GitLab URL
+	modeNewRepo                  // choosing which repo a bare new name belongs to
+	modeBindWorkflow             // the first-run question: which workflow runs this workspace
+	modeWorkspace                // the list is the machine and workspace tree, not items
+	modeNewWS                    // typing names a new workspace
+	modeNewHost                  // typing names a machine to reach
+	modeClose                    // typing says what finished, on the way to closing an item out
+	modeHelp                     // the whole key list, since the footer only shows what applies
 )
 
 type model struct {
@@ -292,8 +293,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.status = "that is the session you are in; switch away first, or use wisp home"
 					return m, nil
 				}
-				_ = m.cfg.KillSession(it.Name)
+				note, _ := m.cfg.KillSession(it.Name)
 				m.status = "killed " + it.Name
+				if note != "" {
+					m.status += "; " + firstLine(note)
+				}
 				// Local only: a kill changes tmux state, not GitLab, and re-querying the
 				// network here would stall the list for no new information.
 				return m, loadLocal(m.cfg)
@@ -687,6 +691,29 @@ func (m *model) move(delta int) {
 // vault row carries the flag.
 func (m *model) rebuild() {
 	m.all = wisp.MergeAll(m.local, m.remote)
+	// A source that ranks its rows orders the part of the list that is its to order: everything
+	// below the live sessions. An agent waiting on you stays at the top whatever the tracker
+	// thinks is most important, because that is what the picker is for.
+	slices.SortStableFunc(m.all, func(a, b wisp.Item) int {
+		if (a.State >= wisp.StateLive) != (b.State >= wisp.StateLive) {
+			if a.State >= wisp.StateLive {
+				return -1
+			}
+			return 1
+		}
+		if a.State >= wisp.StateLive {
+			return 0
+		}
+		switch {
+		case a.Rank == 0 && b.Rank == 0:
+			return 0
+		case a.Rank == 0:
+			return 1
+		case b.Rank == 0:
+			return -1
+		}
+		return a.Rank - b.Rank
+	})
 	m.hasDone = false
 	for _, it := range m.all {
 		if it.Done {

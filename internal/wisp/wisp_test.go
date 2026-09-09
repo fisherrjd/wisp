@@ -724,7 +724,6 @@ func TestCloseOutBareLeavesTheNoteAlone(t *testing.T) {
 	}
 }
 
-
 // A bare name tries to land under a repo before it falls back to _adhoc. Two things let it:
 // standing inside a checkout, and there being only one checkout to choose from.
 func TestNewItemInfersRepo(t *testing.T) {

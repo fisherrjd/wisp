@@ -33,6 +33,9 @@ import (
 type sourceRow struct {
 	Name  string `json:"name"`
 	Title string `json:"title"`
+	// Rank orders the list, 1 first. Optional: a source that leaves it out is listed in the
+	// order wisp always used.
+	Rank int `json:"rank"`
 }
 
 // sourceCachePathFor is the source hook's cache: separate from the GitLab one, and keyed on the
@@ -107,7 +110,7 @@ func (c Config) parseSource(raw []byte) []Item {
 		if !c.validSourceName(row.Name) {
 			continue
 		}
-		out = append(out, Item{Name: row.Name, State: StateRemote, Title: row.Title})
+		out = append(out, Item{Name: row.Name, State: StateRemote, Title: row.Title, Rank: max(row.Rank, 0)})
 	}
 	return out
 }

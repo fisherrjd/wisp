@@ -49,6 +49,9 @@ type Item struct {
 	Name  string
 	State State
 	Title string // GitLab title, when the item came from there
+	// Rank is the position a source asked for, 1 being first, 0 being no opinion. A source that
+	// emits it is saying "order by me"; one that does not changes nothing about the list.
+	Rank int
 	// Done is set from the vault folder's notes.md. Not a State, because the states are a ladder
 	// and this is a separate axis: an item can be finished and still have a session running on
 	// it, and the two facts do not overrule each other. See done.go.
@@ -116,5 +119,17 @@ func Merge(into map[string]Item, order *[]string, it Item) {
 	if it.Done {
 		existing.Done = true
 	}
+	// Kept from whichever source had one, so a live session over a ranked row keeps the rank.
+	if existing.Rank == 0 && it.Rank != 0 {
+		existing.Rank = it.Rank
+	}
 	into[k] = existing
+}
+
+// RemoteLabel is the picker's word for rows that came from the source, from the workflow.
+func (c Config) RemoteLabel() string {
+	if l := c.WorkflowFor(Item{}, "").Picker.RemoteLabel; l != "" {
+		return l
+	}
+	return StateRemote.Label()
 }

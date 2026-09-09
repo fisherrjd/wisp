@@ -42,13 +42,15 @@ type ItemJSON struct {
 	// wisp on either end ignores a field it does not know and reads a missing one as not done,
 	// which is the behaviour it had before the flag existed.
 	Done bool `json:"done,omitempty"`
+	// Rank is additive in the same way.
+	Rank int `json:"rank,omitempty"`
 }
 
 // Items converts the wire form back into what the picker merges.
 func (b BoardJSON) AsItems() []Item {
 	out := make([]Item, 0, len(b.Items))
 	for _, it := range b.Items {
-		out = append(out, Item{Name: it.Name, State: State(it.State), Title: it.Title, Done: it.Done})
+		out = append(out, Item{Name: it.Name, State: State(it.State), Title: it.Title, Done: it.Done, Rank: it.Rank})
 	}
 	return out
 }

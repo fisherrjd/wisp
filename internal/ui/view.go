@@ -151,7 +151,11 @@ func (m model) activeLegend() []legendEntry {
 	}
 	out := make([]legendEntry, 0, len(footerStates)+1)
 	for _, s := range footerStates {
-		out = append(out, legendEntry{s.Glyph(), s.Label(), glyphColor(s)})
+		label := s.Label()
+		if s == wisp.StateRemote {
+			label = m.cfg.RemoteLabel()
+		}
+		out = append(out, legendEntry{s.Glyph(), label, glyphColor(s)})
 	}
 	// Only while they are being shown. A key for a mark that is not on screen is noise, and the
 	// footer is already the widest thing competing for the bottom line.
@@ -637,16 +641,36 @@ var helpRight = []helpSection{
 		{"● live", "a session is running"},
 		{"? needs input", "the agent is waiting on you"},
 		{"○ folder", "a vault folder, no session"},
-		{"+ gitlab", "on gitlab, nothing local"},
+		{"+ source", "from the source, nothing local"},
 		{"✓ done", "closed out, under ctrl-t"},
 	}},
+}
+
+// helpRightFor is helpRight with the source's own word on the + row, since a workflow may name it.
+func (m model) helpRightFor() []helpSection {
+	out := make([]helpSection, len(helpRight))
+	copy(out, helpRight)
+	for i, sec := range out {
+		if sec.title != "glyphs" {
+			continue
+		}
+		entries := make([]helpEntry, len(sec.entries))
+		copy(entries, sec.entries)
+		for j, e := range entries {
+			if strings.HasPrefix(e.keys, "+ ") {
+				entries[j].keys = "+ " + m.cfg.RemoteLabel()
+			}
+		}
+		out[i].entries = entries
+	}
+	return out
 }
 
 // renderHelp lays the sections into two columns that tile the width the same way the panes do.
 func (m model) renderHelp(rows int) string {
 	half := m.width / 2
 	left := renderHelpColumn(helpLeft, half-2, 20)
-	right := renderHelpColumn(helpRight, m.width-half-2, 15)
+	right := renderHelpColumn(m.helpRightFor(), m.width-half-2, 15)
 
 	body := lipgloss.JoinHorizontal(
 		lipgloss.Top,

@@ -1,9 +1,12 @@
 package wisp
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -175,25 +178,59 @@ func (c Config) HasSession(item string) bool { return c.FindSession(item) != "" 
 // Dropping the wrapper alone would leave an agent running that nothing lists any more. Walking
 // away and leaving it running is what esc already does, so kill has to mean the heavier thing or
 // there is no way to say it.
-func (c Config) KillSession(item string) error {
+// KillSession ends an item's session. The note is what the workflow's kill hook had to say, if
+// it ran and complained; the kill itself has already happened by then and is never undone.
+func (c Config) KillSession(item string) (note string, err error) {
 	session := c.FindSession(item)
 	if c.IsRemote() {
+		// The far side runs its own kill hook: the session and the workflow are both there.
 		if _, err := c.Location.run("kill", item); err != nil && session == "" {
-			return err
+			return "", err
 		}
 	} else if session == "" {
-		return fmt.Errorf("no session for %s", item)
+		return "", fmt.Errorf("no session for %s", item)
 	}
 	if session == "" {
-		return nil
+		return "", nil
 	}
 	// A wrapper usually dies on its own: killing the far side ends the ssh, which closes the
 	// window, which takes the session with it. Losing that race is not a failure, so the error
 	// only counts if the session is still standing afterwards.
 	if err := exec.Command("tmux", "kill-session", "-t", "="+session).Run(); err != nil && hasRawSession(session) {
-		return fmt.Errorf("could not kill %s: %w", session, err)
+		return "", fmt.Errorf("could not kill %s: %w", session, err)
 	}
-	return nil
+	if c.IsRemote() {
+		return "", nil
+	}
+	return c.runKillHook(item, session), nil
+}
+
+// killInput is what a kill hook is told. No repos: the session is gone, and what is left of the
+// item is its folder, which is named.
+type killInput struct {
+	Item      string `json:"item"`
+	Session   string `json:"session"`
+	Workspace string `json:"workspace"`
+	Vault     string `json:"vault"`
+	Dir       string `json:"dir"`
+}
+
+// runKillHook runs after a session is gone, never before. A hook that could refuse a kill would
+// be the close hook's shape, and kill has to always work: it is the way out of a session that
+// has gone wrong, which is not the moment to be told no.
+func (c Config) runKillHook(item, session string) string {
+	w := c.WorkflowFor(Item{Name: item}, "")
+	if w.Hooks.Kill == "" {
+		return ""
+	}
+	payload, err := json.Marshal(killInput{Item: item, Session: session, Workspace: c.Workspace, Vault: c.Vault, Dir: filepath.Join(c.Vault, item)})
+	if err != nil {
+		return ""
+	}
+	if _, err := c.runHook(w.Hooks.Kill, payload, item); err != nil && !errors.Is(err, ErrHookTruncated) {
+		return "kill hook: " + err.Error()
+	}
+	return ""
 }
 
 // CurrentSession is the session wisp itself is running inside, or "" when it is not in tmux.

@@ -2,12 +2,12 @@ package wisp
 
 import (
 	"bytes"
-	"io/fs"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
