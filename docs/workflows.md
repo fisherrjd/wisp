@@ -781,6 +781,19 @@ None of this changes the fact that **a workflow checked into the workspace is th
 
 ---
 
+## Sharing one
+
+A workflow is a directory, and every way of sharing one is a way of sharing a directory.
+
+| to | how |
+|---|---|
+| a repo's every checkout | commit it under `.wisp/workflows/<name>` and bind it with `wisp workflow use ./<name> --here`; everyone who clones gets asked to accept it once |
+| your other machines | `wisp workflow push <name> <host>` copies one of yours down the ssh connection wisp already opens |
+| anyone | `git clone` it under `~/.config/wisp/workflows/<name>`, or symlink a checkout there so `git pull` is the update |
+| everyone | send a pull request adding it under `internal/wisp/bundles/`; shipped bundles carry no scripts, so what they can carry is keys and seed files |
+
+What a shared bundle can decide, all of it from `workflow.yaml` and the files beside it: how an item is named (`new`), where a bare name lands (`item.parent`), what its folder starts with (`item.seed`), where work comes from (`source`), what the agent is told (`context`), how a checkout is built (`provision`), what the session looks like (`layout`, `program`), what happens around it (`open`, `kill`), what the list calls its rows and shows for them (`picker.remote_label`, `preview`), what finishing means (`close`), and how it recognises its agent waiting (`status.needs_input`). What it cannot decide is [what must not become configurable](#what-must-not-become-configurable).
+
 ## What this is not
 
 | not building | because |
