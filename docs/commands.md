@@ -220,10 +220,14 @@ Given no `--workflow`, it asks the session instead: `wisp open --workflow` recor
 
 It **exits 0 even when it fails**, printing the error and waiting for a keypress instead. That is deliberate: it runs in a tmux window that closes the moment its command returns, and a failure that vanishes is one nobody can read.
 
+With no script in effect it builds the worktree itself with git ([Sessions](sessions.md#provisioning)); with one, it runs the script.
+
 ```
 usage: wisp provision <item> [--workflow <name>]
-provisioning script missing: <workspace>/.claude/scripts/provision-worktree.sh
-this workflow has no provisioning script, so there is nothing to build <repo> with
+provisioning script missing: <path>
+provision names <path>, which wisp did not run (see the notes above), so <repo> was not built
+
+run `wisp workflow accept` after reading it, or drop `provision:` to let wisp build worktrees itself
 ```
 
 ---

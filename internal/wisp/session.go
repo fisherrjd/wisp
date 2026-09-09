@@ -378,12 +378,28 @@ func (c Config) EnsureWorktrees(w Workflow, item Item, entries []Entry, log func
 			log(fmt.Sprintf("no such repo: %s", e.Repo))
 			continue
 		}
-		// Nothing to run, which is true of every repo left, so the loop stops rather than saying it
-		// once per entry. Broken out rather than returned so anything already collected is still
-		// reported: a caller that sees one error and not the other cannot act on both.
 		if script == "" {
-			problems = append(problems, fmt.Errorf("this workflow has no provisioning script, so there is nothing to build %s with", e.Repo))
-			break
+			// A script somebody named and wisp would not run is a decision waiting on them, not
+			// a reason to build the worktree some other way: falling back here would make the
+			// gate a way to change which provisioner runs rather than whether one does. Broken
+			// out rather than returned so anything already collected is still reported.
+			if refused := w.Refused["provision"]; refused != "" {
+				problems = append(problems, fmt.Errorf("provision names %s, which wisp did not run (see the notes above), so %s was not built\n\nrun `wisp workflow accept` after reading it, or drop `provision:` to let wisp build worktrees itself",
+					c.displayPath(refused), e.Repo))
+				break
+			}
+			// Nothing named, so the built-in provisioner: git, and whatever else the checkout
+			// asks for and the machine has.
+			log(fmt.Sprintf("provisioning %s (%s) with git worktree", e.Repo, e.Branch))
+			job := provisionJob{RepoDir: filepath.Join(c.Workspace, e.Repo), Worktree: wt, Branch: e.Branch, Base: e.Base}
+			if err := c.provisionWorktree(job, log); err != nil {
+				log(fmt.Sprintf("provisioning %s failed: %v", e.Repo, err))
+				continue
+			}
+			if !isDir(wt) {
+				log(fmt.Sprintf("provisioning %s reported success but %s is not there", e.Repo, shortPath(wt)))
+			}
+			continue
 		}
 		if !exists(script) {
 			problems = append(problems, fmt.Errorf("provisioning script missing: %s", script))

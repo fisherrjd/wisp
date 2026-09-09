@@ -24,7 +24,7 @@ The user config lives at `$XDG_CONFIG_HOME/wisp/config.yaml` if that is set, oth
 
 | key | type | default | what it controls |
 |---|---|---|---|
-| `install` | bool | `false` | Whether to install dependencies when provisioning a worktree. False passes `--no-install` to the script. |
+| `install` | bool | `false` | Whether to install dependencies when provisioning a worktree. False passes `--no-install` to a script, and skips the lockfile install in the built-in provisioner. |
 | `vault` | string | `working_items` | The directory under the workspace where items live. Also doubles as the workspace-root marker in the upward search. |
 | `worktrees` | string | `.worktrees` | Where the worktree cache goes. |
 | `cache_ttl_min` | int | unset | Minutes before whichever source this workspace has is asked again. Source-neutral. Unset, not zero, is what defers to `gitlab.cache_ttl_min`. |

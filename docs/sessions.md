@@ -149,13 +149,25 @@ Keys wisp does not know are left alone. Real `orchestration.md` files carry an `
 
 ### Provisioning
 
-wisp never runs `git worktree add` itself. It shells out to a script in your workspace:
+With no script in effect, wisp builds the worktree itself, and `git` is the only thing it needs to do so:
+
+1. `git fetch origin`, and branch from origin's default branch (asked of the remote, `main` or `master` as a fallback), never from whatever branch the checkout happens to be parked on. An item's `base:` in its `orchestration.md` overrides that.
+2. `git worktree add`, or attach when the branch already exists: a branch that outlived its worktree is checked out as it is, and a base is never applied to it.
+3. Copy the checkout's untracked toolchain files when it has them: `.envrc`, `default.nix`, `shell.nix`, `.tool-versions`, `.nvmrc`, `.python-version`, `.claude/settings.local.json`. Never `.env`, which holds secrets.
+4. If `direnv` is installed and the worktree has an `.envrc`: `direnv allow`, then warm the environment, **only when the checkout's own `.envrc` is already allowed**. This runs with nothing accepted, so it extends consent you gave and never grants any.
+5. If `install:` is on, install by lockfile: pnpm, yarn (or corepack), npm (plus the npm#4828 rollup fix), uv. A missing package manager is a log line, not a failure.
+
+Steps 3 to 5 are layers over step 2. A machine with git and nothing else gets a complete worktree, and the provision window says which layers were skipped and why. The row reads `provision   built-in (git worktree)   built-in` in `wisp workflow`.
+
+A workspace that has `.claude/scripts/provision-worktree.sh`, read and accepted, runs that instead, exactly as before; so does any `provision:` a workflow names. The contract is:
 
 ```
-<workspace>/.claude/scripts/provision-worktree.sh <repo-path> <slug> <branch> --attach [--base <base>] [--no-install] [--worktree <path>]
+<script> <repo-path> <slug> <branch> --attach [--base <base>] [--no-install] [--worktree <path>]
 ```
 
-That contract is the whole interface. The script already handles branching from the remote default, copying `default.nix` and `.envrc`, `direnv allow` and the dependency install, and duplicating any of that inside wisp would be a second source of truth.
+A script that was named and that wisp would not run, unaccepted or not there, is a refusal, not a fallback: the provision window says which script and how to accept it, and nothing is built by another route. Swapping provisioners because a gate closed would make the gate a way to change what runs rather than whether it runs.
+
+Before the built-in provisioner, a workspace without the script stopped with `this workflow has no provisioning script`. Workspaces with the script see no change.
 
 `--attach` is always passed. The contract is "give me a worktree for this branch", and an item reopened after cleanup has a live branch but no checkout; without it, every reconstitution fails on "branch already exists".
 
@@ -165,11 +177,11 @@ That contract is the whole interface. The script already handles branching from 
 
 It exists because the two halves had drifted. `worktree:` decided where wisp *looked* for the checkout, while the script went on deriving `<repo>--<slug>` for itself, so any workflow that changed the template opened a session that could never find its own worktree: the per-repo window never appeared and the context file said "still provisioning" forever. Passing the destination is the smaller half of the fix. The other half is that wisp now checks the directory is there after the script exits zero, and names the path, the template and the flag if it is not, because a script that quietly ignores an argument it does not understand is exactly how the first version failed silently.
 
-Failures are graded. A repo named in the manifest that is not a directory here is logged and skipped. A script that exits non-zero is logged and the other repos are still attempted. A **missing** script aborts the run, because nothing after it can work.
+Failures are graded. A repo named in the manifest that is not a directory here is logged and skipped. A script that exits non-zero, or a built-in provision that fails, is logged and the other repos are still attempted. A script that was named and could not run, missing or refused by the gate, aborts the run, because nothing after it can work and the fix is yours to make.
 
 ### Why it happens in a side window
 
-Provisioning does not block opening. The script pre-warms a nix environment through direnv, and a cold evaluation takes long enough that waiting for it before showing the session felt like the tool had hung, with a nix build scrolling past for something the agent does not need. The agent window needs none of it: it runs at the workspace root and reads the context file.
+Provisioning does not block opening. A fetch, an install, or a direnv warm-up can take long enough that waiting for it before showing the session felt like the tool had hung, with a nix build scrolling past for something the agent does not need. The agent window needs none of it: it runs at the workspace root and reads the context file.
 
 So the session opens straight away and any missing worktrees are built in their own window, which adds its own windows when done and closes itself. In a window rather than a goroutine so the work is visible and interruptible rather than hidden behind a frozen picker.
 

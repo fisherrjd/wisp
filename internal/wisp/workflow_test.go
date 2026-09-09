@@ -1231,13 +1231,14 @@ func TestBuiltinWorkflowReproducesTodaysBehaviour(t *testing.T) {
 	}
 
 	// The other honest state, and the one every fresh machine is in: no provisioning script there
-	// at all. The key is dropped rather than pointed at a file that is not there, and it is dropped
+	// at all. The path is dropped rather than pointed at a file that is not there, and it is dropped
 	// without a note, because a note says "wisp would have run this and did not" and there is
-	// nothing here that wisp would have run. A workspace this empty must cost nobody a decision.
+	// nothing here that wisp would have run. What runs instead is the built-in provisioner, and the
+	// row says so. A workspace this empty must cost nobody a decision.
 	bare := newWorkflowFixture(t)
 	empty := bare.c.WorkflowFor(item, "")
-	if empty.Hooks.Provision != "" || empty.From["provision"] != "" {
-		t.Errorf("provision = %q from %q, want both empty with no script on disk",
+	if empty.Hooks.Provision != "" || !empty.ProvisionsInGo() {
+		t.Errorf("provision = %q from %q, want no script and the built-in provisioner",
 			empty.Hooks.Provision, empty.From["provision"])
 	}
 	if len(empty.Notes) != 0 {

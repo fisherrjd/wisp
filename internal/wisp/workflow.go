@@ -173,6 +173,32 @@ type Workflow struct {
 	// "what would run here" are how a prompt comes to describe something other than what the
 	// record covers, which is the whole of S2.
 	Unaccepted []string `yaml:"-"`
+	// Refused is the same information keyed by hook: the path some layer named that the gate would
+	// not run, whether unaccepted or not there. It exists for one consumer, the provisioner: a
+	// provision script somebody named and wisp withheld must not quietly become the built-in
+	// provisioner, and the only way to tell "nobody named one" from "one was refused" is this.
+	Refused map[string]string `yaml:"-"`
+}
+
+// ProvisionsInGo reports that no script is in effect and none was refused, so the built-in
+// provisioner builds this workspace's worktrees.
+func (w Workflow) ProvisionsInGo() bool {
+	return w.Hooks.Provision == "" && w.From["provision"] == "built-in"
+}
+
+// settleProvision records the built-in provisioner as the answer when nothing else is. It runs
+// after the gate, so a refused script keeps the row empty and the provisioner out of it.
+func (w *Workflow) settleProvision() {
+	if w.From == nil {
+		w.From = map[string]string{}
+	}
+	if w.Hooks.Provision == "" {
+		if w.Refused["provision"] != "" {
+			delete(w.From, "provision")
+			return
+		}
+		w.From["provision"] = "built-in"
+	}
 }
 
 // builtinWorkflow is wisp's own workflow, compiled in. It reproduces the behaviour that used to
@@ -205,6 +231,7 @@ func builtinWorkflow() Workflow {
 func (c Config) builtinResolved() Workflow {
 	w := builtinWorkflow()
 	w.From = map[string]string{}
+	w.Refused = map[string]string{}
 	for _, k := range []string{"program", "branch", "worktree", "provision", "needs_input", "layout", "remote_label"} {
 		w.From[k] = "built-in"
 	}
@@ -677,14 +704,19 @@ func (c Config) gateScripts(w *Workflow) {
 		key, sum, ok := c.scriptRecord(path)
 		// Not there yet. Stripped, because a script with no content cannot have been accepted by
 		// its content, and "accept the name now, add the bytes in a later commit" is exactly S2
-		// wearing a different hat. Stripped *silently*, because a note says "wisp would have run
-		// this and did not", and that sentence is not true of a file that does not exist: nothing
-		// was kept from you. It also has to be silent, because the built-in's `provision:` names a
-		// path most workspaces do not have, and a workspace that runs nothing must need no
-		// acceptance and produce no notes at all.
+		// wearing a different hat. Stripped *silently* when the built-in named it: its `provision:`
+		// default is a path most workspaces do not have, and a workspace that runs nothing must
+		// need no acceptance and produce no notes at all; the built-in provisioner takes over. A
+		// path some file wrote is different: that is a name wisp would otherwise swap for a
+		// different provisioner without a word, so it is refused and said.
 		if !ok {
+			from := w.From[h.key]
 			*h.dst = ""
 			delete(w.From, h.key)
+			if from != "built-in" {
+				w.Refused[h.key] = path
+				w.Notes = append(w.Notes, fmt.Sprintf("%s names %s, which is not there", h.key, c.displayPath(path)))
+			}
 			continue
 		}
 		if c.Accepted[key] == sum {
@@ -692,11 +724,13 @@ func (c Config) gateScripts(w *Workflow) {
 		}
 		*h.dst = ""
 		delete(w.From, h.key)
+		w.Refused[h.key] = path
 		w.Unaccepted = append(w.Unaccepted, path)
 		w.Notes = append(w.Notes, fmt.Sprintf(
 			"%s names %s, a script this workspace supplies that has not been accepted; run `wisp workflow accept` after reading it",
 			h.key, c.displayPath(path)))
 	}
+	w.settleProvision()
 }
 
 // scriptRecord is the accept key and the content hash for one hook script: the pair the gate
@@ -932,6 +966,9 @@ func (c Config) resolveWorkflow(item Item, oneShot string) Workflow {
 	w.Notes = append(w.Notes, spaceNotes...)
 	if keys := executableKeys(spaceFolded); len(keys) > 0 {
 		if !c.acceptedBytes(MarkerFile, spaceRaw) {
+			if p := spaceFolded.Hooks.Provision; p != "" {
+				w.Refused["provision"] = absAgainst(c.Workspace, p)
+			}
 			spaceFolded = stripExecutable(spaceFolded)
 			w.Notes = append(w.Notes, fmt.Sprintf(
 				"%s sets %s, which wisp would run; it has not been accepted, so run `wisp workflow accept %s` after reading it",
@@ -978,6 +1015,9 @@ func (c Config) resolveWorkflow(item Item, oneShot string) Workflow {
 	// which is exactly when it is worth asking.
 	if keys := executableKeys(iw); len(keys) > 0 {
 		if !c.acceptedBytes(item.Name, itemRaw) {
+			if p := iw.Hooks.Provision; p != "" {
+				w.Refused["provision"] = absAgainst(c.Workspace, p)
+			}
 			iw = stripExecutable(iw)
 			w.Notes = append(w.Notes, fmt.Sprintf(
 				"orchestration.md sets %s, which wisp would run; it has not been accepted, so run `wisp workflow accept %s` after reading it",
@@ -1061,6 +1101,7 @@ func (w Workflow) clone() Workflow {
 	w.Notes = slices.Clone(w.Notes)
 	w.Unaccepted = slices.Clone(w.Unaccepted)
 	w.From = maps.Clone(w.From)
+	w.Refused = maps.Clone(w.Refused)
 	return w
 }
 
@@ -1390,4 +1431,12 @@ func dirNames(root string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// absAgainst joins a relative path onto a base, and leaves an absolute one alone.
+func absAgainst(base, p string) string {
+	if filepath.IsAbs(p) {
+		return p
+	}
+	return filepath.Join(base, p)
 }

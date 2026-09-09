@@ -239,7 +239,7 @@ A manifest's `repos[].branch` is explicit and per-repo. A workflow's `branch:` i
 | `program` | `claude` | The command in the agent window. wisp appends the context prompt as one shell-quoted argument, so flags belong here. |
 | `branch` | `feature/{slug}` | The branch an item's repo gets when the manifest does not name one. |
 | `worktree` | `{repo}--{slug}` | The directory name inside `worktrees:` holding one repo's checkout for one item. |
-| `hooks.provision` | `.claude/scripts/provision-worktree.sh` | The script that builds a worktree. The one place wisp has always run code somebody else wrote, and the default path is inside the workspace, so it is gated like every other script there ([the script rule](#the-script-rule)). |
+| `hooks.provision` | none: wisp builds worktrees itself | With no script, the built-in provisioner: `git worktree add` from origin's default branch, the checkout's env files copied, `direnv allow` when already allowed, an install when `install:` is on ([Sessions](sessions.md#provisioning)). A path names a script instead, and `.claude/scripts/provision-worktree.sh` in the workspace is picked up on its own once it has been read and accepted, gated like every other script there ([the script rule](#the-script-rule)). |
 | `hooks.source` | none | Where items come from. See [Hooks](hooks.md). |
 | `hooks.context` | none | What the agent is told. See [Hooks](hooks.md). |
 | `hooks.close` | none | What closing an item out does. See [Hooks](hooks.md). |
@@ -380,12 +380,13 @@ sides. Deciding it on the template instead is a mistake this codebase has alread
 
 Two consequences worth knowing before they surprise you:
 
-- **A script that is not there yet is dropped, silently.** It has no content, so it cannot have
+- **A script that is not there yet is dropped.** It has no content, so it cannot have
   been accepted by its content, and "accept the name now, add the bytes in a later commit" is the
-  hole below wearing a different hat. Silently, because a note says "wisp would have run this and
-  did not", which is not true of a file that does not exist: most workspaces have no
-  `.claude/scripts/provision-worktree.sh`, and a workspace that runs nothing must cost nobody a
-  decision. The key shows as `-` in `wisp workflow`, and provisioning says there is no script when
+  hole below wearing a different hat. Silently when the built-in named it: most workspaces have no
+  `.claude/scripts/provision-worktree.sh`, a workspace that runs nothing must cost nobody a
+  decision, and the built-in provisioner builds the worktree in Go. With a note when some file
+  named it, because that is a name wisp would otherwise swap for a different provisioner without a
+  word, and the swap is refused as well as said. The key shows as `-` in `wisp workflow`, and provisioning says there is no script when
   you ask it to build something.
 - **Accepting a file now records the scripts it names**, not only the file. `wisp workflow accept
   .wisp.yaml` printed `scripts/setup.sh` to you and then recorded a hash of the YAML alone, so a

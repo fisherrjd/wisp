@@ -260,7 +260,7 @@ It records intent, and deliberately not worktree paths: a path would be a cache 
 
 Without an `orchestration.md`, a single-repo item is inferred from the folder's parent with branch `feature/<slug>`. `_adhoc` items get no repos at all, which is correct: no repo can be inferred, and the session is notes-only.
 
-Provisioning shells out to the workflow's `provision` hook, which by default is your workspace's own `.claude/scripts/provision-worktree.sh`, with a fixed contract:
+Provisioning is wisp's own with nothing configured: `git worktree add` from origin's default branch, the checkout's env files copied along, `direnv allow` when you already had, an install when `install:` is on. Only git is needed. A workflow's `provision` hook, or a `.claude/scripts/provision-worktree.sh` in the workspace once accepted, replaces it with a script of yours, with a fixed contract:
 
 ```
 provision-worktree.sh <repo-path> <slug> <branch> --attach [--base <base>] [--no-install] [--worktree <path>]
@@ -319,10 +319,10 @@ Attaching stacks two tmux servers, so the prefix key means two things. The wrapp
 | **tmux** | Required for everything. |
 | **ssh** | Required for remote workspaces. Purely local use never invokes it. |
 | **glab** | Optional, and only for the built-in GitLab source. Without it that source is empty and pasting a link into `wisp new` fails; a workflow with its own `source` hook never invokes it, and everything else is unaffected. |
-| **git** | Not invoked by wisp itself. Your provisioning script needs it, and `wisp repos` looks for `.git` directories. |
+| **git** | Required for worktrees: the built-in provisioner runs it. `wisp repos` looks for `.git` directories. |
 | **tar** | Only for `wisp workflow push`, on both ends. |
 
-Provisioning shells out to a script, by default a `provision-worktree.sh` in the workspace, which owns branching, env file copying and dependency installation; wisp does not duplicate that.
+direnv, nix and package managers are optional: the built-in provisioner uses each when the checkout asks for it and the tool is installed, and skips it with one line otherwise.
 
 ## Install
 

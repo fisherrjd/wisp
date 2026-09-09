@@ -203,11 +203,22 @@ func TestTheBuiltinProvisionDefaultIsWorkspaceSupplied(t *testing.T) {
 
 	// And the run itself, because a resolution that looks right and an exec that happens anyway is
 	// the shape of every gate that turned out to be decorative.
-	if err := f.c.EnsureWorktrees(w, testItem, entries, func(string) {}); err == nil {
+	err := f.c.EnsureWorktrees(w, testItem, entries, func(string) {})
+	if err == nil {
 		t.Error("provisioning reported success with no script it was allowed to run")
+	} else if !strings.Contains(err.Error(), "accept") {
+		t.Errorf("the refusal should name the way out: %v", err)
 	}
 	if exists(ran) {
 		t.Fatal("the workspace's own script ran with nothing accepted, which is the whole finding")
+	}
+	// And not the built-in provisioner either: a refused script is a decision waiting on a
+	// person, not an invitation to build the worktree some other way.
+	if w.Refused["provision"] == "" || w.ProvisionsInGo() {
+		t.Errorf("an unaccepted script should be refused, not replaced: refused=%q inGo=%v", w.Refused["provision"], w.ProvisionsInGo())
+	}
+	if isDir(f.c.WorktreeRoot()) {
+		t.Error("a worktree root appeared, so something provisioned around the gate")
 	}
 
 	// Accepted by its content, it runs. A gate that could only ever say no would not be a gate.

@@ -251,7 +251,12 @@ var workflowKeys = []struct {
 	{"new", func(c Config, w Workflow) string { return c.displayPath(w.Hooks.New) }},
 	{"context", func(c Config, w Workflow) string { return c.displayPath(w.Hooks.Context) }},
 	{"close", func(c Config, w Workflow) string { return c.displayPath(w.Hooks.Close) }},
-	{"provision", func(c Config, w Workflow) string { return c.displayPath(w.Hooks.Provision) }},
+	{"provision", func(c Config, w Workflow) string {
+		if w.ProvisionsInGo() {
+			return "built-in (git worktree)"
+		}
+		return c.displayPath(w.Hooks.Provision)
+	}},
 	{"open", func(c Config, w Workflow) string { return c.displayPath(w.Hooks.Open) }},
 	{"kill", func(c Config, w Workflow) string { return c.displayPath(w.Hooks.Kill) }},
 	{"preview", func(c Config, w Workflow) string { return c.displayPath(w.Hooks.Preview) }},
