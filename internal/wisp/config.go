@@ -192,6 +192,24 @@ func Load(name string) (Config, error) {
 		c.explicit = true
 	} else {
 		def := c.Workspaces[c.DefaultName()]
+		// Nothing written down and nothing under the current directory: the tmux session wisp
+		// was run from is the last thing that knows which workspace this is, and it is a better
+		// answer than the default, which is a different workspace rather than an unknown one.
+		//
+		// This is what a remote workspace needs. Its home session and the wrapper around each of
+		// its items both run in $HOME, because the workspace path is on another machine, so the
+		// upward search finds nothing there and every ring key pressed inside one used to walk
+		// the local default's ring instead.
+		if os.Getenv("WISP_WORKSPACE") == "" {
+			if cwd, err := os.Getwd(); err == nil && searchUp(cwd, c.Vault) == "" {
+				// Only a name this config can still resolve. A session outlives the config entry
+				// it was made from, and a workspace since forgotten must fall through to the
+				// default rather than fail.
+				if ws := CurrentWorkspace(); ws != "" && ws != c.DefaultName() && c.knows(ws) {
+					return Load(ws)
+				}
+			}
+		}
 		// A remote default cannot be a path to fall back to, and standing outside every local
 		// workspace is exactly when it should be used. Resolve it by name instead, which takes
 		// the branch above and stops there.
@@ -283,6 +301,21 @@ func (c Config) hasLocation(want Location) bool {
 	return false
 }
 
+// knows reports whether a name is one this config can resolve: a workspace written down here,
+// or a workspace on a machine registered here. The named branch of Load answers the same
+// question by failing, which is the right behaviour for a name someone typed and the wrong one
+// for a name recovered from a running session.
+func (c Config) knows(name string) bool {
+	if name == "" {
+		return false
+	}
+	if _, ok := c.Workspaces[name]; ok {
+		return true
+	}
+	_, _, viaHost := c.splitQualified(name)
+	return viaHost
+}
+
 // resolveName names the resolved workspace. A configured entry pointing at this path wins, so
 // the name the user chose is the one that appears in session names and in the picker. Anything
 // else, including a workspace found by searching upward and never configured at all, is named
@@ -349,6 +382,10 @@ func (c Config) WorkspaceNames() []string {
 //     session's own worktree windows are several levels below the root.
 //  3. The default workspace's path, for running wisp from anywhere at all.
 //  4. The current directory, so the error message names somewhere the user recognises.
+//
+// Load puts one more step between 2 and 3: the workspace of the tmux session wisp was run from,
+// for the sessions whose directory cannot answer. It lives there rather than here because it
+// resolves to a workspace by name, which may be one on another machine and so have no path at all.
 func FindWorkspace(fallback, vault string) (string, error) {
 	if ws := os.Getenv("WISP_WORKSPACE"); ws != "" {
 		return filepath.Abs(expandHome(ws))

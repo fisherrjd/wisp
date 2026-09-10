@@ -120,6 +120,8 @@ One decision, and almost nothing else has to change:
 - The last-visited session, `hop`, and `Remember` are local tmux server options and never learn that anything is remote.
 - `NeedsInput` captures the wrapper's pane, which is rendering the remote pane, so the `?` state works with no extra machinery for anything you are attached to.
 
+The one thing that did have to change is which workspace wisp thinks it is in when run from inside the wrapper. It runs in `$HOME`, because the workspace path belongs to another machine, so the upward search finds nothing and the default workspace answered instead: a `hop` binding pressed inside a remote item walked the local ring, and the picker opened on the local workspace. The wrapper is tagged `@wisp_ws` like any other session, and [workspace resolution](configuration.md#workspace-resolution) now reads it, below the directory search and above the default. A remote workspace's home session is tagged for the same reason.
+
 Sessions running remotely that you are not attached to have no wrapper and are invisible locally. Those come from `board --json`, and the two lists merge on identity exactly as the local and GitLab sources already do.
 
 The cost is nested tmux and a prefix key that now means two things. The fixes are the usual ones, a different prefix on the remote or a key bound to `send-prefix`, and they belong in your tmux config rather than in wisp rewriting it. The wrapper's status bar is turned on and set to `<workspace>:<host>`, so being a level down is something you see rather than something you discover.

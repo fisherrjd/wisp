@@ -385,3 +385,30 @@ func (c Config) KillMany(targets []Session) (notes []string, errs []error) {
 func Confirm(yes bool, question, command, refusal string) error {
 	return askOnce(yes, question, command, refusal)
 }
+
+// CurrentWorkspace is the workspace the session wisp is running inside belongs to, or "" when
+// it is not in tmux or the session is not one of wisp's.
+//
+// A wisp session is tagged with @wisp_ws when it is built, so this is the session's own answer
+// rather than one inferred from its name, which sanitize has already made lossy.
+//
+// It exists because a session's directory is not always a place the workspace can be found from.
+// The wrapper around a remote item runs in $HOME, since the workspace path belongs to another
+// machine, and so does a remote workspace's home session; searching upward from either finds
+// nothing and falls back to the default workspace, which is a different one. The effect was that
+// every ring key pressed inside a remote item, `hop` and `next` alike, walked the local
+// workspace's ring instead of the one you were looking at.
+//
+// One call rather than a session name and then an option on it: a format expands against the
+// client's own session, which is the one being asked about, and an option nobody set expands to
+// the empty string rather than failing.
+func CurrentWorkspace() string {
+	if !InsideTmux() {
+		return ""
+	}
+	out, err := tmux("display-message", "-p", "#{"+WSOption+"}")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
+}

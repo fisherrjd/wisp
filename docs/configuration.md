@@ -190,8 +190,11 @@ In order:
 1. **`-w <name>`**, when given. An explicit answer skips the search entirely.
 2. **`WISP_WORKSPACE`**, when set.
 3. **The nearest ancestor of the current directory** holding a `.wisp.yaml` or a vault directory. This is the git approach, and it is what lets wisp work from inside a repo or a worktree rather than only from the workspace root. It matters in practice: a session's own worktree windows are several levels below the root.
-4. **The default workspace's path**, for running wisp from anywhere at all.
-5. **The current directory**, only so the error message names somewhere you recognise.
+4. **The tmux session you are in**, which carries its workspace in `@wisp_ws`. Below the directory search, because cd-ing somewhere has to keep meaning what it means, and above the default, because a session is an answer about *this* workspace where the default is an answer about a different one.
+5. **The default workspace's path**, for running wisp from anywhere at all.
+6. **The current directory**, only so the error message names somewhere you recognise.
+
+Step 4 is what a remote workspace needs. Its home session and the wrapper around each of its items both run in `$HOME`, since the workspace path is on another machine, so the upward search finds nothing there and used to land on the local default: every ring key pressed inside a remote item walked the wrong ring, and the picker opened on the wrong workspace. A name recorded in a session that has since been forgotten from the config falls through to the default rather than failing, because the session outlives the entry it was made from.
 
 One wrinkle in step 3: the vault name used by the search is the one known *before* `<workspace>/.wisp.yaml` is read, so it comes from the built-in default or your user config. A workspace that renames its vault only in its own `.wisp.yaml` is discoverable by its `.wisp.yaml` marker but not by its vault directory.
 

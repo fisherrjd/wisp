@@ -58,7 +58,9 @@ The name is lossy twice over, so it is not the identity. The real answer is in t
 
 A session carrying no `@wisp_ws` predates workspaces and is adopted by the default one, so upgrading wisp with work already running does not strand it.
 
-Home sessions are `wisp-<workspace>`, joined with a dash rather than the underscore of the prefix, so they never appear in the list of items.
+Home sessions are `wisp-<workspace>`, joined with a dash rather than the underscore of the prefix, so they never appear in the list of items. They carry `@wisp_ws` all the same, which is not for the list: it is so wisp run from inside the picker knows which workspace it is looking at without deriving it from a directory.
+
+**`@wisp_ws` is also how wisp answers "which workspace is this" when the directory cannot.** It sits below the upward search and above the default in [workspace resolution](configuration.md#workspace-resolution). A remote workspace is what needs it: its home and the wrapper around each of its items both run in `$HOME`, since the workspace path is on another machine, so `wisp`, `hop` and `next` pressed inside one used to act on the local default instead.
 
 ---
 

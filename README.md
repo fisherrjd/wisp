@@ -219,7 +219,7 @@ default: work
 
 Overrides: `WISP_WORKSPACE`, `WISP_PROGRAM`, `WISP_INSTALL` (any non-empty value, including `0`), and `XDG_CONFIG_HOME` for the config's location.
 
-**Workspace resolution**, in order: `-w <name>`; `WISP_WORKSPACE`; the nearest ancestor holding a `.wisp.yaml` or a vault directory (so wisp works from inside a repo or a worktree); the default workspace; otherwise an error naming the fixes.
+**Workspace resolution**, in order: `-w <name>`; `WISP_WORKSPACE`; the nearest ancestor holding a `.wisp.yaml` or a vault directory (so wisp works from inside a repo or a worktree); the tmux session you are in, which carries its own workspace; the default workspace; otherwise an error naming the fixes.
 
 You never have to write either block by hand. `ctrl-w` then `n` or `a` in the picker does the same thing, and so does the shell:
 
