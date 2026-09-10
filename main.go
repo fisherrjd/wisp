@@ -62,6 +62,7 @@ workspace resolution, in order:
   -w <name>, if given
   WISP_WORKSPACE, if set
   the nearest ancestor holding a .wisp.yaml or working_items/
+  the workspace of the tmux session you are in
   the default workspace from ~/.config/wisp/config.yaml
 
 config:

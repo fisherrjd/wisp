@@ -30,6 +30,10 @@ func (c Config) Home() error {
 
 func (c Config) ensureHome() error {
 	if hasRawSession(c.HomeSession()) {
+		// Tagged on every visit, not only at creation. The tmux server outlives an upgrade, so a
+		// home session already standing would otherwise never carry the option and would keep
+		// resolving to the default workspace for as long as it ran.
+		c.tagHome()
 		return nil
 	}
 	self, err := os.Executable()
@@ -67,7 +71,20 @@ func (c Config) ensureHome() error {
 		return fmt.Errorf("could not create the wisp home session: %w", err)
 	}
 	_ = exec.Command("tmux", "set-option", "-t", c.HomeSession(), "status", "off").Run()
+	c.tagHome()
 	return nil
+}
+
+// tagHome puts this workspace's name on its home session, the way Open puts it on an item's.
+//
+// It is what lets wisp run from inside the picker know which workspace it is looking at without
+// re-deriving it from a directory. The home of a remote workspace runs in $HOME, since the
+// workspace path is on another machine, and deriving it there finds the local default instead.
+//
+// AllSessions never picks a home up: it matches on the underscore of SessionPrefix and a home
+// name is joined with a dash, so no home appears in its own list as an item.
+func (c Config) tagHome() {
+	_ = exec.Command("tmux", "set-option", "-t", c.HomeSession(), WSOption, c.Name).Run()
 }
 
 // Cycle moves to the next (+1) or previous (-1) item session in this workspace, wrapping at
