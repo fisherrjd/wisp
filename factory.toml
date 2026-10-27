@@ -1,0 +1,11 @@
+# How the factory (factory.jade.rip) checks and builds this repo. It reads this
+# file from main only, never from a PR branch, so a change here takes effect
+# once it merges.
+repo = "fisherrjd/wisp"
+kind = "tool"
+toolchain = "default.nix"
+# The sandbox has no C compiler and nixpkgs' go defaults to cgo on, so `go vet`
+# fails on runtime/cgo without CGO_ENABLED=0 (wisp is pure Go).
+checks = ["CGO_ENABLED=0 go vet ./...", "CGO_ENABLED=0 go test ./...", "CGO_ENABLED=0 go build -o .factory/bin/wisp ."]
+bin = ".factory/bin/wisp"
+shared = ["go.mod", "go.sum", "default.nix", "main.go"]
